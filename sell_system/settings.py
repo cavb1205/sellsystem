@@ -23,7 +23,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = 'django-insecure-fd!eweu)qsa4^*^fe1%qt9ra#h5gnqq0=gae#=&(u!8hoq96_i'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = False
 
 if DEBUG == True:
     ALLOWED_HOSTS = ['137.184.176.199','192.168.1.160','localhost','*']
@@ -108,7 +108,17 @@ if DEBUG == True:
         }
     }
 else:
-    pass
+    DATABASES = {
+
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql_psycopg2',
+            'NAME': 'sellsystem',
+            'USER': 'cavb1205',
+            'PASSWORD': 'c@m1lovaron',
+            'HOST': 'localhost',
+            'PORT': '',
+    }
+}
 
 # Password validation
 # https://docs.djangoproject.com/en/4.0/ref/settings/#auth-password-validators
