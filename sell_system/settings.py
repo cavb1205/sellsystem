@@ -26,9 +26,9 @@ SECRET_KEY = 'django-insecure-fd!eweu)qsa4^*^fe1%qt9ra#h5gnqq0=gae#=&(u!8hoq96_i
 DEBUG = True
 
 if DEBUG == True:
-    ALLOWED_HOSTS = ['192.168.1.160','localhost','*']
+    ALLOWED_HOSTS = ['137.184.176.199','192.168.1.160','localhost','*']
 else:
-    ALLOWED_HOSTS = ['*']
+    ALLOWED_HOSTS = ['*','137.184.176.199']
 
 
 # Application definition
