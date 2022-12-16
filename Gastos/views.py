@@ -47,7 +47,8 @@ def put_tipo_gasto(request, pk):
 def post_tipo_gasto(request):
     '''creamos un tipo_gasto'''
     if request.method == 'POST':
-
+        print('ingresa a post tipo gasto')
+        print(request.data)
         tipo_gasto_serializer = TipoGastoSerializer(data = request.data)
         if tipo_gasto_serializer.is_valid():
             tipo_gasto_serializer.save()

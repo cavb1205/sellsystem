@@ -16,7 +16,7 @@ def list_clientes(request):
     '''obtenemos todos los clientes'''
     user = request.user
     tienda = Tienda.objects.filter(id=user.perfil.tienda.id).first()
-    clientes = Cliente.objects.filter(tienda=tienda.id)
+    clientes = Cliente.objects.filter(tienda=tienda.id).order_by('nombres')
     if clientes:
         clientes_serializer = ClienteSerializer(clientes, many=True)
         return Response(clientes_serializer.data, status=status.HTTP_200_OK)
