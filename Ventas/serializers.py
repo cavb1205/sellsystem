@@ -12,6 +12,12 @@ class VentaSerializer(ModelSerializer):
 
 
 
+class VentaUpdateSerializer(ModelSerializer):
+    class Meta:
+        model = Venta
+        exclude = ['cliente']
+
+
 class VentaDetailSerializer(ModelSerializer):
     cliente = ClienteSerializer()
     class Meta:

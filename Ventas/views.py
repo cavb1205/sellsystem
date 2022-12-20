@@ -8,7 +8,7 @@ from rest_framework import status
 
 
 from Ventas.models import Venta
-from Ventas.serializers import VentaSerializer, VentaDetailSerializer
+from Ventas.serializers import VentaSerializer, VentaDetailSerializer, VentaUpdateSerializer
 from Tiendas.models import Tienda
 from Recaudos.models import Recaudo
 
@@ -97,7 +97,7 @@ def put_venta(request, pk):
         fecha_venta=datetime.date(fecha_venta)
         new_data['fecha_vencimiento'] = str(fecha_venta + timedelta(days=(int(new_data['cuotas'])+4)))
         
-        venta_serializer = VentaSerializer(venta, data=new_data)
+        venta_serializer = VentaUpdateSerializer(venta, data=new_data)
         
         
         if venta_serializer.is_valid():
