@@ -30,3 +30,39 @@ class Cierre_Caja(models.Model):
 
     def __str__(self):
         return str(self.fecha_cierre)
+
+
+
+
+#suscripcion
+
+class Membresia(models.Model):
+    opciones_membresia = (
+    ('Prueba','Prueba'),
+    ('Mensual','Mensual'),
+    ('Anual','Anual'),
+    )
+    nombre = models.CharField(max_length=100, choices=opciones_membresia)
+    precio = models.DecimalField( max_digits=10 ,decimal_places=0, default=0)
+    
+
+    def __str__(self):
+        todo = self.nombre + ' ' + str(self.precio) + ' ' + 'USD'
+        return todo
+
+
+class Tienda_Membresia(models.Model):
+    estado_choices = (
+        ('Activa','Activa'),
+        ('Vencida','Vencida'),
+        ('Pendiente Pago','Pendiente Pago')
+    )
+    tienda = models.OneToOneField(Tienda, on_delete=models.CASCADE, 
+                                    null=False, blank=False)
+    membresia = models.ForeignKey(Membresia, on_delete=models.CASCADE)
+    fecha_activacion = models.DateField()
+    fecha_vencimiento = models.DateField()
+    estado = models.CharField(max_length=50, choices=estado_choices, default='Activa')
+
+    def __str__(self):
+        return str(self.tienda) + ' - ' + str(self.membresia) 

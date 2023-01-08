@@ -5,11 +5,26 @@ from rest_framework import status
 
 import datetime
 
-from Tiendas.models import Tienda, Cierre_Caja
-from Tiendas.serializers import TiendaSerializer, CajaSerializer
+from Tiendas.models import Tienda, Cierre_Caja, Tienda_Membresia, Membresia
+from Tiendas.serializers import TiendaSerializer, CajaSerializer, TiendaMembresiaSerializer
 
 
 ### VIEWS FOR TIENDA  ####
+
+@api_view(['GET'])
+#@permission_classes([IsAuthenticated])
+def list_all_tiendas(request):
+    '''obtenemos todas las tiendas'''
+
+    user = request.user
+    if user.is_superuser:    
+        tiendas = Tienda.objects.all()
+        if tiendas:
+            serializer = TiendaSerializer(tiendas, many=True)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        return Response({'message':'No se han creado tiendas'}, status=status.HTTP_200_OK)
+    else:
+        return Response({'message':'No tiene permisos para acceder a esta vista'},status=status.HTTP_200_OK)
 
 @api_view(['GET'])
 #@permission_classes([IsAuthenticated])
@@ -70,7 +85,7 @@ def delete_tienda(request, pk):
 
 ### END VIEWS FOR TIENDA  ####
 
-
+####CIERRES DE CAJA#######
 @api_view(['GET'])
 def get_cierres_caja(request):
     """obtenemos la lista de los cierres de caja"""
@@ -121,3 +136,45 @@ def delete_cierre_caja(request,pk):
     cierre_caja = Cierre_Caja.objects.get(id=pk)
     cierre_caja.delete()
     return Response({'message':'Cierre Caja Eliminado'},status=status.HTTP_200_OK)
+
+
+
+
+
+####### MEMBRESIAS  ##########
+
+@api_view(['GET'])
+#@permission_classes([IsAuthenticated])
+def get_tienda_membresia(request):
+    print('get_tiend_membresia')
+    tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
+    tienda_membresia = Tienda_Membresia.objects.get(tienda=tienda.id)
+    print(tienda_membresia)
+    if tienda_membresia:
+        serialize = TiendaMembresiaSerializer(tienda_membresia, many=False)
+        return Response(serialize.data)
+    else:
+        return Response({'message':'No se encontró la tienda'}, status=status.HTTP_400_BAD_REQUEST)
+
+
+def comprobar_estado_membresia(tienda_id):
+    '''verificamos el estado de la membresia'''
+
+    suscripcion_tienda = Tienda_Membresia.objects.get(tienda=tienda_id)
+    pendiente_pago = suscripcion_tienda.fecha_vencimiento + datetime.timedelta(days=1)   
+    vencida = pendiente_pago + datetime.timedelta(days=3)
+    if suscripcion_tienda.estado == 'Activa' and datetime.date.today() >= pendiente_pago:
+        suscripcion_tienda.estado = 'Pendiente Pago'
+        suscripcion_tienda.save()
+        return suscripcion_tienda.estado
+    
+    elif suscripcion_tienda.estado == 'Pendiente Pago' and datetime.date.today() >= vencida:
+        suscripcion_tienda.estado = 'Vencida'
+        suscripcion_tienda.save()
+        return suscripcion_tienda.estado
+    
+    else:
+        return suscripcion_tienda.estado
+
+    
+    

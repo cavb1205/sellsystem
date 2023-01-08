@@ -1,6 +1,6 @@
 
 from rest_framework import serializers
-from .models import Tienda, Cierre_Caja
+from .models import Tienda, Cierre_Caja, Tienda_Membresia, Membresia
 
 
 class TiendaCreateSerializer(serializers.ModelSerializer):
@@ -27,6 +27,17 @@ class TiendaSerializer(serializers.ModelSerializer):
 
         }
 
+class MembresiaSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Membresia
+        fields = '__all__'
+
+class TiendaMembresiaSerializer(serializers.ModelSerializer):
+    tienda = TiendaSerializer()
+    membresia = MembresiaSerializer()
+    class Meta:
+        model = Tienda_Membresia
+        fields = '__all__'
 
 class CajaSerializer(serializers.ModelSerializer):
 

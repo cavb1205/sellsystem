@@ -12,7 +12,7 @@ class UserTokenLoginObtainSerializer(TokenObtainPairSerializer):
 class UserLoginSerializer(ModelSerializer):
     class Meta:
         model = User
-        fields = ['id','username','first_name','last_name',]
+        fields = '__all__'#['id','username','first_name','last_name']
 
 class UserSerializer(ModelSerializer):
     class Meta:

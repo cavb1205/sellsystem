@@ -12,9 +12,9 @@ from Trabajadores.models import Perfil
 
 from Trabajadores.serializers import UserCreateSerializer, PerfilSerializer, UserSerializer, UserUpdateSerializer,PerfilCreateSerializer
 from Trabajadores.serializers import UserTokenLoginObtainSerializer,UserLoginSerializer
-from Tiendas.models import Tienda, Cierre_Caja
+from Tiendas.models import Tienda, Cierre_Caja, Tienda_Membresia, Membresia
 from Tiendas.serializers import TiendaCreateSerializer
-
+from Tiendas.views import comprobar_estado_membresia
 ##### LOGIN #####
 
 class Login(TokenObtainPairView):
@@ -30,16 +30,18 @@ class Login(TokenObtainPairView):
 
         if user:
             perfil = Perfil.objects.get(trabajador=user.id)
-            print(perfil)
+            
             login_serializer = self.serializer_class(data=request.data)
             if login_serializer.is_valid():
                 user_serializer = UserLoginSerializer(user)
                 perfil_serializer = PerfilSerializer(perfil)
+                membresia = comprobar_estado_membresia(perfil.tienda.id)
                 return Response({
                     'token': login_serializer.validated_data['access'],
                     'refresh': login_serializer.validated_data['refresh'],
                     'user': user_serializer.data,
                     'perfil':perfil_serializer.data,
+                    'membresia': membresia,
                 }, status=status.HTTP_200_OK)
             return Response({'error':'Usuario o contraseña incorrectos.'},status=status.HTTP_400_BAD_REQUEST)
         return Response({'error':'Usuario o contraseña incorrectos.'},status=status.HTTP_400_BAD_REQUEST)
@@ -167,7 +169,7 @@ def register_user(request):
     if serializer.is_valid():
         user = serializer.save()
         user.set_password(request.data['password'])
-        user.is_superuser = True
+        user.is_staff = True
         user.save()
 
         tienda_data = {
@@ -178,7 +180,14 @@ def register_user(request):
         if serializer_tienda.is_valid():
             tienda = serializer_tienda.save()
             Cierre_Caja.objects.create(tienda=tienda, valor=tienda.caja_inicial, fecha_cierre=(datetime.date.today() - datetime.timedelta(days=1)))
-            
+            Tienda_Membresia.objects.create(
+                tienda=tienda, 
+                membresia=Membresia.objects.get(nombre='Prueba'), 
+                fecha_activacion=datetime.date.today(),
+                fecha_vencimiento=(datetime.date.today() + datetime.timedelta(days=7)),
+                estado='Activa'
+                )
+                
             perfil_data = {
                 'trabajador':user.id,
                 'tienda':tienda.id
