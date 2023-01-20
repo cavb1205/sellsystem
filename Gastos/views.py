@@ -72,7 +72,7 @@ def delete_tipo_gasto(request, pk):
 def list_gastos(request):
     '''obtenemos todos los gastos'''
     tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
-    gastos = Gasto.objects.filter(tienda=tienda.id)
+    gastos = Gasto.objects.filter(tienda=tienda.id).order_by('-id')
     if gastos:
         gasto_serializer = GastoDetailSerializer(gastos, many=True)
         return Response(gasto_serializer.data, status=status.HTTP_200_OK)
