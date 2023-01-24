@@ -27,6 +27,7 @@ class VentaDetailSerializer(ModelSerializer):
             'plazo','comentario','estado_venta','tienda','total_a_pagar',
             'valor_cuota','saldo_actual','pagos_pendientes','pagos_realizados',
             'fecha_vencimiento','total_abonado','promedio_pago','dias_atrasados',
+            'perdida',
             )
 
     def to_representarion(self, instance):
@@ -50,5 +51,5 @@ class VentaDetailSerializer(ModelSerializer):
             'total_abonado':instance.total_abonado(),
             'promedio_pago':instance.promedio_pago(),
             'dias_atrasados': instance.dias_atrasados(),
-
+            'perdida':instance.perdida(),
         }

@@ -11,6 +11,7 @@ from Ventas.models import Venta
 from Ventas.serializers import VentaSerializer, VentaDetailSerializer, VentaUpdateSerializer
 from Tiendas.models import Tienda
 from Recaudos.models import Recaudo
+from Clientes.models import Cliente
 
 
 @api_view(['GET'])
@@ -75,6 +76,16 @@ def list_ventas_pagas(request):
         venta_serializer = VentaDetailSerializer(ventas, many=True)
         return Response(venta_serializer.data, status=status.HTTP_200_OK)
     return Response({'message':'No se han creado ventas'}, status=status.HTTP_200_OK)
+
+@api_view(['GET'])
+def list_ventas_perdidas(request): 
+    user = request.user
+    tienda = Tienda.objects.filter(id=user.perfil.tienda.id).first()
+    ventas = Venta.objects.filter(tienda=tienda.id).filter(estado_venta='Perdida')
+    if ventas:
+        venta_serializer = VentaDetailSerializer(ventas, many=True)
+        return Response(venta_serializer.data, status=status.HTTP_200_OK)
+    return Response({'message':'No se encontraron ventas'}, status=status.HTTP_200_OK)
 
 @api_view(['GET'])
 def get_venta(request, pk):
@@ -153,3 +164,22 @@ def delete_venta(request, pk):
         tienda.save()
         return Response({'message':'Venta eliminada correctamente'},status=status.HTTP_200_OK)
     return Response({'message':'No se encontró la venta'}, status=status.HTTP_400_BAD_REQUEST)
+
+
+
+@api_view(['PUT'])
+def perdida_venta(request, pk):
+    print('llamando la funcion de perdida OKOK......')
+    venta = Venta.objects.filter(id=pk).first()
+    tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
+    if venta:
+        cliente = Cliente.objects.get(pk=venta.cliente.id)
+        cliente.estado_cliente = 'Bloqueado'
+        cliente.save()
+        venta.estado_venta = 'Perdida'
+        venta.comentario = 'Venta en pérdida, cliente bloqueado'
+        venta.save()
+        return Response({'message':'Venta enviada como pérdida.'})
+    else:
+        return Response({'message':'No se encontró la venta'}, status=status.HTTP_400_BAD_REQUEST)
+        

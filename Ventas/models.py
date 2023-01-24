@@ -77,3 +77,7 @@ class Venta(models.Model):
         recaudos = venta.recaudo_set.filter(venta=venta.id)
         dias_atrasados = round(((self.valor_cuota() * recaudos.count()) - self.total_abonado()) / self.valor_cuota(),2)
         return dias_atrasados 
+
+    def perdida(self):
+        valor_perdida = int(self.valor_venta) - self.total_abonado()
+        return valor_perdida
