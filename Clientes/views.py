@@ -22,6 +22,17 @@ def list_clientes(request):
         return Response(clientes_serializer.data, status=status.HTTP_200_OK)
     return Response({'message':'No se han creado clientes'}, status=status.HTTP_200_OK)
 
+@api_view(['GET'])
+def list_clientes_activos(request):
+    '''obtenemos todos los clientes activos'''
+    user = request.user
+    tienda = Tienda.objects.filter(id=user.perfil.tienda.id).first()
+    clientes = Cliente.objects.filter(tienda=tienda.id).filter(estado_cliente='Activo').order_by('nombres')
+    if clientes:
+        clientes_serializer = ClienteSerializer(clientes, many=True)
+        return Response(clientes_serializer.data, status=status.HTTP_200_OK)
+    return Response({'message':'No se han creado clientes'}, status=status.HTTP_200_OK)
+
 
 @api_view(['GET'])
 def list_clientes_disponibles(request):
