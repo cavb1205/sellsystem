@@ -79,5 +79,5 @@ class Venta(models.Model):
         return dias_atrasados 
 
     def perdida(self):
-        valor_perdida = int(self.valor_venta) - self.total_abonado()
+        valor_perdida = int(self.saldo_actual) 
         return valor_perdida
