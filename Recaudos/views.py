@@ -73,6 +73,15 @@ def put_recaudo(request, pk):
                 tienda.caja_inicial = tienda.caja_inicial - recaudo.valor_recaudo
                 tienda.caja_inicial = tienda.caja_inicial + recaudo_serializer.validated_data['valor_recaudo']
                 recaudo_serializer.save()
+                recaudos = Recaudo.objects.filter(venta=venta.id)
+                if venta.promedio_pago() >= venta.valor_cuota():
+                    venta.estado_venta = 'Vigente'
+                if venta.promedio_pago() < venta.valor_cuota():
+                    venta.estado_venta = 'Atrasado'
+                if venta.cuotas < recaudos.count():
+                    venta.estado_venta = 'Vencido'
+                if venta.saldo_actual <= 0:
+                    venta.estado_venta = 'Pagado'
                 tienda.save()
                 venta.save()
             else:
