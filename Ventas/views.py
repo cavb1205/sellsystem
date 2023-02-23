@@ -51,7 +51,7 @@ def list_ventas_a_liquidar(request, date ):
     
     ventas = Venta.objects.filter(tienda=tienda.id).exclude(estado_venta='Pagado').exclude(estado_venta='Perdida')
     
-    ventas = ventas.exclude(recaudo__fecha_recaudo=datetime.strptime(date,'%Y-%m-%d')).order_by('id')
+    ventas = ventas.exclude(recaudo__fecha_recaudo=datetime.strptime(date,'%Y-%m-%d')).order_by('id').exclude(fecha_venta=datetime.strptime(date,'%Y-%m-%d'))
     if ventas:
         venta_serializer = VentaDetailSerializer(ventas, many=True)
         return Response(venta_serializer.data, status=status.HTTP_200_OK)
@@ -59,6 +59,7 @@ def list_ventas_a_liquidar(request, date ):
 
 @api_view(['GET'])
 def list_ventas_activas_cliente(request,pk):
+    print('llamada a ventas activas cliente')
     user = request.user
     tienda = Tienda.objects.filter(id=user.perfil.tienda.id).first()
     ventas = Venta.objects.filter(tienda=tienda.id).filter(cliente=pk).order_by('-id')
