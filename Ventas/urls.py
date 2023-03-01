@@ -6,6 +6,7 @@ urlpatterns = [
     
     ### VENTAS ####
     path('', views.list_ventas_all, name='list_ventas_all'),
+    path('list/<str:date>/', views.list_ventas_x_fecha, name='list_ventas_x_fecha'),
     path('activas/', views.list_ventas_activas, name='list_ventas_activas'),
     path('activas/liquidar/<str:date>/', views.list_ventas_a_liquidar, name='list_ventas_activas_liquidar'),
     path('activas/<int:pk>/', views.list_ventas_activas_cliente, name='list_ventas_activas_cliente'),

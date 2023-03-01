@@ -14,6 +14,7 @@ urlpatterns = [
     
     ### GASTOS ####
     path('', views.list_gastos, name='list_gastos'),
+    path('list/<str:date>/', views.list_gastos_x_fecha, name='list_gastos_x_fecha'),
     path('<int:pk>/', views.get_gasto, name='detail_gasto'),
     path('create/', views.post_gasto, name='create_gasto'),
     path('<int:pk>/update/', views.put_gasto, name='update_gasto'),

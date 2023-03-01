@@ -90,7 +90,6 @@ def delete_tienda(request, pk):
 def get_cierres_caja(request):
     """obtenemos la lista de los cierres de caja"""
 
-    print("""obtenemos la lista de los cierres de caja""")
     tienda = Tienda.objects.filter(id= request.user.perfil.tienda.id).first()
     cierres_caja = Cierre_Caja.objects.filter(tienda=tienda.id).order_by('-id')
     if cierres_caja:
@@ -132,7 +131,7 @@ def post_cierre_caja(request,fecha):
 @api_view(['DELETE'])
 def delete_cierre_caja(request,pk):
     '''eliminamos un registro de cierre de caja'''
-    print('ingresa a delete cierre')
+    
     cierre_caja = Cierre_Caja.objects.get(id=pk)
     cierre_caja.delete()
     return Response({'message':'Cierre Caja Eliminado'},status=status.HTTP_200_OK)
@@ -146,10 +145,10 @@ def delete_cierre_caja(request,pk):
 @api_view(['GET'])
 #@permission_classes([IsAuthenticated])
 def get_tienda_membresia(request):
-    print('get_tiend_membresia')
+    
     tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
     tienda_membresia = Tienda_Membresia.objects.get(tienda=tienda.id)
-    print(tienda_membresia)
+    
     if tienda_membresia:
         serialize = TiendaMembresiaSerializer(tienda_membresia, many=False)
         return Response(serialize.data)

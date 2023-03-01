@@ -58,6 +58,18 @@ def list_ventas_a_liquidar(request, date ):
     return Response({'message':'No se han creado ventas'}, status=status.HTTP_200_OK)
 
 @api_view(['GET'])
+def list_ventas_x_fecha(request, date):
+    """obtenemos lista de ventas ingresadas en una fecha determinada"""
+
+    user = request.user
+    tienda = Tienda.objects.filter(id=user.perfil.tienda.id).first()
+    ventas = Venta.objects.filter(tienda=tienda).filter(fecha_venta=date)
+    if ventas:
+        venta_serializer = VentaDetailSerializer(ventas, many=True)
+        return Response(venta_serializer.data, status=status.HTTP_200_OK)
+    return Response({'message':'No se encontraron ventas'}, status=status.HTTP_200_OK)
+
+@api_view(['GET'])
 def list_ventas_activas_cliente(request,pk):
     print('llamada a ventas activas cliente')
     user = request.user

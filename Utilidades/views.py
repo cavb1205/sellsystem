@@ -19,6 +19,16 @@ def list_utilidades(request):
     return Response({'message':'No se han creado utilidades'}, status=status.HTTP_200_OK)
     
     
+@api_view(['GET'])
+def list_utilidades_x_fecha(request, date):
+    '''obtenemos todas las utilidades por fecha'''
+    user = request.user
+    utilidades = Utilidad.objects.filter(tienda=user.perfil.tienda).filter(fecha=date).order_by('-id')
+    if utilidades:
+        utilidad_serializer = UtilidadDetailSerializer(utilidades, many=True)
+        return Response(utilidad_serializer.data, status=status.HTTP_200_OK)
+    return Response({'message':'No se encontraron utilidades'}, status=status.HTTP_200_OK)
+
 
 @api_view(['GET'])
 def get_utilidad(request, pk):

@@ -78,7 +78,15 @@ def list_gastos(request):
         return Response(gasto_serializer.data, status=status.HTTP_200_OK)
     return Response({'message':'No se han creado gastos'}, status=status.HTTP_200_OK)
     
-    
+@api_view(['GET'])
+def list_gastos_x_fecha(request, date):
+    '''obtenemos todos los gastos x fecha'''
+    tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
+    gastos = Gasto.objects.filter(tienda=tienda.id).filter(fecha=date).order_by('-id')
+    if gastos:
+        gasto_serializer = GastoDetailSerializer(gastos, many=True)
+        return Response(gasto_serializer.data, status=status.HTTP_200_OK)
+    return Response({'message':'No se han creado gastos'}, status=status.HTTP_200_OK)
 
 @api_view(['GET'])
 def get_gasto(request, pk):

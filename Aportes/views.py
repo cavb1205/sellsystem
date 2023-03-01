@@ -3,7 +3,7 @@ from typing import OrderedDict
 from urllib import request
 from rest_framework import generics
 
-from datetime import date
+from datetime import datetime, date
 
 from rest_framework import status
 from rest_framework.response import Response
@@ -30,14 +30,17 @@ def list_aportes(request):
          return Response(aporte_serializer.data, status=status.HTTP_200_OK)
     return Response({'message':'No se han creado aportes'}, status=status.HTTP_200_OK)
 
-
-def list_aportes_dia(request):
-    '''obtenemos los aportes del dia actual'''
+@api_view(['GET'])
+def list_aportes_fecha(request, date):
+    '''obtenemos los aportes x fecha'''
 
     user = request.user
-    date_now = date.today()
-    print(date_now)
-    aportes = Aporte.objects.filter(tienda=user.perfil.tienda).filter(fecha=date_now)
+    print(user)
+    tienda = Tienda.objects.filter(id=user.perfil.tienda.id).first()
+    print('ingresa a list aportes por fechaaaaaaaa:')
+    
+    # date = datetime.strptime(date, '%Y-%m-%d')
+    aportes = Aporte.objects.filter(tienda=tienda).filter(fecha=date)
     print(aportes)
     if aportes:
         aporte_serializer = AporteDetailSerializer(aportes, many=True)
