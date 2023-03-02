@@ -19,7 +19,7 @@ class Gasto(models.Model):
 
     fecha = models.DateField(auto_now=False)
     tipo_gasto = models.ForeignKey(Tipo_Gasto, on_delete=models.CASCADE)
-    valor = models.DecimalField(max_digits=10, decimal_places=0)
+    valor = models.DecimalField(max_digits=10, decimal_places=2)
     comentario = models.CharField(max_length=100,null=True, blank=True)
     trabajador = models.ForeignKey(Perfil, on_delete=models.CASCADE)
     tienda = models.ForeignKey(Tienda, on_delete=models.CASCADE)

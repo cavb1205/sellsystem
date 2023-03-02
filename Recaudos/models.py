@@ -28,7 +28,7 @@ class Visita_Blanco(models.Model):
 class Recaudo(models.Model):
 
     fecha_recaudo = models.DateField(auto_now=False)
-    valor_recaudo = models.DecimalField(max_digits=10, decimal_places=0)
+    valor_recaudo = models.DecimalField(max_digits=10, decimal_places=2)
     venta = models.ForeignKey(Venta, on_delete=models.CASCADE)
     tienda = models.ForeignKey(Tienda, on_delete=models.CASCADE)
     visita_blanco = models.ForeignKey(Visita_Blanco, on_delete=models.CASCADE, null=True ,blank=True)

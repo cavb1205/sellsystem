@@ -100,7 +100,7 @@ def post_recaudo(request):
     new_data['tienda']=tienda.id
     
     venta = Venta.objects.get(id = new_data['venta'])
-    
+    print(new_data)
     if request.method == 'POST':
         recaudo_serializer = RecaudoSerializer(data = new_data)
         if recaudo_serializer.is_valid():

@@ -9,7 +9,7 @@ class Tienda(models.Model):
     telefono = models.CharField(max_length=20, blank=True, null=True)
     fecha_registro = models.DateField(auto_now_add=True)
     administrador = models.ForeignKey(User, on_delete=models.CASCADE)
-    caja_inicial = models.DecimalField(max_digits=10,decimal_places=0, default=0)
+    caja_inicial = models.DecimalField(max_digits=10,decimal_places=2, default=0)
     estado = models.BooleanField(default=True)
     
     def __str__(self):

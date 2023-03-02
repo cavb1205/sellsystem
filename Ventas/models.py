@@ -27,13 +27,13 @@ class Venta(models.Model):
 
     fecha_venta = models.DateField(auto_now=False)
     cliente = models.ForeignKey(Cliente, on_delete=models.CASCADE)
-    valor_venta = models.DecimalField(max_digits=10, decimal_places=0)
+    valor_venta = models.DecimalField(max_digits=10, decimal_places=2)
     interes = models.IntegerField(null=False, blank=False, default=20)
     cuotas = models.IntegerField(blank=False,null=False, default=20)
     plazo = models.CharField(max_length=10, choices=Plazo_Venta_Choises, default='Diario')
     comentario = models.CharField(max_length=100, blank=True,)
     estado_venta = models.CharField(max_length=10, choices=Estado_Venta_Choises, default='Vigente')
-    saldo_actual = models.DecimalField(max_digits=10,decimal_places=0, null=True, blank=True)
+    saldo_actual = models.DecimalField(max_digits=10,decimal_places=2, null=True, blank=True)
     fecha_vencimiento = models.DateField(auto_now=False, null=True, blank=True)
     tienda = models.ForeignKey(Tienda,on_delete=models.CASCADE)
 
