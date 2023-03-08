@@ -27,10 +27,8 @@ class Login(TokenObtainPairView):
             username=username,
             password=password
         )
-
         if user:
             perfil = Perfil.objects.get(trabajador=user.id)
-            
             login_serializer = self.serializer_class(data=request.data)
             if login_serializer.is_valid():
                 user_serializer = UserLoginSerializer(user)
@@ -84,6 +82,7 @@ def get_trabajador(request, pk):
                 'telefono': trabajador_serializer.data['telefono'],
                 'direccion': trabajador_serializer.data['direccion'],
                 'is_active':user_serializer.data['is_active'],
+                'is_staff': user_serializer.data['is_staff'],
                 'last_login':user_serializer.data['last_login'],
                 'date_joined':user_serializer.data['date_joined'],
                 'tienda': trabajador_serializer.data['tienda'],
@@ -102,7 +101,8 @@ def put_trabajador(request, pk):
             "username":request.data['username'],
             "first_name":request.data['first_name'],
             "last_name":request.data['last_name'],
-            "is_active":request.data['is_active']
+            "is_active":request.data['is_active'],
+            "is_staff": request.data['is_staff'],
         }
         trabajador_data = {
         'trabajador':user.id,

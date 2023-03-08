@@ -12,7 +12,7 @@ class UserTokenLoginObtainSerializer(TokenObtainPairSerializer):
 class UserLoginSerializer(ModelSerializer):
     class Meta:
         model = User
-        fields = '__all__'#['id','username','first_name','last_name']
+        fields = '__all__'
 
 class UserSerializer(ModelSerializer):
     class Meta:
@@ -29,7 +29,7 @@ class UserCreateSerializer(ModelSerializer):
 class UserUpdateSerializer(ModelSerializer):
     class Meta:
         model = User
-        fields = ['username','first_name','last_name','is_active']
+        fields = ['username','first_name','last_name','is_active','is_staff']
 
 
 class UserUpdatePasswordSerializer(ModelSerializer):
