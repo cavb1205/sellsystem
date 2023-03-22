@@ -35,13 +35,8 @@ def list_aportes_fecha(request, date):
     '''obtenemos los aportes x fecha'''
 
     user = request.user
-    print(user)
     tienda = Tienda.objects.filter(id=user.perfil.tienda.id).first()
-    print('ingresa a list aportes por fechaaaaaaaa:')
-    
-    # date = datetime.strptime(date, '%Y-%m-%d')
     aportes = Aporte.objects.filter(tienda=tienda).filter(fecha=date)
-    print(aportes)
     if aportes:
         aporte_serializer = AporteDetailSerializer(aportes, many=True)
         return Response(aporte_serializer.data, status=status.HTTP_200_OK)
@@ -63,27 +58,17 @@ def get_aporte(request, pk):
 @api_view(['PUT'])
 def put_aporte(request, pk):
     aporte_inicial = Aporte.objects.filter(id=pk).first()
-    
     tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
     if aporte_inicial:
         aporte_serializer = AporteUpdateSerializer(aporte_inicial, data=request.data)
-        if aporte_serializer.is_valid():
-            print('es valido ')
+        if aporte_serializer.is_valid():            
             new_aporte = aporte_serializer.validated_data['valor']
-            if (aporte_inicial.valor <= new_aporte):
-                print('ingresa al primer if')
-                print(new_aporte)
-                print(aporte_inicial.valor)
-                tienda.caja_inicial = tienda.caja_inicial + (new_aporte - aporte_inicial.valor)
-                print('tienda.caja')
-                print(tienda.caja_inicial)
+            if (aporte_inicial.valor <= new_aporte):                        
+                tienda.caja_inicial = tienda.caja_inicial + (new_aporte - aporte_inicial.valor)            
             elif (aporte_inicial.valor >= new_aporte):
-                print('ingresa al else')
                 tienda.caja_inicial = tienda.caja_inicial - (aporte_inicial.valor-new_aporte)
-            
             aporte_serializer.save()
             tienda.save()
-
             return Response(aporte_serializer.data,status=status.HTTP_200_OK)
         return Response(aporte_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     return Response({'message':'No se encontró el aporte'}, status=status.HTTP_400_BAD_REQUEST)

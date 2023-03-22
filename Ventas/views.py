@@ -71,7 +71,7 @@ def list_ventas_x_fecha(request, date):
 
 @api_view(['GET'])
 def list_ventas_activas_cliente(request,pk):
-    print('llamada a ventas activas cliente')
+    
     user = request.user
     tienda = Tienda.objects.filter(id=user.perfil.tienda.id).first()
     ventas = Venta.objects.filter(tienda=tienda.id).filter(cliente=pk).order_by('-id')
@@ -182,7 +182,7 @@ def delete_venta(request, pk):
 
 @api_view(['PUT'])
 def perdida_venta(request, pk):
-    print('llamando la funcion de perdida OKOK......')
+    
     venta = Venta.objects.filter(id=pk).first()
     tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
     if venta:

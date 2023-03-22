@@ -12,6 +12,7 @@ class Tienda(models.Model):
     caja_inicial = models.DecimalField(max_digits=10,decimal_places=2, default=0)
     estado = models.BooleanField(default=True)
     
+    
     def __str__(self):
         return self.nombre
 

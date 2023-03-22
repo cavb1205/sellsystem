@@ -52,7 +52,7 @@ class Login(TokenObtainPairView):
 
 @api_view(['GET'])
 def list_trabajadores(request):
-    print(request.user.is_superuser)
+    
     tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
     
     trabajadores = Perfil.objects.filter(tienda=tienda.id)
@@ -93,7 +93,7 @@ def get_trabajador(request, pk):
 
 @api_view(['PUT'])
 def put_trabajador(request, pk):
-    print('ingresa al update')
+    
     trabajador = Perfil.objects.filter(id=pk).first()
     if trabajador:
         user = User.objects.filter(id=trabajador.trabajador.id).first()
@@ -124,7 +124,7 @@ def put_trabajador(request, pk):
 
 @api_view(['POST'])
 def post_trabajador(request):
-    print('ingresa al post')
+    
     user_data = {
         "username":request.data['username'],
         "first_name":request.data['first_name'],
@@ -216,7 +216,5 @@ def delete_trabajador(request, pk):
 def update_password(request):
     user = request.user
     user.set_password(request.data['passwordNuevo'])
-    print(user.check_password(request.data['passwordNuevo']))
     user.save()
-    print('fin')
     return Response({'message':'Contraseña cambiada con éxito'}, status=status.HTTP_200_OK)

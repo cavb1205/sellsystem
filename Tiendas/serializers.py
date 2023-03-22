@@ -22,6 +22,7 @@ class TiendaSerializer(serializers.ModelSerializer):
             'telefono':instance.telefono,
             'fecha_registro': instance.fecha_registro,
             'administrador':instance.administrador.first_name,
+            'administrador_id': instance.administrador.id,
             'caja':instance.caja_inicial,
             'estado': instance.estado,
             'inversion': instance.inversion(),

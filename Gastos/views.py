@@ -46,9 +46,7 @@ def put_tipo_gasto(request, pk):
 @api_view(['POST'])
 def post_tipo_gasto(request):
     '''creamos un tipo_gasto'''
-    if request.method == 'POST':
-        print('ingresa a post tipo gasto')
-        print(request.data)
+    if request.method == 'POST':        
         tipo_gasto_serializer = TipoGastoSerializer(data = request.data)
         if tipo_gasto_serializer.is_valid():
             tipo_gasto_serializer.save()
@@ -100,13 +98,11 @@ def get_gasto(request, pk):
 
 @api_view(['PUT'])
 def put_gasto(request, pk):
-    print('ingresa a editar gasto')
+    
     tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
     gasto = Gasto.objects.filter(id=pk).first()
     gasto_valor = gasto.valor
     if gasto:
-        print('encuentra el gasto')
-        print(request.data)
         gasto_serializer = GastoUpdateSerializer(gasto, data=request.data)
         
         if gasto_serializer.is_valid():
@@ -129,7 +125,6 @@ def post_gasto(request):
         new_data = request.data
         new_data['tienda']=tienda.id
         new_data['trabajador']=request.user.perfil.id
-        print(new_data)
         gasto_serializer = GastoSerializer(data = new_data)
         if gasto_serializer.is_valid():
             gasto_serializer.save()

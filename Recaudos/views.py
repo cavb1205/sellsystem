@@ -14,11 +14,9 @@ from Ventas.models import Venta
 @api_view(['GET'])
 def list_recaudos(request):
     '''obtenemos todas las recaudos'''
-    print('ingresa a list_recaudos')    
     user = request.user
     tienda = Tienda.objects.filter(id=user.perfil.tienda.id).first()
     recaudos = Recaudo.objects.filter(tienda=tienda.id)
-    print('lista de recaudos')
     if recaudos:
         recaudo_serializer = RecaudoDetailSerializer(recaudos, many=True)
         return Response(recaudo_serializer.data, status=status.HTTP_200_OK)
@@ -27,7 +25,7 @@ def list_recaudos(request):
 @api_view(['GET'])
 def list_recaudos_fecha(request, date):
     '''obtenemos todas las recaudos'''
-    print(date)
+
     user = request.user
     tienda = Tienda.objects.filter(id=user.perfil.tienda.id).first()
     recaudos = Recaudo.objects.filter(tienda=tienda.id).filter(fecha_recaudo=date)
@@ -100,7 +98,7 @@ def post_recaudo(request):
     new_data['tienda']=tienda.id
     
     venta = Venta.objects.get(id = new_data['venta'])
-    print(new_data)
+    
     if request.method == 'POST':
         recaudo_serializer = RecaudoSerializer(data = new_data)
         if recaudo_serializer.is_valid():

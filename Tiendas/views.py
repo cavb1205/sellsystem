@@ -6,7 +6,7 @@ from rest_framework import status
 import datetime
 
 from Tiendas.models import Tienda, Cierre_Caja, Tienda_Membresia, Membresia
-from Tiendas.serializers import TiendaSerializer, CajaSerializer, TiendaMembresiaSerializer
+from Tiendas.serializers import TiendaSerializer, CajaSerializer, TiendaMembresiaSerializer, TiendaCreateSerializer
 
 
 ### VIEWS FOR TIENDA  ####
@@ -25,6 +25,18 @@ def list_all_tiendas(request):
         return Response({'message':'No se han creado tiendas'}, status=status.HTTP_200_OK)
     else:
         return Response({'message':'No tiene permisos para acceder a esta vista'},status=status.HTTP_200_OK)
+    
+@api_view(['GET'])
+def list_tiendas_admin(request):
+    '''return list stores for a admin user'''
+
+    user = request.user
+    if user.is_superuser:
+        tiendas = Tienda.objects.filter(administrador=user)
+        if tiendas:            
+            serializer = TiendaSerializer(tiendas, many=True)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+    return Response({'message':'No se encontraron tiendas'}, status=status.HTTP_200_OK)
 
 @api_view(['GET'])
 #@permission_classes([IsAuthenticated])
@@ -43,7 +55,7 @@ def list_tiendas(request):
 @api_view(['GET'])
 #@permission_classes([IsAuthenticated])
 def get_tienda(request):
-    print(request.user)
+    
     tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
     if tienda:
         serialize = TiendaSerializer(tienda, many=False)
@@ -68,9 +80,17 @@ def put_tienda(request, pk):
 def post_tienda(request):
     '''creamos una tienda'''
     if request.method == 'POST':
-        serialize = TiendaSerializer(data = request.data)
+        serialize = TiendaCreateSerializer(data = request.data)
         if serialize.is_valid():
-            serialize.save()
+            tienda = serialize.save()
+            Cierre_Caja.objects.create(tienda=tienda, valor=tienda.caja_inicial, fecha_cierre=(datetime.date.today() - datetime.timedelta(days=1)))
+            Tienda_Membresia.objects.create(
+                tienda=tienda, 
+                membresia=Membresia.objects.get(nombre='Prueba'), 
+                fecha_activacion=datetime.date.today(),
+                fecha_vencimiento=(datetime.date.today() + datetime.timedelta(days=7)),
+                estado='Activa'
+                )
             return Response(serialize.data, status=status.HTTP_200_OK)
         return Response(serialize.errors, status=status.HTTP_400_BAD_REQUEST)
     
@@ -145,10 +165,25 @@ def delete_cierre_caja(request,pk):
 @api_view(['GET'])
 #@permission_classes([IsAuthenticated])
 def get_tienda_membresia(request):
-    
+    '''get info of store and info the acount store'''
+
     tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
-    tienda_membresia = Tienda_Membresia.objects.get(tienda=tienda.id)
-    
+    tienda_membresia = Tienda_Membresia.objects.get(tienda=tienda.id)    
+    if tienda_membresia:
+        serialize = TiendaMembresiaSerializer(tienda_membresia, many=False)
+        return Response(serialize.data)
+    else:
+        return Response({'message':'No se encontró la tienda'}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+#@permission_classes([IsAuthenticated])
+def get_tienda_membresia_admin(request, pk):
+    '''get info of store and info the acount store for a admin user'''
+    print('ingresa al get tienda admin iddd')
+    print(pk)
+    tienda = Tienda.objects.filter(id=pk).first()
+    tienda_membresia = Tienda_Membresia.objects.get(tienda=tienda.id)    
     if tienda_membresia:
         serialize = TiendaMembresiaSerializer(tienda_membresia, many=False)
         return Response(serialize.data)

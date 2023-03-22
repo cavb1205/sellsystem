@@ -7,6 +7,7 @@ urlpatterns = [
     
     ###CLIENTES###
     path('', views.list_clientes , name='list_clientes'),
+    path('tienda/<str:tienda_id>/', views.list_clientes, name='list_clientes_tienda'),
     path('disponibles/', views.list_clientes_disponibles , name='list_clientes_disponibles'),
     path('activos/', views.list_clientes_activos , name='list_clientes_activos'),
     path('<int:pk>/', views.get_cliente, name='detail_cliente'),

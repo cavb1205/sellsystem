@@ -6,8 +6,9 @@ urlpatterns = [
     
     ###TIENDA###
     path('list/', views.list_all_tiendas , name='list_tiendas'),
+    path('list/admin/', views.list_tiendas_admin, name='list_tiendas_admin'),
     path('detail/', views.get_tienda_membresia, name='detail_tienda'),
-    # path('detail/tienda/', views.get_tienda_membresia, name='tienda_membresia'),
+    path('detail/admin/<str:pk>/', views.get_tienda_membresia_admin, name='tienda_membresia_admin'),
     path('create/', views.post_tienda, name='create_tienda'),
     path('<int:pk>/update/', views.put_tienda, name='update_tienda'),
     path('<int:pk>/delete/', views.delete_tienda, name='delete_tienda'),
