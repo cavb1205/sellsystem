@@ -87,10 +87,13 @@ def get_cliente(request, pk):
 
 
 @api_view(['POST'])
-def post_cliente(request):
+def post_cliente(request, tienda_id=None):
     '''creamos un cliente'''
     if request.method == 'POST':
-        tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
+        if tienda_id:
+            tienda = Tienda.objects.filter(id=tienda_id).first()
+        else:
+            tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
         new_data = request.data
         new_data['tienda']=tienda.id
         cliente_serializer = ClienteCreateSerializer(data = new_data)

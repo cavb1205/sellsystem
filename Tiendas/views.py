@@ -107,7 +107,7 @@ def delete_tienda(request, pk):
 
 ####CIERRES DE CAJA#######
 @api_view(['GET'])
-def get_cierres_caja(request):
+def get_cierres_caja(request, tienda_id=None):
     """obtenemos la lista de los cierres de caja"""
 
     tienda = Tienda.objects.filter(id= request.user.perfil.tienda.id).first()
