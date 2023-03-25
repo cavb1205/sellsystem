@@ -51,10 +51,11 @@ class Login(TokenObtainPairView):
 #### CRUD TRABAJADORES #####
 
 @api_view(['GET'])
-def list_trabajadores(request):
-    
-    tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
-    
+def list_trabajadores(request, tienda_id = None):
+    if tienda_id:
+        tienda = Tienda.objects.filter(id=tienda_id).first()    
+    else:    
+        tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
     trabajadores = Perfil.objects.filter(tienda=tienda.id)
     if trabajadores:
         trabajadores_serializer = PerfilSerializer(trabajadores, many = True)
@@ -123,8 +124,7 @@ def put_trabajador(request, pk):
         
 
 @api_view(['POST'])
-def post_trabajador(request):
-    
+def post_trabajador(request, tienda_id = None):
     user_data = {
         "username":request.data['username'],
         "first_name":request.data['first_name'],
@@ -139,17 +139,26 @@ def post_trabajador(request):
         user.set_password(request.data['password'])
         user.save()
 
-        trabajador_data = {
-        'trabajador':user.id,
-        'identificacion':request.data['identificacion'],
-        'telefono':request.data['telefono'],
-        'direccion':request.data['direccion'],
-        'tienda': request.user.perfil.tienda.id
-    }
+        if tienda_id:
+            trabajador_data = {
+            'trabajador':user.id,
+            'identificacion':request.data['identificacion'],
+            'telefono':request.data['telefono'],
+            'direccion':request.data['direccion'],
+            'tienda': tienda_id
+        }
+        else:
+            trabajador_data = {
+            'trabajador':user.id,
+            'identificacion':request.data['identificacion'],
+            'telefono':request.data['telefono'],
+            'direccion':request.data['direccion'],
+            'tienda': request.user.perfil.tienda.id
+        }
+        
         trabajador_serializer = PerfilSerializer(data = trabajador_data)
         if trabajador_serializer.is_valid():
             trabajador_serializer.save()
-
             return Response(trabajador_serializer.data,status=status.HTTP_200_OK)
         else:
             Response(trabajador_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
