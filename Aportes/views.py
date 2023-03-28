@@ -54,9 +54,12 @@ def get_aporte(request, pk):
 
 
 @api_view(['PUT'])
-def put_aporte(request, pk):
+def put_aporte(request, pk, tienda_id=None):
     aporte_inicial = Aporte.objects.filter(id=pk).first()
-    tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
+    if tienda_id:
+        tienda = Tienda.objects.get(id=tienda_id)    
+    else:
+        tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
     if aporte_inicial:
         aporte_serializer = AporteUpdateSerializer(
             aporte_inicial, data=request.data)
@@ -99,9 +102,12 @@ def post_aporte(request, tienda_id=None):
 
 
 @api_view(['DELETE'])
-def delete_aporte(request, pk):
+def delete_aporte(request, pk, tienda_id=None):
     aporte = Aporte.objects.filter(id=pk).first()
-    tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
+    if tienda_id:
+        tienda = Tienda.objects.filter(id=tienda_id).first()
+    else:
+        tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
     if aporte:
         aporte.delete()
         tienda.caja_inicial = tienda.caja_inicial - aporte.valor
