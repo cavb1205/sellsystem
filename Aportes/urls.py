@@ -11,6 +11,7 @@ urlpatterns = [
     path('create/t/<str:tienda_id>/',
          views.post_aporte, name='create_aporte_admin'),
     path('<int:pk>/update/', views.put_aporte, name='update_aporte'),
+    path('<int:pk>/update/t/<str:tienda_id>/', views.put_aporte, name='update_aporte_admin'),
     path('<int:pk>/delete/', views.delete_aporte, name='delete_aporte'),
     path('<int:pk>/delete/t/<str:tienda_id>/', views.delete_aporte, name='delete_aporte_admin'),
 ]
