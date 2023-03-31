@@ -31,8 +31,7 @@ def get_tipo_gasto(request, pk):
 
 
 @api_view(['PUT'])
-def put_tipo_gasto(request, pk):
-    
+def put_tipo_gasto(request, pk, tienda_id=None):
     tipo_gasto = Tipo_Gasto.objects.filter(id=pk).first()
     if tipo_gasto:
         tipo_gasto_serializer = TipoGastoSerializer(tipo_gasto, data=request.data)
@@ -67,9 +66,12 @@ def delete_tipo_gasto(request, pk):
 ######## GASTOS ######
 
 @api_view(['GET'])
-def list_gastos(request):
+def list_gastos(request, tienda_id=None):
     '''obtenemos todos los gastos'''
-    tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
+    if tienda_id:
+        tienda = Tienda.objects.filter(id=tienda_id).first()
+    else:
+        tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
     gastos = Gasto.objects.filter(tienda=tienda.id).order_by('-id')
     if gastos:
         gasto_serializer = GastoDetailSerializer(gastos, many=True)
@@ -77,9 +79,13 @@ def list_gastos(request):
     return Response({'message':'No se han creado gastos'}, status=status.HTTP_200_OK)
     
 @api_view(['GET'])
-def list_gastos_x_fecha(request, date):
+def list_gastos_x_fecha(request, date, tienda_id=None):
     '''obtenemos todos los gastos x fecha'''
-    tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
+
+    if tienda_id:
+        tienda = Tienda.objects.filter(id=tienda_id).first()
+    else:
+        tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
     gastos = Gasto.objects.filter(tienda=tienda.id).filter(fecha=date).order_by('-id')
     if gastos:
         gasto_serializer = GastoDetailSerializer(gastos, many=True)
@@ -97,14 +103,16 @@ def get_gasto(request, pk):
 
 
 @api_view(['PUT'])
-def put_gasto(request, pk):
+def put_gasto(request, pk, tienda_id=None):
     
-    tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
+    if tienda_id:
+        tienda = Tienda.objects.filter(id=tienda_id).first()
+    else:
+        tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
     gasto = Gasto.objects.filter(id=pk).first()
     gasto_valor = gasto.valor
     if gasto:
         gasto_serializer = GastoUpdateSerializer(gasto, data=request.data)
-        
         if gasto_serializer.is_valid():
             if gasto_valor < gasto_serializer.validated_data['valor']:
                 tienda.caja_inicial = tienda.caja_inicial - (gasto_serializer.validated_data['valor']-gasto_valor)
@@ -118,10 +126,14 @@ def put_gasto(request, pk):
         
 
 @api_view(['POST'])
-def post_gasto(request):
+def post_gasto(request, tienda_id=None):
     '''creamos un gasto'''
+
     if request.method == 'POST':
-        tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
+        if tienda_id:
+            tienda = Tienda.objects.filter(id=tienda_id).first()
+        else:
+            tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
         new_data = request.data
         new_data['tienda']=tienda.id
         new_data['trabajador']=request.user.perfil.id
@@ -135,8 +147,11 @@ def post_gasto(request):
     
 
 @api_view(['DELETE'])
-def delete_gasto(request, pk):
-    tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
+def delete_gasto(request, pk, tienda_id=None):
+    if tienda_id:
+        tienda = Tienda.objects.filter(id=tienda_id).first()
+    else:
+        tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
     gasto = Gasto.objects.filter(id=pk).first()
     if gasto:
         gasto.delete()

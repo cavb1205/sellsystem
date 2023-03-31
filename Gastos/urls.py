@@ -14,9 +14,14 @@ urlpatterns = [
     
     ### GASTOS ####
     path('', views.list_gastos, name='list_gastos'),
+    path('t/<str:tienda_id>/', views.list_gastos, name='list_gastos_admin'),
     path('list/<str:date>/', views.list_gastos_x_fecha, name='list_gastos_x_fecha'),
+    path('list/<str:date>/t/<str:tienda_id>/', views.list_gastos_x_fecha, name='list_gastos_x_fecha_admin'),
     path('<int:pk>/', views.get_gasto, name='detail_gasto'),
     path('create/', views.post_gasto, name='create_gasto'),
+    path('create/t/<str:tienda_id>/', views.post_gasto, name='create_gasto_admin'),
     path('<int:pk>/update/', views.put_gasto, name='update_gasto'),
+    path('<int:pk>/update/t/<str:tienda_id>/', views.put_gasto, name='update_gasto_admin'),
     path('<int:pk>/delete/', views.delete_gasto, name='delete_gasto'),
+    path('<int:pk>/delete/t/<str:tienda_id>/', views.delete_gasto, name='delete_gasto_admin'),
 ]
