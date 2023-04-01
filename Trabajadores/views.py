@@ -222,8 +222,11 @@ def delete_trabajador(request, pk):
 
 
 @api_view(['POST'])
-def update_password(request):
-    user = request.user
-    user.set_password(request.data['passwordNuevo'])
-    user.save()
-    return Response({'message':'Contraseña cambiada con éxito'}, status=status.HTTP_200_OK)
+def update_password(request, pk):
+    trabajador = Perfil.objects.filter(id=pk).first()
+    if trabajador:
+        user = User.objects.filter(id=trabajador.trabajador.id).first()
+        user.set_password(request.data['passwordNuevo'])
+        user.save()
+        return Response({'message':'Contraseña cambiada con éxito'}, status=status.HTTP_200_OK)
+    return Response({'message':'No se encontro el trabajador'}, status=status.HTTP_400_BAD_REQUEST)
