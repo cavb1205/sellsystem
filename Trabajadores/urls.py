@@ -11,7 +11,7 @@ urlpatterns = [
     path('create/', views.post_trabajador, name='create_trabajador'),
     path('create/t/<str:tienda_id>/', views.post_trabajador, name='create_trabajador_admin'),
     path('<int:pk>/update/', views.put_trabajador, name='update_trabajador'),
-    path('<int:pk>/delete/', views.delete_trabajador, name='delete_trabajador'),
+    path('<int:pk>/delete/', views.delete_trabajador, name='delete_trabajador'),    
     path('password/<int:pk>/', views.update_password, name='update_password'),
 
    
