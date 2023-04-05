@@ -11,6 +11,7 @@ urlpatterns = [
     path('disponibles/', views.list_clientes_disponibles , name='list_clientes_disponibles'),
     path('disponibles/t/<str:tienda_id>/', views.list_clientes_disponibles , name='list_clientes_disponibles_admin'),
     path('activos/', views.list_clientes_activos , name='list_clientes_activos'),
+    path('activos/t/<str:tienda_id>/', views.list_clientes_activos , name='list_clientes_activos_admin'),
     path('<int:pk>/', views.get_cliente, name='detail_cliente'),
     path('create/', views.post_cliente, name='create_cliente'),
     path('create/t/<str:tienda_id>/', views.post_cliente, name='create_cliente_tienda'),

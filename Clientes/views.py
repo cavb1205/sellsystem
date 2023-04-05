@@ -33,10 +33,13 @@ def list_clientes(request, tienda_id=None):
 
 
 @api_view(['GET'])
-def list_clientes_activos(request):
+def list_clientes_activos(request, tienda_id=None):
     '''obtenemos todos los clientes activos'''
     user = request.user
-    tienda = Tienda.objects.filter(id=user.perfil.tienda.id).first()
+    if tienda_id:
+        tienda = Tienda.objects.filter(id=tienda_id).first()
+    else:
+        tienda = Tienda.objects.filter(id=user.perfil.tienda.id).first()
     clientes = Cliente.objects.filter(tienda=tienda.id).filter(
         estado_cliente='Activo').order_by('nombres')
     if clientes:
