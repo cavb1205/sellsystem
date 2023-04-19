@@ -6,9 +6,11 @@ urlpatterns = [
     
     ### VENTAS ####
     path('list/<str:date>/', views.list_ventas_x_fecha, name='list_ventas_x_fecha'),
+    path('list/<str:date>/t/<str:tienda_id>/', views.list_ventas_x_fecha, name='list_ventas_x_fecha_admin'),
     path('activas/', views.list_ventas_activas, name='list_ventas_activas'),
     path('activas/t/<str:tienda_id>/', views.list_ventas_activas, name='list_ventas_activas_admin'),
     path('activas/liquidar/<str:date>/', views.list_ventas_a_liquidar, name='list_ventas_activas_liquidar'),
+    path('activas/liquidar/<str:date>/t/<str:tienda_id>/', views.list_ventas_a_liquidar, name='list_ventas_activas_liquidar'),
     path('activas/<int:pk>/', views.list_ventas_activas_cliente, name='list_ventas_activas_cliente'),
     path('activas/<int:pk>/t/<str:tienda_id>/', views.list_ventas_activas_cliente, name='list_ventas_activas_cliente_admin'),
     path('perdidas/', views.list_ventas_perdidas, name='list_ventas_perdidas'),

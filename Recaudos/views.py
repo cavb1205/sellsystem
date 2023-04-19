@@ -23,11 +23,14 @@ def list_recaudos(request):
     return Response({'message':'No se han creado recaudos'}, status=status.HTTP_200_OK)
 
 @api_view(['GET'])
-def list_recaudos_fecha(request, date):
+def list_recaudos_fecha(request, date, tienda_id=None):
     '''obtenemos todas las recaudos'''
 
     user = request.user
-    tienda = Tienda.objects.filter(id=user.perfil.tienda.id).first()
+    if tienda_id:
+        tienda = Tienda.objects.filter(id=tienda_id).first()
+    else:
+        tienda = Tienda.objects.filter(id=user.perfil.tienda.id).first()
     recaudos = Recaudo.objects.filter(tienda=tienda.id).filter(fecha_recaudo=date)
     if recaudos:
         recaudo_serializer = RecaudoDetailSerializer(recaudos, many=True)
@@ -58,9 +61,12 @@ def get_recaudo(request, pk):
 
 
 @api_view(['PUT'])
-def put_recaudo(request, pk):
+def put_recaudo(request, pk, tienda_id=None):
     recaudo = Recaudo.objects.filter(id=pk).first()
-    tienda = Tienda.objects.get(id=recaudo.tienda.id)
+    if tienda_id:
+        tienda = Tienda.objects.get(id=tienda_id)
+    else:
+        tienda = Tienda.objects.get(id=recaudo.tienda.id)
     venta = Venta.objects.get(id=recaudo.venta.id)
     if recaudo:
         recaudo_serializer = RecaudoUpdateSerializer(recaudo, data=request.data)
@@ -90,10 +96,13 @@ def put_recaudo(request, pk):
         
 
 @api_view(['POST'])
-def post_recaudo(request):
+def post_recaudo(request, tienda_id=None):
     '''creamos una recaudo'''
     user = request.user
-    tienda = Tienda.objects.filter(id=user.perfil.tienda.id).first()
+    if tienda_id:
+        tienda = Tienda.objects.filter(id=tienda_id).first()
+    else:
+        tienda = Tienda.objects.filter(id=user.perfil.tienda.id).first()
     new_data = request.data
     new_data['tienda']=tienda.id
     
@@ -114,7 +123,6 @@ def post_recaudo(request):
                 venta.estado_venta = 'Vencido'
             if venta.saldo_actual <= 0:
                 venta.estado_venta = 'Pagado'
-            
             tienda.save()
             venta.save()
             return Response(recaudo_serializer.data, status=status.HTTP_200_OK)
@@ -122,10 +130,13 @@ def post_recaudo(request):
     
 
 @api_view(['POST'])
-def post_recaudo_no_pay(request):
+def post_recaudo_no_pay(request, tienda_id=None):
     '''creamos una recaudo'''
     user = request.user
-    tienda = Tienda.objects.filter(id=user.perfil.tienda.id).first()
+    if tienda_id:
+        tienda = Tienda.objects.filter(id=tienda_id).first()
+    else:
+        tienda = Tienda.objects.filter(id=user.perfil.tienda.id).first()
     new_data = request.data
     visita_blanco = new_data['visita_blanco']
     
@@ -166,11 +177,10 @@ def delete_recaudo(request, pk):
     tienda = Tienda.objects.get(id=recaudo.tienda.id)
     venta = Venta.objects.get(id=recaudo.venta.id)
     if recaudo:
-        
         tienda.caja_inicial = tienda.caja_inicial - recaudo.valor_recaudo
         venta.saldo_actual = venta.saldo_actual + recaudo.valor_recaudo
         recaudos = Recaudo.objects.filter(venta=venta.id)
-        
+        recaudo.delete()        
         if venta.promedio_pago() >= venta.valor_cuota():
             venta.estado_venta = 'Vigente'
         elif venta.promedio_pago() < venta.valor_cuota():
@@ -179,7 +189,6 @@ def delete_recaudo(request, pk):
             venta.estado_venta = 'Vencido'
         elif venta.saldo_actual <= 0:
             venta.estado_venta = 'Pagado'
-        recaudo.delete()
         tienda.save()
         venta.save()
         return Response({'message':'Recaudo eliminado correctamente'},status=status.HTTP_200_OK)

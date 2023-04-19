@@ -7,7 +7,8 @@ urlpatterns = [
     ### UTILIDADES ####
     path('', views.list_utilidades, name='list_utilidades'),
     path('t/<str:tienda_id>/', views.list_utilidades, name='list_utilidades_admin'),
-    path('list/<str:date>/', views.list_utilidades_x_fecha),
+    path('list/<str:date>/', views.list_utilidades_x_fecha, name='list_utilidades_fecha'),
+    path('list/<str:date>/t/<str:tienda_id>/', views.list_utilidades_x_fecha, name='list_utilidades_fecha_admin'),
     path('<int:pk>/', views.get_utilidad, name='detail_utilidad'),
     path('create/', views.post_utilidad, name='create_utilidad'),
     path('create/t/<str:tienda_id>/', views.post_utilidad, name='create_utilidad_admin'),

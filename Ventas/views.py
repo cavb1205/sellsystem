@@ -32,11 +32,14 @@ def list_ventas_activas(request, tienda_id=None):
 
 
 @api_view(['GET'])
-def list_ventas_a_liquidar(request, date):
+def list_ventas_a_liquidar(request, date, tienda_id=None):
     '''obtenemos todas las ventas'''
 
     user = request.user
-    tienda = Tienda.objects.filter(id=user.perfil.tienda.id).first()
+    if tienda_id:
+        tienda = Tienda.objects.filter(id=tienda_id).first()
+    else:
+        tienda = Tienda.objects.filter(id=user.perfil.tienda.id).first()
 
     ventas = Venta.objects.filter(tienda=tienda.id).exclude(
         estado_venta='Pagado').exclude(estado_venta='Perdida')
@@ -50,11 +53,14 @@ def list_ventas_a_liquidar(request, date):
 
 
 @api_view(['GET'])
-def list_ventas_x_fecha(request, date):
+def list_ventas_x_fecha(request, date, tienda_id=None):
     """obtenemos lista de ventas ingresadas en una fecha determinada"""
 
     user = request.user
-    tienda = Tienda.objects.filter(id=user.perfil.tienda.id).first()
+    if tienda_id:
+        tienda = Tienda.objects.filter(id=tienda_id).first()
+    else:
+        tienda = Tienda.objects.filter(id=user.perfil.tienda.id).first()
     ventas = Venta.objects.filter(tienda=tienda).filter(fecha_venta=date)
     if ventas:
         venta_serializer = VentaDetailSerializer(ventas, many=True)

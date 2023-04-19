@@ -21,9 +21,9 @@ def list_aportes(request, tienda_id=None):
 
     user = request.user
     if tienda_id:
-        aportes = Aporte.objects.filter(tienda=tienda_id)
+        aportes = Aporte.objects.filter(tienda=tienda_id).order_by('-id')
     else:
-        aportes = Aporte.objects.filter(tienda=user.perfil.tienda)
+        aportes = Aporte.objects.filter(tienda=user.perfil.tienda).order_by('-id')
     if aportes:
         aporte_serializer = AporteDetailSerializer(aportes, many=True)
         return Response(aporte_serializer.data, status=status.HTTP_200_OK)
@@ -31,11 +31,14 @@ def list_aportes(request, tienda_id=None):
 
 
 @api_view(['GET'])
-def list_aportes_fecha(request, date):
+def list_aportes_fecha(request, date, tienda_id=None):
     '''obtenemos los aportes x fecha'''
 
     user = request.user
-    tienda = Tienda.objects.filter(id=user.perfil.tienda.id).first()
+    if tienda_id:
+        tienda = Tienda.objects.filter(id=tienda_id).first()
+    else:
+        tienda = Tienda.objects.filter(id=user.perfil.tienda.id).first()
     aportes = Aporte.objects.filter(tienda=tienda).filter(fecha=date)
     if aportes:
         aporte_serializer = AporteDetailSerializer(aportes, many=True)

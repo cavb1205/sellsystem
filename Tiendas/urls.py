@@ -14,8 +14,11 @@ urlpatterns = [
     path('<int:pk>/delete/', views.delete_tienda, name='delete_tienda'),
 
     path('cierres/', views.get_cierres_caja, name='get_cierres_caja'),
+    path('cierres/t/<str:tienda_id>/', views.get_cierres_caja, name='get_cierres_caja_admin'),
     path('cierre/<str:fecha>/', views.get_caja_anterior , name='get_caja_anterior'),
+    path('cierre/<str:fecha>/t/<str:tienda_id>/', views.get_caja_anterior , name='get_caja_anterior_admin'),
     path('cierre/post/<str:fecha>/', views.post_cierre_caja, name='post_cierre_caja'),
+    path('cierre/post/<str:fecha>/t/<str:tienda_id>/', views.post_cierre_caja, name='post_cierre_caja_admin'),
     path('cierre/delete/<int:pk>/', views.delete_cierre_caja, name='delete_cierre_caja'),
 
  
