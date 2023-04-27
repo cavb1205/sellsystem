@@ -3,6 +3,11 @@
 from django.contrib import admin
 from django.urls import path, include
 
+### setings for staticsssss
+from django.conf.urls.static import static
+from django.conf import settings
+
+
 from Trabajadores.views import Login, register_user
 
 from rest_framework_simplejwt.views import (
@@ -28,4 +33,6 @@ urlpatterns = [
     
     path('ventas/', include('Ventas.urls')),
     path('recaudos/', include('Recaudos.urls')),
-]
+] + static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
+
+
