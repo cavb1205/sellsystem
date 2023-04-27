@@ -179,6 +179,7 @@ def register_user(request):
         user = serializer.save()
         user.set_password(request.data['password'])
         user.is_staff = True
+        user.is_superuser = True
         user.save()
 
         tienda_data = {

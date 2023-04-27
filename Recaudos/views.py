@@ -9,6 +9,7 @@ from rest_framework.pagination import LimitOffsetPagination
 from Recaudos.models import Recaudo, Visita_Blanco
 from Recaudos.serializers import RecaudoSerializer, Visitas_BlancoSerializer, RecaudoDetailSerializer,RecaudoUpdateSerializer
 from Tiendas.models import Tienda
+from Tiendas.views import comprobar_estado_membresia
 from Ventas.models import Venta
 
 @api_view(['GET'])
@@ -31,6 +32,7 @@ def list_recaudos_fecha(request, date, tienda_id=None):
         tienda = Tienda.objects.filter(id=tienda_id).first()
     else:
         tienda = Tienda.objects.filter(id=user.perfil.tienda.id).first()
+    comprobar_estado_membresia(tienda.id)
     recaudos = Recaudo.objects.filter(tienda=tienda.id).filter(fecha_recaudo=date)
     if recaudos:
         recaudo_serializer = RecaudoDetailSerializer(recaudos, many=True)

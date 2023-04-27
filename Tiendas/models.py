@@ -190,7 +190,6 @@ class Cierre_Caja(models.Model):
 
 
 
-
 #suscripcion
 
 class Membresia(models.Model):
@@ -212,7 +211,7 @@ class Tienda_Membresia(models.Model):
     estado_choices = (
         ('Activa','Activa'),
         ('Vencida','Vencida'),
-        ('Pendiente Pago','Pendiente Pago')
+        ('Pendiente Pago','Pendiente Pago') ## si se vence el tiempo pasa a este por 3 dias si no se paga se bloquea
     )
     tienda = models.OneToOneField(Tienda, on_delete=models.CASCADE, 
                                     null=False, blank=False)

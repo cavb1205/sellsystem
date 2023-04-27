@@ -21,7 +21,8 @@ urlpatterns = [
     path('cierre/post/<str:fecha>/t/<str:tienda_id>/', views.post_cierre_caja, name='post_cierre_caja_admin'),
     path('cierre/delete/<int:pk>/', views.delete_cierre_caja, name='delete_cierre_caja'),
 
- 
+    path('activate/mounth/<str:pk>/', views.activar_membresia_mensual, name='activar_membresia_mensual'),
+    path('activate/year/<str:pk>/', views.activar_membresia_ano, name='activar_membresia_ano'),
 ]
 
 

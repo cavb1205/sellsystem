@@ -17,10 +17,10 @@ def list_all_tiendas(request):
     '''obtenemos todas las tiendas'''
 
     user = request.user
-    if user.is_superuser:
-        tiendas = Tienda.objects.all()
+    if user.username == 'root':
+        tiendas = Tienda_Membresia.objects.all().order_by('fecha_vencimiento')
         if tiendas:
-            serializer = TiendaSerializer(tiendas, many=True)
+            serializer = TiendaMembresiaSerializer(tiendas, many=True)
             return Response(serializer.data, status=status.HTTP_200_OK)
         return Response({'message': 'No se han creado tiendas'}, status=status.HTTP_200_OK)
     else:
@@ -192,8 +192,7 @@ def get_tienda_membresia(request):
 # @permission_classes([IsAuthenticated])
 def get_tienda_membresia_admin(request, pk):
     '''get info of store and info the acount store for a admin user'''
-    print('ingresa al get tienda admin iddd')
-    print(pk)
+    
     tienda = Tienda.objects.filter(id=pk).first()
     tienda_membresia = Tienda_Membresia.objects.get(tienda=tienda.id)
     if tienda_membresia:
@@ -202,23 +201,50 @@ def get_tienda_membresia_admin(request, pk):
     else:
         return Response({'message': 'No se encontró la tienda'}, status=status.HTTP_400_BAD_REQUEST)
 
+@api_view(['GET'])
+def activar_membresia_mensual(request, pk):
+    '''get store and activate membershi for a mounth + 30 days'''
+    print('ingresa a activar por messsss')
+    tienda = Tienda_Membresia.objects.get(id=pk)
+    if tienda:
+        tienda.estado = 'Activa'
+        tienda.membresia = Membresia.objects.get(nombre='Mensual')
+        tienda.fecha_activacion = datetime.date.today()
+        tienda.fecha_vencimiento = tienda.fecha_activacion + datetime.timedelta(days=30)
+        tienda.save()
+        return Response({'message':'Suscripción Mensual Activa'}, status=status.HTTP_200_OK)
+    else:
+        return Response({'message': 'No se encontró la tienda'}, status=status.HTTP_400_BAD_REQUEST)
+    
+@api_view(['GET'])
+def activar_membresia_ano(request, pk):
+    '''get store and activate membershi for a year + 365 days'''
+    tienda = Tienda_Membresia.objects.get(id=pk)
+    if tienda:
+        tienda.estado = 'Activa'
+        tienda.membresia = Membresia.objects.get(nombre='Anual')
+        tienda.fecha_activacion = datetime.date.today()
+        tienda.fecha_vencimiento = tienda.fecha_activacion + datetime.timedelta(days=365)
+        tienda.save()
+        return Response({'message':'Suscripción Anual Activa'}, status=status.HTTP_200_OK)
+    else:
+        return Response({'message': 'No se encontró la tienda'}, status=status.HTTP_400_BAD_REQUEST)
 
 def comprobar_estado_membresia(tienda_id):
     '''verificamos el estado de la membresia'''
-
+    print('ingresa a comprobar membresia ')
+    print(tienda_id)
     suscripcion_tienda = Tienda_Membresia.objects.get(tienda=tienda_id)
     pendiente_pago = suscripcion_tienda.fecha_vencimiento + \
         datetime.timedelta(days=1)
-    vencida = pendiente_pago + datetime.timedelta(days=3)
+    vencida = pendiente_pago + datetime.timedelta(days=2)
     if suscripcion_tienda.estado == 'Activa' and datetime.date.today() >= pendiente_pago:
+        print('es activa')
         suscripcion_tienda.estado = 'Pendiente Pago'
         suscripcion_tienda.save()
-        return suscripcion_tienda.estado
 
-    elif suscripcion_tienda.estado == 'Pendiente Pago' and datetime.date.today() >= vencida:
+    if suscripcion_tienda.estado == 'Pendiente Pago' and datetime.date.today() >= vencida:
+        print('espendiente pago')
         suscripcion_tienda.estado = 'Vencida'
         suscripcion_tienda.save()
-        return suscripcion_tienda.estado
 
-    else:
-        return suscripcion_tienda.estado
