@@ -12,9 +12,9 @@ def list_utilidades(request, tienda_id=None):
     '''obtenemos todas las utilidads'''
     user = request.user
     if tienda_id:
-        utilidades = Utilidad.objects.filter(tienda=tienda_id)
+        utilidades = Utilidad.objects.filter(tienda=tienda_id).order_by('-id')
     else:
-        utilidades = Utilidad.objects.filter(tienda=user.perfil.tienda)
+        utilidades = Utilidad.objects.filter(tienda=user.perfil.tienda).order_by('-id')
     if utilidades:
         utilidad_serializer = UtilidadDetailSerializer(utilidades, many=True)
         return Response(utilidad_serializer.data, status=status.HTTP_200_OK)
