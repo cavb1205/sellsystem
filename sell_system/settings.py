@@ -31,6 +31,9 @@ if DEBUG == True:
 else:
     ALLOWED_HOSTS = ['*','137.184.176.199']
 
+if DEBUG == False:
+    CSRF_TRUSTED_ORIGINS = ['https://*.carterafinanciera.com']
+
 
 # Application definition
 
