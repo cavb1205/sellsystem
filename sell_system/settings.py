@@ -29,9 +29,10 @@ DEBUG = False
 if DEBUG == True:
     ALLOWED_HOSTS = ['137.184.176.199','192.168.1.160','localhost','*']
 else:
-    ALLOWED_HOSTS = ['*','137.184.176.199']
+    ALLOWED_HOSTS = ['*','137.184.176.199','https://api.carterafinanciera.com']
 
-
+if DEBUG == False:
+    CSRF_TRUSTED_ORIGINS = ['https://*.carterafinanciera.com']
 # Application definition
 
 BASE_APPS = [
@@ -157,7 +158,8 @@ USE_TZ = True
 
 STATIC_URL = '/static/'
 
-STATIC_ROOT = BASE_DIR / 'static/'
+STATIC_ROOT = '/var/www/html/django-static/'
+
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/4.0/ref/settings/#default-auto-field
