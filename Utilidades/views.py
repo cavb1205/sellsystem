@@ -9,7 +9,7 @@ from Utilidades.serializers import UtilidadSerializer, UtilidadDetailSerializer,
 
 @api_view(['GET'])
 def list_utilidades(request, tienda_id=None):
-    '''obtenemos todas las utilidads'''
+    '''obtenemos todas las utilidades'''
     user = request.user
     if tienda_id:
         utilidades = Utilidad.objects.filter(tienda=tienda_id).order_by('-id')

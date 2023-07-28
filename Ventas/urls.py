@@ -7,6 +7,8 @@ urlpatterns = [
     ### VENTAS ####
     path('list/<str:date>/', views.list_ventas_x_fecha, name='list_ventas_x_fecha'),
     path('list/<str:date>/t/<str:tienda_id>/', views.list_ventas_x_fecha, name='list_ventas_x_fecha_admin'),
+    path('list/<str:date1>/<str:date2>/', views.list_ventas_x_fecha_range, name='list_ventas_x_fecha_range'),
+    path('list/<str:date1>/<str:date2>/t/<str:tienda_id>/', views.list_ventas_x_fecha_range, name='list_ventas_x_fecha_range_admin'),
     path('activas/', views.list_ventas_activas, name='list_ventas_activas'),
     path('activas/t/<str:tienda_id>/', views.list_ventas_activas, name='list_ventas_activas_admin'),
     path('activas/liquidar/<str:date>/', views.list_ventas_a_liquidar, name='list_ventas_activas_liquidar'),

@@ -45,6 +45,21 @@ def list_aportes_fecha(request, date, tienda_id=None):
         return Response(aporte_serializer.data, status=status.HTTP_200_OK)
     return Response({'message': 'No se encontraron aportes'}, status=status.HTTP_200_OK)
 
+@api_view(['GET'])
+def list_aportes_fecha_range(request, date1, date2, tienda_id=None):
+    '''obtenemos los aportes x rango de fechas'''
+
+    user = request.user
+    if tienda_id:
+        tienda = Tienda.objects.filter(id=tienda_id).first()
+    else:
+        tienda = Tienda.objects.filter(id=user.perfil.tienda.id).first()
+    aportes = Aporte.objects.filter(tienda=tienda).filter(fecha__range=[date1, date2])
+    if aportes:
+        aporte_serializer = AporteDetailSerializer(aportes, many=True)
+        return Response(aporte_serializer.data, status=status.HTTP_200_OK)
+    return Response({'message': 'No se encontraron aportes'}, status=status.HTTP_200_OK)
+
 
 @api_view(['GET'])
 def get_aporte(request, pk):

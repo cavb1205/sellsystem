@@ -67,6 +67,21 @@ def list_ventas_x_fecha(request, date, tienda_id=None):
         return Response(venta_serializer.data, status=status.HTTP_200_OK)
     return Response({'message': 'No se encontraron ventas'}, status=status.HTTP_200_OK)
 
+@api_view(['GET'])
+def list_ventas_x_fecha_range(request, date1, date2, tienda_id=None):
+    """obtenemos lista de ventas ingresadas en un rango de fechas determinado"""
+
+    user = request.user
+    if tienda_id:
+        tienda = Tienda.objects.filter(id=tienda_id).first()
+    else:
+        tienda = Tienda.objects.filter(id=user.perfil.tienda.id).first()
+    ventas = Venta.objects.filter(tienda=tienda).filter(fecha_venta__range=[date1, date2])
+    if ventas:
+        venta_serializer = VentaDetailSerializer(ventas, many=True)
+        return Response(venta_serializer.data, status=status.HTTP_200_OK)
+    return Response({'message': 'No se encontraron ventas'}, status=status.HTTP_200_OK)
+
 
 @api_view(['GET'])
 def list_ventas_activas_cliente(request, pk, tienda_id=None):
