@@ -4,9 +4,10 @@ from rest_framework.response import Response
 from rest_framework import status
 
 import datetime
+from itertools import chain
 
-from Tiendas.models import Tienda, Cierre_Caja, Tienda_Membresia, Membresia
-from Tiendas.serializers import TiendaSerializer, CajaSerializer, TiendaMembresiaSerializer, TiendaCreateSerializer
+from Tiendas.models import Tienda, Cierre_Caja, Tienda_Membresia, Membresia, Tienda_Administrador
+from Tiendas.serializers import TiendaSerializer, CajaSerializer, TiendaMembresiaSerializer, TiendaCreateSerializer, TiendaAdminSerializer
 
 
 ### VIEWS FOR TIENDA  ####
@@ -95,6 +96,9 @@ def post_tienda(request):
                                    datetime.timedelta(days=7)),
                 estado='Activa'
             )
+            Tienda_Administrador.objects.create(
+                tienda=tienda, administrador=request.user)
+                
             return Response(serialize.data, status=status.HTTP_200_OK)
         return Response(serialize.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -107,6 +111,19 @@ def delete_tienda(request, pk):
         return Response({'message': 'Tienda eliminada correctamente'}, status=status.HTTP_200_OK)
     return Response({'message': 'No se encontró la tienda'}, status=status.HTTP_400_BAD_REQUEST)
 
+@api_view(['GET'])
+def get_tiendas_admin(request):
+    '''return list stores for a admin user'''
+
+    user = request.user
+    print(user)
+    if user.is_staff:
+        tiendas = list(Tienda_Administrador.objects.filter(administrador=user))
+        
+        if tiendas:
+            serializer = TiendaAdminSerializer(tiendas, many=True)            
+            return Response(serializer.data, status=status.HTTP_200_OK)
+    return Response({'message': 'No se encontraron tiendas'}, status=status.HTTP_200_OK)
 ### END VIEWS FOR TIENDA  ####
 
 #### CIERRES DE CAJA#######
@@ -170,6 +187,7 @@ def delete_cierre_caja(request, pk):
     cierre_caja = Cierre_Caja.objects.get(id=pk)
     cierre_caja.delete()
     return Response({'message': 'Cierre Caja Eliminado'}, status=status.HTTP_200_OK)
+
 
 
 ####### MEMBRESIAS  ##########
