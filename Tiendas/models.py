@@ -188,6 +188,13 @@ class Cierre_Caja(models.Model):
     def __str__(self):
         return str(self.fecha_cierre)
 
+class Tienda_Administrador(models.Model):
+    tienda = models.ForeignKey(Tienda, on_delete=models.CASCADE)
+    administrador = models.ForeignKey(User, on_delete=models.CASCADE)
+
+    def __str__(self):
+        return str(self.tienda) + ' - ' + str(self.administrador)
+
 
 
 #suscripcion

@@ -1,6 +1,7 @@
 
 from rest_framework import serializers
-from .models import Tienda, Cierre_Caja, Tienda_Membresia, Membresia
+from .models import Tienda, Cierre_Caja, Tienda_Membresia, Membresia, Tienda_Administrador
+from Trabajadores.serializers import UserSerializer, PerfilSerializer
 
 
 class TiendaCreateSerializer(serializers.ModelSerializer):
@@ -46,6 +47,15 @@ class TiendaSerializer(serializers.ModelSerializer):
             'ventas_netas_ano': instance.ventas_netas_ano(),
             'perdidas_ano': instance.perdidas_ano(),
         }
+
+
+class TiendaAdminSerializer(serializers.ModelSerializer):
+    tienda = TiendaSerializer()
+    administrador = UserSerializer()
+
+    class Meta:
+        model = Tienda_Administrador
+        fields = '__all__'
 
 class MembresiaSerializer(serializers.ModelSerializer):
     class Meta:

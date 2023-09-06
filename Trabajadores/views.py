@@ -12,7 +12,7 @@ from Trabajadores.models import Perfil
 
 from Trabajadores.serializers import UserCreateSerializer, PerfilSerializer, UserSerializer, UserUpdateSerializer,PerfilCreateSerializer
 from Trabajadores.serializers import UserTokenLoginObtainSerializer,UserLoginSerializer
-from Tiendas.models import Tienda, Cierre_Caja, Tienda_Membresia, Membresia
+from Tiendas.models import Tienda, Cierre_Caja, Tienda_Membresia, Membresia, Tienda_Administrador
 from Tiendas.serializers import TiendaCreateSerializer
 from Tiendas.views import comprobar_estado_membresia
 ##### LOGIN #####
@@ -197,6 +197,7 @@ def register_user(request):
                 fecha_vencimiento=(datetime.date.today() + datetime.timedelta(days=7)),
                 estado='Activa'
                 )
+            Tienda_Administrador.objects.create(tienda=tienda, administrador=user)
                 
             perfil_data = {
                 'trabajador':user.id,
