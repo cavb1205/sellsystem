@@ -37,15 +37,18 @@ class TiendaSerializer(serializers.ModelSerializer):
             'utilidades_dia': instance.utilidades_dia(),
             'recaudos_dia': instance.recaudos_dia(),
             'ventas_netas_dia': instance.ventas_netas_dia(),
+            'utilidad_estimada_dia': instance.utilidad_estimada_dia(),
             'aportes_mes': instance.aportes_mes(),
             'gastos_mes': instance.gastos_mes(),
             'utilidades_mes': instance.utilidades_mes(),
             'ventas_netas_mes': instance.ventas_netas_mes(),
+            'utilidad_estimada_mes': instance.utilidad_estimada_mes(),
             'aportes_ano': instance.aportes_ano(),
             'gastos_ano': instance.gastos_ano(),
             'utilidades_ano': instance.utilidades_ano(),
             'ventas_netas_ano': instance.ventas_netas_ano(),
             'perdidas_ano': instance.perdidas_ano(),
+            'utilidad_estimada_ano': instance.utilidad_estimada_ano(),
         }
 
 
