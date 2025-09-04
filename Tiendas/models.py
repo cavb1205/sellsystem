@@ -66,6 +66,18 @@ class Tienda(models.Model):
         return self.venta_set.filter(fecha_venta=hoy).aggregate(
             total=Sum('valor_venta'))['total'] or 0
 
+    def utilidad_estimada_dia(self):
+        hoy = date.today()
+        ventas = self.venta_set.filter(fecha_venta=hoy)
+        total_utilidad = 0
+        
+        for venta in ventas:
+            # Calculamos la utilidad estimada para cada venta
+            utilidad_venta = float(venta.valor_venta) * (float(venta.interes) / 100)
+            total_utilidad += utilidad_venta
+            
+        return total_utilidad
+
     ### Calculamos lo correspondiente al mes actual  ####
     def aportes_mes(self):
         hoy = date.today()
@@ -94,6 +106,22 @@ class Tienda(models.Model):
             fecha_venta__year=hoy.year,
             fecha_venta__month=hoy.month
         ).aggregate(total=Sum('valor_venta'))['total'] or 0
+
+    def utilidad_estimada_mes(self):
+        hoy = date.today()
+        ventas = self.venta_set.filter(
+            fecha_venta__year=hoy.year,
+            fecha_venta__month=hoy.month
+        )
+        
+        total_utilidad = 0
+        
+        for venta in ventas:
+            # Calculamos la utilidad estimada para cada venta
+            utilidad_venta = float(venta.valor_venta) * (float(venta.interes) / 100)
+            total_utilidad += utilidad_venta
+            
+        return total_utilidad
 
     ### Calculamos lo correspondiente al año actual ###
     def aportes_ano(self):
@@ -126,6 +154,21 @@ class Tienda(models.Model):
             estado_venta='Perdida',
             fecha_venta__year=hoy.year
         ).aggregate(total=Sum('saldo_actual'))['total'] or 0
+
+    def utilidad_estimada_ano(self):
+            hoy = date.today()
+            ventas = self.venta_set.filter(
+                fecha_venta__year=hoy.year
+            )
+            
+            total_utilidad = 0
+            
+            for venta in ventas:
+                # Calculamos la utilidad estimada para cada venta
+                utilidad_venta = float(venta.valor_venta) * (float(venta.interes) / 100)
+                total_utilidad += utilidad_venta
+                
+            return total_utilidad
         
 class Cierre_Caja(models.Model):
     fecha_cierre = models.DateField(auto_now=False)
