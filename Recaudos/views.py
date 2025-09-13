@@ -44,7 +44,7 @@ def list_recaudos_fecha(request, date, tienda_id=None):
 
 
 @api_view(['GET'])
-def calcular_sueldo_trabajador(request, fecha_inicio, fecha_fin, porcentaje=None, tienda_id=None):
+def calcular_sueldo_trabajador(request, date1, date2, porcentaje=None, tienda_id=None):
     '''
     Calcula el sueldo del trabajador basado en un porcentaje de los recaudos 
     en un rango de fechas específico.
@@ -54,7 +54,7 @@ def calcular_sueldo_trabajador(request, fecha_inicio, fecha_fin, porcentaje=None
     - porcentaje (float): Porcentaje a aplicar (opcional, por defecto 3%)
     '''
     print('ingresa a calcular sueldo')
-    print(fecha_inicio, fecha_fin, porcentaje, tienda_id)
+    print(date1, date2, porcentaje, tienda_id)
     # Determinar la tienda
     if tienda_id:
         tienda = Tienda.objects.filter(id=tienda_id).first()
@@ -67,8 +67,8 @@ def calcular_sueldo_trabajador(request, fecha_inicio, fecha_fin, porcentaje=None
     
     # Convertir strings a objetos date
     try:
-        fecha_inicio = datetime.strptime(fecha_inicio, '%Y-%m-%d').date()
-        fecha_fin = datetime.strptime(fecha_fin, '%Y-%m-%d').date()
+        fecha_inicio = datetime.strptime(date1, '%Y-%m-%d').date()
+        fecha_fin = datetime.strptime(date2, '%Y-%m-%d').date()
     except ValueError:
         return Response({'error': 'Formato de fecha incorrecto. Use YYYY-MM-DD'}, 
                        status=status.HTTP_400_BAD_REQUEST)
