@@ -48,65 +48,90 @@ def calcular_sueldo_trabajador(request, date1, date2, porcentaje=None, tienda_id
     '''
     Calcula el sueldo del trabajador basado en un porcentaje de los recaudos 
     en un rango de fechas específico.
-    Parámetros en endpoint:
-    - fecha_inicio (YYYY-MM-DD): Fecha inicial del rango
-    - fecha_fin (YYYY-MM-DD): Fecha final del rango
-    - porcentaje (float): Porcentaje a aplicar (opcional, por defecto 3%)
     '''
     print('ingresa a calcular sueldo')
     print(date1, date2, porcentaje, tienda_id)
-    # Determinar la tienda
-    if tienda_id:
-        tienda = Tienda.objects.filter(id=tienda_id).first()
-    else:
-        user = request.user
-        tienda = Tienda.objects.filter(id=user.perfil.tienda.id).first()
     
-    if not tienda:
-        return Response({'error': 'Tienda no encontrada'}, status=status.HTTP_400_BAD_REQUEST)
-    
-    # Convertir strings a objetos date
     try:
-        fecha_inicio = datetime.strptime(date1, '%Y-%m-%d').date()
-        fecha_fin = datetime.strptime(date2, '%Y-%m-%d').date()
-    except ValueError:
-        return Response({'error': 'Formato de fecha incorrecto. Use YYYY-MM-DD'}, 
-                       status=status.HTTP_400_BAD_REQUEST)
-    
-    # Validar que fecha_inicio no sea mayor que fecha_fin
-    if fecha_inicio > fecha_fin:
-        return Response({'error': 'fecha_inicio no puede ser mayor que fecha_fin'}, 
-                       status=status.HTTP_400_BAD_REQUEST)
-    
-    # Establecer porcentaje por defecto si no se proporciona
-    if porcentaje is None:
-        porcentaje = 3
-    else:
+        # Determinar la tienda
+        if tienda_id:
+            print(f"Buscando tienda con ID: {tienda_id}")
+            try:
+                tienda_id_int = int(tienda_id)
+                tienda = Tienda.objects.filter(id=tienda_id_int).first()
+                print(f"Tienda encontrada: {tienda}")
+            except ValueError:
+                return Response({'error': 'ID de tienda debe ser un número'}, 
+                               status=status.HTTP_400_BAD_REQUEST)
+        else:
+            user = request.user
+            print(f"Usuario: {user}")
+            if hasattr(user, 'perfil') and hasattr(user.perfil, 'tienda'):
+                tienda = Tienda.objects.filter(id=user.perfil.tienda.id).first()
+                print(f"Tienda del usuario: {tienda}")
+            else:
+                return Response({'error': 'Usuario no tiene tienda asociada'}, 
+                               status=status.HTTP_400_BAD_REQUEST)
+        
+        if not tienda:
+            print("Tienda no encontrada")
+            return Response({'error': 'Tienda no encontrada'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Convertir strings a objetos date
         try:
-            porcentaje = float(porcentaje)
+            fecha_inicio_obj = datetime.strptime(date1, '%Y-%m-%d').date()
+            fecha_fin_obj = datetime.strptime(date2, '%Y-%m-%d').date()
+            print(f"Fechas convertidas: {fecha_inicio_obj} a {fecha_fin_obj}")
         except ValueError:
-            return Response({'error': 'Porcentaje debe ser un número válido'}, 
+            return Response({'error': 'Formato de fecha incorrecto. Use YYYY-MM-DD'}, 
                            status=status.HTTP_400_BAD_REQUEST)
-    
-    # Filtrar recaudos para el rango de fechas
-    recaudos = Recaudo.objects.filter(
-        tienda=tienda.id,
-        fecha_recaudo__range=[fecha_inicio, fecha_fin]
-    )
-    
-    # Calcular total recaudado y sueldo
-    total_recaudado = sum([r.valor_recaudo for r in recaudos])
-    sueldo = total_recaudado * (porcentaje / 100)
-    print('total recaudado', total_recaudado)
-    print('sueldo', sueldo)
-    return Response({
-        'fecha_inicio': fecha_inicio,
-        'fecha_fin': fecha_fin,
-        'total_recaudado': float(total_recaudado),
-        'porcentaje_aplicado': porcentaje,
-        'sueldo_calculado': float(sueldo),
-        'cantidad_recaudos': recaudos.count(),
-    }, status=status.HTTP_200_OK)
+        
+        # Validar que fecha_inicio no sea mayor que fecha_fin
+        if fecha_inicio_obj > fecha_fin_obj:
+            return Response({'error': 'fecha_inicio no puede ser mayor que fecha_fin'}, 
+                           status=status.HTTP_400_BAD_REQUEST)
+        
+        # Establecer porcentaje por defecto si no se proporciona
+        if porcentaje is None:
+            porcentaje_valor = 3.0
+        else:
+            try:
+                porcentaje_valor = float(porcentaje)
+                print(f"Porcentaje convertido: {porcentaje_valor}")
+            except ValueError:
+                return Response({'error': 'Porcentaje debe ser un número válido'}, 
+                               status=status.HTTP_400_BAD_REQUEST)
+        
+        # Filtrar recaudos para el rango de fechas
+        print(f"Filtrando recaudos para tienda {tienda.id} entre {fecha_inicio_obj} y {fecha_fin_obj}")
+        recaudos = Recaudo.objects.filter(
+            tienda=tienda.id,
+            fecha_recaudo__range=[fecha_inicio_obj, fecha_fin_obj]
+        )
+        print(f"Número de recaudos encontrados: {recaudos.count()}")
+        
+        # Calcular total recaudado usando aggregate para evitar problemas con None
+        from django.db.models import Sum
+        total_recaudado = recaudos.aggregate(total=Sum('valor_recaudo'))['total'] or 0
+        print(f'Total recaudado: {total_recaudado}')
+        
+        sueldo = total_recaudado * (porcentaje_valor / 100)
+        print(f'Sueldo calculado: {sueldo}')
+        
+        return Response({
+            'fecha_inicio': fecha_inicio_obj,
+            'fecha_fin': fecha_fin_obj,
+            'total_recaudado': float(total_recaudado),
+            'porcentaje_aplicado': porcentaje_valor,
+            'sueldo_calculado': float(sueldo),
+            'cantidad_recaudos': recaudos.count(),
+        }, status=status.HTTP_200_OK)
+        
+    except Exception as e:
+        print(f"Error inesperado: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return Response({'error': 'Error interno del servidor'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
 @api_view(['GET'])
 def list_recaudos_venta(request, venta_id):
