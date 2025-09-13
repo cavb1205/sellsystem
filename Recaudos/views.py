@@ -12,6 +12,9 @@ from Tiendas.models import Tienda
 from Tiendas.views import comprobar_estado_membresia
 from Ventas.models import Venta
 
+from datetime import datetime
+from django.utils import timezone
+
 @api_view(['GET'])
 def list_recaudos(request):
     '''obtenemos todas las recaudos'''
