@@ -50,6 +50,8 @@ def calcular_sueldo_trabajador(request, fecha_inicio, fecha_fin, porcentaje=None
     - fecha_fin (YYYY-MM-DD): Fecha final del rango
     - porcentaje (float): Porcentaje a aplicar (opcional, por defecto 3%)
     '''
+    print('ingresa a calcular sueldo')
+    print(fecha_inicio, fecha_fin, porcentaje, tienda_id)
     # Determinar la tienda
     if tienda_id:
         tienda = Tienda.objects.filter(id=tienda_id).first()
@@ -92,8 +94,8 @@ def calcular_sueldo_trabajador(request, fecha_inicio, fecha_fin, porcentaje=None
     # Calcular total recaudado y sueldo
     total_recaudado = sum([r.valor_recaudo for r in recaudos])
     sueldo = total_recaudado * (porcentaje / 100)
-    
-    
+    print('total recaudado', total_recaudado)
+    print('sueldo', sueldo)
     return Response({
         'fecha_inicio': fecha_inicio,
         'fecha_fin': fecha_fin,
