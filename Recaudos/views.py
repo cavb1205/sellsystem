@@ -114,8 +114,9 @@ def calcular_sueldo_trabajador(request, date1, date2, porcentaje=None, tienda_id
         from django.db.models import Sum
         total_recaudado = recaudos.aggregate(total=Sum('valor_recaudo'))['total'] or 0
         print(f'Total recaudado: {total_recaudado}')
-        
-        sueldo = total_recaudado * (porcentaje_valor / 100)
+
+        total_recaudado_float = float(total_recaudado)
+        sueldo = total_recaudado_float * (porcentaje_valor / 100)
         print(f'Sueldo calculado: {sueldo}')
         
         return Response({
