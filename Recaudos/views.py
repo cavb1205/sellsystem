@@ -38,6 +38,70 @@ def list_recaudos_fecha(request, date, tienda_id=None):
         recaudo_serializer = RecaudoDetailSerializer(recaudos, many=True)
         return Response(recaudo_serializer.data, status=status.HTTP_200_OK)
     return Response({'message':'No se han creado recaudos'}, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+def calcular_sueldo_trabajador(request, fecha_inicio, fecha_fin, porcentaje=None, tienda_id=None):
+    '''
+    Calcula el sueldo del trabajador basado en un porcentaje de los recaudos 
+    en un rango de fechas específico.
+    Parámetros en endpoint:
+    - fecha_inicio (YYYY-MM-DD): Fecha inicial del rango
+    - fecha_fin (YYYY-MM-DD): Fecha final del rango
+    - porcentaje (float): Porcentaje a aplicar (opcional, por defecto 3%)
+    '''
+    # Determinar la tienda
+    if tienda_id:
+        tienda = Tienda.objects.filter(id=tienda_id).first()
+    else:
+        user = request.user
+        tienda = Tienda.objects.filter(id=user.perfil.tienda.id).first()
+    
+    if not tienda:
+        return Response({'error': 'Tienda no encontrada'}, status=status.HTTP_400_BAD_REQUEST)
+    
+    # Convertir strings a objetos date
+    try:
+        fecha_inicio = datetime.strptime(fecha_inicio, '%Y-%m-%d').date()
+        fecha_fin = datetime.strptime(fecha_fin, '%Y-%m-%d').date()
+    except ValueError:
+        return Response({'error': 'Formato de fecha incorrecto. Use YYYY-MM-DD'}, 
+                       status=status.HTTP_400_BAD_REQUEST)
+    
+    # Validar que fecha_inicio no sea mayor que fecha_fin
+    if fecha_inicio > fecha_fin:
+        return Response({'error': 'fecha_inicio no puede ser mayor que fecha_fin'}, 
+                       status=status.HTTP_400_BAD_REQUEST)
+    
+    # Establecer porcentaje por defecto si no se proporciona
+    if porcentaje is None:
+        porcentaje = 3
+    else:
+        try:
+            porcentaje = float(porcentaje)
+        except ValueError:
+            return Response({'error': 'Porcentaje debe ser un número válido'}, 
+                           status=status.HTTP_400_BAD_REQUEST)
+    
+    # Filtrar recaudos para el rango de fechas
+    recaudos = Recaudo.objects.filter(
+        tienda=tienda.id,
+        fecha_recaudo__range=[fecha_inicio, fecha_fin]
+    )
+    
+    # Calcular total recaudado y sueldo
+    total_recaudado = sum([r.valor_recaudo for r in recaudos])
+    sueldo = total_recaudado * (porcentaje / 100)
+    
+    
+    return Response({
+        'fecha_inicio': fecha_inicio,
+        'fecha_fin': fecha_fin,
+        'total_recaudado': float(total_recaudado),
+        'porcentaje_aplicado': porcentaje,
+        'sueldo_calculado': float(sueldo),
+        'cantidad_recaudos': recaudos.count(),
+    }, status=status.HTTP_200_OK)
     
 @api_view(['GET'])
 def list_recaudos_venta(request, venta_id):
