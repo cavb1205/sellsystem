@@ -10,6 +10,7 @@ urlpatterns = [
     path('list/<int:venta_id>/', views.list_recaudos_venta, name='list_recaudos_venta'),
     path('list/<str:date>/', views.list_recaudos_fecha, name='list_recaudos_fecha'),
     path('list/<str:date>/t/<str:tienda_id>/', views.list_recaudos_fecha, name='list_recaudos_fecha_admin'),
+    path('sueldo/<str:date1>/<str:date2>/<str:porcentaje>/t/<str:tienda_id>/', views.calcular_sueldo_trabajador, name='calcular_sueldo_trabajador'),
     path('<int:pk>/', views.get_recaudo, name='detail_recaudo'),
     path('create/', views.post_recaudo, name='create_recaudo'),
     path('create/t/<str:tienda_id>/', views.post_recaudo, name='create_recaudo_admin'),
