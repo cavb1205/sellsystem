@@ -12,6 +12,7 @@ urlpatterns = [
     path('create/', views.post_tienda, name='create_tienda'),
     path('<int:pk>/update/', views.put_tienda, name='update_tienda'),
     path('<int:pk>/delete/', views.delete_tienda, name='delete_tienda'),
+    path('<int:pk>/admin/remove/', views.remove_tienda_admin, name='remove_tienda_admin'),
     path('list/tiendas/admin/', views.get_tiendas_admin, name='get_tiendas_admin'),
 
     path('cierres/', views.get_cierres_caja, name='get_cierres_caja'),

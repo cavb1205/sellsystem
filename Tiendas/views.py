@@ -111,6 +111,16 @@ def delete_tienda(request, pk):
         return Response({'message': 'Tienda eliminada correctamente'}, status=status.HTTP_200_OK)
     return Response({'message': 'No se encontró la tienda'}, status=status.HTTP_400_BAD_REQUEST)
 
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def remove_tienda_admin(request, pk):
+    '''Remove the Tienda_Administrador link for the current user — does not delete the tienda itself'''
+    rel = Tienda_Administrador.objects.filter(tienda_id=pk, administrador=request.user).first()
+    if rel:
+        rel.delete()
+        return Response({'message': 'Tienda quitada de tu lista'}, status=status.HTTP_200_OK)
+    return Response({'message': 'No se encontró la relación'}, status=status.HTTP_400_BAD_REQUEST)
+
 @api_view(['GET'])
 def get_tiendas_admin(request):
     '''return list stores for a admin user'''
