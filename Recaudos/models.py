@@ -31,7 +31,10 @@ class Recaudo(models.Model):
     valor_recaudo = models.DecimalField(max_digits=10, decimal_places=2)
     venta = models.ForeignKey(Venta, on_delete=models.CASCADE)
     tienda = models.ForeignKey(Tienda, on_delete=models.CASCADE)
-    visita_blanco = models.ForeignKey(Visita_Blanco, on_delete=models.CASCADE, null=True ,blank=True)
+    visita_blanco = models.ForeignKey(Visita_Blanco, on_delete=models.CASCADE, null=True, blank=True)
+    latitud = models.DecimalField(max_digits=10, decimal_places=7, null=True, blank=True)
+    longitud = models.DecimalField(max_digits=10, decimal_places=7, null=True, blank=True)
+    precision_gps = models.FloatField(null=True, blank=True)
 
     def __str__(self):
         return str(self.fecha_recaudo)
