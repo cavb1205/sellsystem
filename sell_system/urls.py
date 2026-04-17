@@ -33,6 +33,7 @@ urlpatterns = [
     
     path('ventas/', include('Ventas.urls')),
     path('recaudos/', include('Recaudos.urls')),
+    path('publicidad/', include('Publicidad.urls')),
 ] + static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
 
 

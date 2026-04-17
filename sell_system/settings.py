@@ -54,6 +54,7 @@ LOCAL_APPS= [
     'Utilidades',
     'Ventas',
     'Recaudos',
+    'Publicidad',
 ]
 
 THIRD_APPS = [
