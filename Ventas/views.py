@@ -44,8 +44,9 @@ def list_ventas_a_liquidar(request, date, tienda_id=None):
     ventas = Venta.objects.filter(tienda=tienda.id).exclude(
         estado_venta='Pagado').exclude(estado_venta='Perdida')
 
-    ventas = ventas.exclude(recaudo__fecha_recaudo=datetime.strptime(
-        date, '%Y-%m-%d')).order_by('id').exclude(fecha_venta=datetime.strptime(date, '%Y-%m-%d'))
+    parsed_date = datetime.strptime(date, '%Y-%m-%d')
+    ventas = ventas.filter(fecha_venta__lt=parsed_date).exclude(
+        recaudo__fecha_recaudo=parsed_date).order_by('id')
     if ventas:
         venta_serializer = VentaDetailSerializer(ventas, many=True)
         return Response(venta_serializer.data, status=status.HTTP_200_OK)
