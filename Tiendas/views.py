@@ -79,6 +79,19 @@ def put_tienda(request, pk):
     return Response({'message': 'No se encontró la tienda'}, status=status.HTTP_400_BAD_REQUEST)
 
 
+@api_view(['PATCH'])
+def patch_tienda_settings(request, pk):
+    tienda = Tienda.objects.filter(id=pk).first()
+    if not tienda:
+        return Response({'message': 'Tienda no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+    allowed = ['prefijo_telefono', 'telefono']
+    for field in allowed:
+        if field in request.data:
+            setattr(tienda, field, request.data[field])
+    tienda.save()
+    return Response({'prefijo_telefono': tienda.prefijo_telefono}, status=status.HTTP_200_OK)
+
+
 @api_view(['POST'])
 def post_tienda(request):
     '''creamos una tienda'''

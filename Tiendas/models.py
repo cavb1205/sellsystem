@@ -7,6 +7,7 @@ from datetime import date
 class Tienda(models.Model):
     nombre = models.CharField(max_length=200)
     telefono = models.CharField(max_length=20, blank=True, null=True)
+    prefijo_telefono = models.CharField(max_length=5, default='56', blank=True)
     fecha_registro = models.DateField(auto_now_add=True)
     administrador = models.ForeignKey(User, on_delete=models.CASCADE)
     caja_inicial = models.DecimalField(max_digits=10, decimal_places=2, default=0)

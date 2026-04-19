@@ -21,6 +21,7 @@ class TiendaSerializer(serializers.ModelSerializer):
             'id':instance.id,
             'nombre':instance.nombre,
             'telefono':instance.telefono,
+            'prefijo_telefono': instance.prefijo_telefono,
             'fecha_registro': instance.fecha_registro,
             'administrador':instance.administrador.first_name,
             'administrador_id': instance.administrador.id,
