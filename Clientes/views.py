@@ -111,7 +111,9 @@ def _calcular_score(cliente_id, tienda_id):
 
         base_historica = max(float(monto_max_todos), ultimo_monto * 1.25)
 
-        if capacidad_cuota > 0:
+        # Solo limitar por capacidad_cuota si el cliente tiene créditos pagados
+        # (suficiente historial real). Sin pagados, usar base histórica directamente.
+        if capacidad_cuota > 0 and creditos_pagados.exists():
             base = min(base_historica, capacidad_cuota) if base_historica > 0 else capacidad_cuota
         else:
             base = base_historica if base_historica > 0 else cupo_minimo
@@ -146,7 +148,8 @@ def _calcular_score(cliente_id, tienda_id):
         factor_vigente = 0.60 if atrasados > 0 else 1.00
 
         cupo_calculado = base * factor_score * factor_recencia * factor_vigente
-        piso = max(cupo_minimo * 0.5, 10000)
+        # Piso anclado al historial real del cliente, no al mínimo de la tienda
+        piso = min(float(monto_max_todos), 10000) if monto_max_todos else 10000
         techo_ref = monto_max if monto_max else monto_max_todos
         techo = float(techo_ref) * 2 if techo_ref else cupo_minimo * 3
 
