@@ -148,12 +148,24 @@ def _calcular_score(cliente_id, tienda_id):
         factor_vigente = 0.60 if atrasados > 0 else 1.00
 
         cupo_calculado = base * factor_score * factor_recencia * factor_vigente
-        # Piso anclado al historial real del cliente, no al mínimo de la tienda
-        piso = min(float(monto_max_todos), 10000) if monto_max_todos else 10000
+
+        # Piso: último crédito pagado (trayectoria reciente), no el máximo histórico
+        piso = float(ultimo_monto) * 0.5 if ultimo_monto > 0 else 0
         techo_ref = monto_max if monto_max else monto_max_todos
         techo = float(techo_ref) * 2 if techo_ref else cupo_minimo * 3
 
-        cupo_recomendado = int(round(max(piso, min(techo, cupo_calculado)) / 1000) * 1000)
+        cupo_bruto = max(piso, min(techo, cupo_calculado))
+
+        # Redondeo proporcional a la escala del crédito
+        if cupo_bruto >= 100000:
+            unidad = 1000
+        elif cupo_bruto >= 10000:
+            unidad = 100
+        elif cupo_bruto >= 1000:
+            unidad = 10
+        else:
+            unidad = 1
+        cupo_recomendado = int(round(cupo_bruto / unidad) * unidad)
 
         justificacion = {
             'base_historica': int(base_historica),
