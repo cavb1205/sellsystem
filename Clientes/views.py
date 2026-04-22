@@ -92,16 +92,29 @@ def _calcular_score(cliente_id, tienda_id):
             if recaudos_exitosos else 0
         )
 
-        cuotas_avg = creditos_pagados.aggregate(Avg('cuotas'))['cuotas__avg'] or 30
+        # Cuotas típicas: preferir créditos pagados, sino todos
+        cuotas_avg = (
+            creditos_pagados.aggregate(Avg('cuotas'))['cuotas__avg']
+            or ventas.aggregate(Avg('cuotas'))['cuotas__avg']
+            or 30
+        )
         capacidad_cuota = promedio_pago_real * float(cuotas_avg)
 
-        # Base histórica
-        monto_max = creditos_pagados.aggregate(Max('valor_venta'))['valor_venta__max'] or 0
-        ultimo_pagado = creditos_pagados.order_by('-fecha_venta').first()
-        ultimo_monto = float(ultimo_pagado.valor_venta) if ultimo_pagado else 0
+        # Base histórica: todos los créditos (no solo pagados)
+        monto_max_todos = ventas.aggregate(Max('valor_venta'))['valor_venta__max'] or 0
+        monto_max_pagados = creditos_pagados.aggregate(Max('valor_venta'))['valor_venta__max'] or 0
+        # Para el techo usamos pagados si existen, sino todos
+        monto_max = monto_max_pagados if monto_max_pagados else monto_max_todos
 
-        base_historica = max(float(monto_max), ultimo_monto * 1.25)
-        base = min(base_historica, capacidad_cuota) if capacidad_cuota > 0 else base_historica
+        ultimo_pagado = creditos_pagados.order_by('-fecha_venta').first()
+        ultimo_monto = float(ultimo_pagado.valor_venta) if ultimo_pagado else float(monto_max_todos)
+
+        base_historica = max(float(monto_max_todos), ultimo_monto * 1.25)
+
+        if capacidad_cuota > 0:
+            base = min(base_historica, capacidad_cuota) if base_historica > 0 else capacidad_cuota
+        else:
+            base = base_historica if base_historica > 0 else cupo_minimo
 
         # Factor por score
         if score >= 80:   factor_score = 1.25
@@ -134,7 +147,8 @@ def _calcular_score(cliente_id, tienda_id):
 
         cupo_calculado = base * factor_score * factor_recencia * factor_vigente
         piso = max(cupo_minimo * 0.5, 10000)
-        techo = float(monto_max) * 2 if monto_max else cupo_minimo * 3
+        techo_ref = monto_max if monto_max else monto_max_todos
+        techo = float(techo_ref) * 2 if techo_ref else cupo_minimo * 3
 
         cupo_recomendado = int(round(max(piso, min(techo, cupo_calculado)) / 1000) * 1000)
 
