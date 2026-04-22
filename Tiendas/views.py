@@ -84,7 +84,7 @@ def patch_tienda_settings(request, pk):
     tienda = Tienda.objects.filter(id=pk).first()
     if not tienda:
         return Response({'message': 'Tienda no encontrada'}, status=status.HTTP_404_NOT_FOUND)
-    allowed = ['prefijo_telefono', 'telefono']
+    allowed = ['prefijo_telefono', 'telefono', 'cupo_minimo_nuevo']
     for field in allowed:
         if field in request.data:
             setattr(tienda, field, request.data[field])

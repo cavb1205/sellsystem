@@ -3,6 +3,8 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.generics import ListAPIView
 from rest_framework.pagination import LimitOffsetPagination
+from django.db.models import Avg, Max
+from datetime import date
 
 from Clientes.models import Cliente
 from Tiendas.models import Tienda
@@ -13,7 +15,7 @@ from Clientes.serializers import ClienteSerializer, ClienteCreateSerializer
 
 
 def _calcular_score(cliente_id, tienda_id):
-    """Calcula el score crediticio (0-100) de un cliente basado en su historial."""
+    """Calcula el score crediticio (0-100) y el cupo recomendado para un cliente."""
     ventas = Venta.objects.filter(cliente_id=cliente_id, tienda_id=tienda_id)
     recaudos = Recaudo.objects.filter(venta__in=ventas)
 
@@ -22,7 +24,6 @@ def _calcular_score(cliente_id, tienda_id):
     total_visitas = pagos + no_pagos
 
     # Componente 1 — tasa de pago (40 pts)
-    # Sin historial de visitas → puntaje neutral 20
     tasa_pago = pagos / total_visitas if total_visitas > 0 else None
     comp_pago = round(tasa_pago * 40, 1) if tasa_pago is not None else 20.0
 
@@ -59,10 +60,104 @@ def _calcular_score(cliente_id, tienda_id):
     else:
         nivel = 'Riesgo'
 
+    # ── Cupo recomendado ──────────────────────────────────────────────────────
+    try:
+        tienda = Tienda.objects.get(id=tienda_id)
+        cupo_minimo = float(tienda.cupo_minimo_nuevo)
+    except Exception:
+        cupo_minimo = 100000.0
+
+    cupo_recomendado = 0
+    justificacion = {}
+
+    if perdidos > 0:
+        cupo_recomendado = 0
+        justificacion = {'razon': 'Cliente con créditos perdidos — cupo bloqueado', 'bloqueado': True}
+    elif vencidos > 0:
+        cupo_recomendado = 0
+        justificacion = {'razon': 'Debe liquidar el crédito vencido antes de recibir nuevo cupo', 'bloqueado': True}
+    elif total_creditos == 0:
+        cupo_recomendado = int(cupo_minimo)
+        justificacion = {'razon': 'Cliente nuevo — cupo inicial configurado por la tienda', 'bloqueado': False}
+    else:
+        creditos_pagados = ventas.filter(estado_venta='Pagado')
+
+        # Capacidad de pago: promedio de los últimos 90 recaudos reales
+        recaudos_exitosos = list(
+            Recaudo.objects.filter(venta__in=ventas, visita_blanco__isnull=True)
+            .order_by('-fecha_recaudo')[:90]
+        )
+        promedio_pago_real = (
+            sum(float(r.valor_recaudo) for r in recaudos_exitosos) / len(recaudos_exitosos)
+            if recaudos_exitosos else 0
+        )
+
+        cuotas_avg = creditos_pagados.aggregate(Avg('cuotas'))['cuotas__avg'] or 30
+        capacidad_cuota = promedio_pago_real * float(cuotas_avg)
+
+        # Base histórica
+        monto_max = creditos_pagados.aggregate(Max('valor_venta'))['valor_venta__max'] or 0
+        ultimo_pagado = creditos_pagados.order_by('-fecha_venta').first()
+        ultimo_monto = float(ultimo_pagado.valor_venta) if ultimo_pagado else 0
+
+        base_historica = max(float(monto_max), ultimo_monto * 1.25)
+        base = min(base_historica, capacidad_cuota) if capacidad_cuota > 0 else base_historica
+
+        # Factor por score
+        if score >= 80:   factor_score = 1.25
+        elif score >= 60: factor_score = 1.00
+        elif score >= 40: factor_score = 0.70
+        else:             factor_score = 0.40
+
+        # Factor por recencia
+        ultima_fecha = (
+            Recaudo.objects.filter(venta__in=ventas, visita_blanco__isnull=True)
+            .order_by('-fecha_recaudo')
+            .values_list('fecha_recaudo', flat=True)
+            .first()
+        )
+        if ultima_fecha is None and ultimo_pagado:
+            ultima_fecha = ultimo_pagado.fecha_venta
+
+        if ultima_fecha:
+            dias = (date.today() - ultima_fecha).days
+            if dias < 90:    factor_recencia = 1.00
+            elif dias < 180: factor_recencia = 0.85
+            elif dias < 365: factor_recencia = 0.70
+            else:            factor_recencia = 0.50
+        else:
+            dias = 0
+            factor_recencia = 1.00
+
+        # Factor por crédito vigente atrasado
+        factor_vigente = 0.60 if atrasados > 0 else 1.00
+
+        cupo_calculado = base * factor_score * factor_recencia * factor_vigente
+        piso = max(cupo_minimo * 0.5, 10000)
+        techo = float(monto_max) * 2 if monto_max else cupo_minimo * 3
+
+        cupo_recomendado = int(round(max(piso, min(techo, cupo_calculado)) / 1000) * 1000)
+
+        justificacion = {
+            'base_historica': int(base_historica),
+            'monto_maximo_pagado': int(float(monto_max)),
+            'capacidad_cuota': int(capacidad_cuota),
+            'promedio_pago_real': int(promedio_pago_real),
+            'cuotas_tipicas': int(cuotas_avg),
+            'factor_score': factor_score,
+            'factor_recencia': factor_recencia,
+            'factor_vigente': factor_vigente,
+            'dias_desde_ultima_actividad': dias,
+            'bloqueado': False,
+            'razon': f'Basado en {liquidados} crédito(s) pagado(s). Score {nivel} ({score}/100).',
+        }
+
     return {
         'score': score,
         'nivel': nivel,
         'sin_historial': total_visitas == 0 and total_creditos == 0,
+        'cupo_recomendado': cupo_recomendado,
+        'justificacion': justificacion,
         'detalle': {
             'comp_pago': comp_pago,
             'comp_activos': comp_activos,

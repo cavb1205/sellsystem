@@ -12,6 +12,7 @@ class Tienda(models.Model):
     administrador = models.ForeignKey(User, on_delete=models.CASCADE)
     caja_inicial = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     estado = models.BooleanField(default=True)
+    cupo_minimo_nuevo = models.DecimalField(max_digits=12, decimal_places=2, default=100000)
     
     def __str__(self):
         return self.nombre

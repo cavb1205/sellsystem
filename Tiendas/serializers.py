@@ -27,6 +27,7 @@ class TiendaSerializer(serializers.ModelSerializer):
             'administrador_id': instance.administrador.id,
             'caja':instance.caja_inicial,
             'estado': instance.estado,
+            'cupo_minimo_nuevo': instance.cupo_minimo_nuevo,
             'inversion': instance.inversion(),
             'gastos': instance.gastos(),
             'utilidades': instance.utilidades(),
