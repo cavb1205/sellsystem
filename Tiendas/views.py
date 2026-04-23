@@ -141,16 +141,9 @@ def get_tiendas_admin(request):
     user = request.user
     print(user)
     if user.is_staff:
-        tiendas = list(Tienda_Administrador.objects.filter(administrador=user))
-
-        if not tiendas:
-            for tienda in Tienda.objects.filter(administrador=user):
-                Tienda_Administrador.objects.get_or_create(tienda=tienda, administrador=user)
-            tiendas = list(Tienda_Administrador.objects.filter(administrador=user))
-
-        if tiendas:
-            serializer = TiendaAdminSerializer(tiendas, many=True)
-            return Response(serializer.data, status=status.HTTP_200_OK)
+        tiendas = Tienda_Administrador.objects.filter(administrador=user)
+        serializer = TiendaAdminSerializer(tiendas, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
     return Response([], status=status.HTTP_200_OK)
 ### END VIEWS FOR TIENDA  ####
 
