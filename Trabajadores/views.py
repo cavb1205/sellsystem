@@ -6,6 +6,7 @@ from rest_framework.response import Response
 from rest_framework import status
 
 from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework_simplejwt.tokens import RefreshToken
 
 from django.contrib.auth.models import User
 from Trabajadores.models import Perfil
@@ -166,47 +167,63 @@ def post_trabajador(request, tienda_id = None):
 
 @api_view(['POST'])
 def register_user(request):
+    username = request.data.get('username', '')
     user_data = {
-        "username":request.data['username'],
-        "first_name":request.data['first_name'],
-        "last_name":request.data['last_name'],
-        "email":request.data['email'],
-        "password":request.data['password']
+        "username": username,
+        "first_name": request.data.get('first_name', ''),
+        "last_name": request.data.get('last_name', ''),
+        "password": request.data.get('password', '')
     }
-    
+
     serializer = UserCreateSerializer(data=user_data)
     if serializer.is_valid():
         user = serializer.save()
         user.set_password(request.data['password'])
+        user.email = f"{username}@carterafinanciera.com"
         user.is_staff = True
         user.is_superuser = True
         user.save()
 
         tienda_data = {
-        "nombre":request.data['nombre_ruta'],
-        "administrador":user.id,
+            "nombre": request.data.get('nombre_ruta', ''),
+            "administrador": user.id,
         }
         serializer_tienda = TiendaCreateSerializer(data=tienda_data)
         if serializer_tienda.is_valid():
             tienda = serializer_tienda.save()
             Cierre_Caja.objects.create(tienda=tienda, valor=tienda.caja_inicial, fecha_cierre=(datetime.date.today() - datetime.timedelta(days=1)))
             Tienda_Membresia.objects.create(
-                tienda=tienda, 
-                membresia=Membresia.objects.get(nombre='Prueba'), 
+                tienda=tienda,
+                membresia=Membresia.objects.get(nombre='Prueba'),
                 fecha_activacion=datetime.date.today(),
                 fecha_vencimiento=(datetime.date.today() + datetime.timedelta(days=7)),
                 estado='Activa'
-                )
+            )
             Tienda_Administrador.objects.create(tienda=tienda, administrador=user)
-                
+
             perfil_data = {
-                'trabajador':user.id,
-                'tienda':tienda.id
+                'trabajador': user.id,
+                'tienda': tienda.id
             }
             serializer_perfil = PerfilCreateSerializer(data=perfil_data)
             if serializer_perfil.is_valid():
-                serializer_perfil.save()
-                return Response(serializer.data, status=status.HTTP_200_OK)
+                perfil = serializer_perfil.save()
+                perfil.telefono = request.data.get('telefono', '')
+                perfil.save()
+
+                # Auto-login: generate JWT and return same structure as Login view
+                refresh = RefreshToken.for_user(user)
+                perfil_serializer = PerfilSerializer(perfil)
+                user_serializer = UserLoginSerializer(user)
+                membresia = comprobar_estado_membresia(tienda.id)
+
+                return Response({
+                    'token': str(refresh.access_token),
+                    'refresh': str(refresh),
+                    'user': user_serializer.data,
+                    'perfil': perfil_serializer.data,
+                    'membresia': membresia,
+                }, status=status.HTTP_200_OK)
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
