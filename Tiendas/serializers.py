@@ -7,7 +7,7 @@ from Trabajadores.serializers import UserSerializer, PerfilSerializer
 class TiendaCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Tienda
-        fields = ['nombre','administrador']
+        fields = ['id', 'nombre', 'administrador']
 
 
 class TiendaSerializer(serializers.ModelSerializer):
