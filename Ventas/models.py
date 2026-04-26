@@ -46,15 +46,21 @@ class Venta(models.Model):
         return total_a_pagar
     
     def valor_cuota(self):
+        if not self.cuotas:
+            return 0
         total_a_pagar = self.total_a_pagar()
         valor_cuota = total_a_pagar / self.cuotas
         return valor_cuota
 
     def pagos_realizados(self):
+        if not self.valor_cuota():
+            return 0
         pagos_realizados = round((self.total_a_pagar() - int(self.saldo_actual)) / self.valor_cuota(),2)
         return pagos_realizados
 
-    def pagos_pendientes(self):        
+    def pagos_pendientes(self):
+        if not self.valor_cuota():
+            return 0
         pagos_pendientes = round(int(self.saldo_actual) / self.valor_cuota(),2)
         return pagos_pendientes
 
@@ -73,10 +79,12 @@ class Venta(models.Model):
             return 0
 
     def dias_atrasados(self):
+        if not self.valor_cuota():
+            return 0
         venta = Venta.objects.get(id=self.id)
         recaudos = venta.recaudo_set.filter(venta=venta.id)
         dias_atrasados = round(((self.valor_cuota() * recaudos.count()) - self.total_abonado()) / self.valor_cuota(),2)
-        return dias_atrasados 
+        return dias_atrasados
 
     def perdida(self):
         valor_perdida = int(self.saldo_actual) 
