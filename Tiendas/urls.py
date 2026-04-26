@@ -26,6 +26,11 @@ urlpatterns = [
 
     path('activate/mounth/<str:pk>/', views.activar_membresia_mensual, name='activar_membresia_mensual'),
     path('activate/year/<str:pk>/', views.activar_membresia_ano, name='activar_membresia_ano'),
+
+    # Membresías automáticas vía WhatsApp
+    path('solicitar-pago/', views.solicitar_pago, name='solicitar_pago'),
+    path('solicitud-pago/<str:codigo>/', views.consultar_solicitud, name='consultar_solicitud'),
+    path('activar-solicitud/<str:codigo>/', views.activar_solicitud, name='activar_solicitud'),
 ]
 
 

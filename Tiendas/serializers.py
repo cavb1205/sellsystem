@@ -1,6 +1,6 @@
 
 from rest_framework import serializers
-from .models import Tienda, Cierre_Caja, Tienda_Membresia, Membresia, Tienda_Administrador
+from .models import Tienda, Cierre_Caja, Tienda_Membresia, Membresia, Tienda_Administrador, SolicitudPago
 from Trabajadores.serializers import UserSerializer, PerfilSerializer
 
 
@@ -73,6 +73,27 @@ class TiendaMembresiaSerializer(serializers.ModelSerializer):
     class Meta:
         model = Tienda_Membresia
         fields = '__all__'
+
+class SolicitudPagoSerializer(serializers.ModelSerializer):
+    plan = serializers.CharField(source='membresia.nombre', read_only=True)
+    monto_plan = serializers.DecimalField(source='membresia.precio', max_digits=12, decimal_places=0, read_only=True)
+    tienda_nombre = serializers.CharField(source='tienda.nombre', read_only=True)
+    cuenta_numero = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SolicitudPago
+        fields = [
+            'id', 'codigo', 'estado', 'plan', 'monto_plan',
+            'tienda_nombre', 'cuenta_numero',
+            'monto_detectado', 'motivo_rechazo',
+            'confianza_ia', 'referencia_bancaria',
+            'creada', 'procesada', 'expira',
+        ]
+
+    def get_cuenta_numero(self, obj):
+        from django.conf import settings
+        return getattr(settings, 'CUENTA_DESTINO_NUMERO', '')
+
 
 class CajaSerializer(serializers.ModelSerializer):
 

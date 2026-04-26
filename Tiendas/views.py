@@ -1,3 +1,5 @@
+from functools import wraps
+
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -6,8 +8,35 @@ from rest_framework import status
 import datetime
 from itertools import chain
 
-from Tiendas.models import Tienda, Cierre_Caja, Tienda_Membresia, Membresia, Tienda_Administrador
-from Tiendas.serializers import TiendaSerializer, CajaSerializer, TiendaMembresiaSerializer, TiendaCreateSerializer, TiendaAdminSerializer
+from django.conf import settings
+from django.utils import timezone
+
+from Tiendas.models import Tienda, Cierre_Caja, Tienda_Membresia, Membresia, Tienda_Administrador, SolicitudPago, _generar_codigo_solicitud
+from Tiendas.serializers import TiendaSerializer, CajaSerializer, TiendaMembresiaSerializer, TiendaCreateSerializer, TiendaAdminSerializer, SolicitudPagoSerializer
+
+
+def require_n8n_token(view_func):
+    @wraps(view_func)
+    def wrapper(request, *args, **kwargs):
+        if request.headers.get('X-N8N-Token') != settings.N8N_SHARED_TOKEN:
+            return Response({'error': 'forbidden'}, status=403)
+        return view_func(request, *args, **kwargs)
+    return wrapper
+
+
+def extender_membresia(tienda_id, plan_nombre):
+    """Extiende la membresía desde max(fecha_vencimiento, hoy). Retorna la Tienda_Membresia."""
+    tm = Tienda_Membresia.objects.get(tienda_id=tienda_id)
+    membresia = Membresia.objects.get(nombre=plan_nombre)
+    dias = 30 if plan_nombre == 'Mensual' else 365
+    base = max(tm.fecha_vencimiento, datetime.date.today())
+    tm.membresia = membresia
+    tm.fecha_activacion = datetime.date.today()
+    tm.fecha_vencimiento = base + datetime.timedelta(days=dias)
+    tm.estado = 'Activa'
+    tm.pre_activada_hasta = None
+    tm.save()
+    return tm
 
 
 ### VIEWS FOR TIENDA  ####
@@ -268,6 +297,138 @@ def activar_membresia_ano(request, pk):
         return Response({'message':'Suscripción Anual Activa'}, status=status.HTTP_200_OK)
     else:
         return Response({'message': 'No se encontró la tienda'}, status=status.HTTP_400_BAD_REQUEST)
+
+####### SOLICITUDES DE PAGO (membresías automáticas vía WhatsApp) ##########
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def solicitar_pago(request):
+    """Crea una SolicitudPago y devuelve el código + datos de cuenta para que el usuario pague."""
+    membresia_id = request.data.get('membresia_id')
+    if not membresia_id:
+        return Response({'error': 'membresia_id requerido'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        membresia = Membresia.objects.get(id=membresia_id)
+    except Membresia.DoesNotExist:
+        return Response({'error': 'Membresía no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+
+    tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
+    if not tienda:
+        return Response({'error': 'Tienda no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+
+    codigo = _generar_codigo_solicitud(membresia.nombre)
+    expira = timezone.now() + datetime.timedelta(hours=24)
+
+    solicitud = SolicitudPago.objects.create(
+        tienda=tienda,
+        membresia=membresia,
+        codigo=codigo,
+        expira=expira,
+    )
+
+    numero_soporte = getattr(settings, 'WHATSAPP_SOPORTE_NUMERO', '')
+    texto_wa = f"Hola, envío comprobante código {codigo} de la tienda *{tienda.nombre}*."
+    wa_link = f"https://wa.me/{numero_soporte}?text={texto_wa.replace(' ', '%20')}" if numero_soporte else ''
+
+    return Response({
+        'codigo': codigo,
+        'expira': expira,
+        'monto': str(membresia.precio),
+        'plan': membresia.nombre,
+        'cuenta_banco': getattr(settings, 'CUENTA_DESTINO_BANCO', ''),
+        'cuenta_numero': getattr(settings, 'CUENTA_DESTINO_NUMERO', ''),
+        'cuenta_titular': getattr(settings, 'CUENTA_DESTINO_TITULAR', ''),
+        'cuenta_tipo': getattr(settings, 'CUENTA_DESTINO_TIPO', ''),
+        'wa_link': wa_link,
+    }, status=status.HTTP_201_CREATED)
+
+
+@api_view(['GET'])
+def consultar_solicitud(request, codigo):
+    """Devuelve el estado actual de una SolicitudPago. Accesible por JWT (app) o token n8n."""
+    token_ok = request.headers.get('X-N8N-Token') == settings.N8N_SHARED_TOKEN
+    user_ok = request.user and request.user.is_authenticated
+
+    if not token_ok and not user_ok:
+        return Response({'error': 'forbidden'}, status=403)
+
+    solicitud = SolicitudPago.objects.filter(codigo=codigo).first()
+    if not solicitud:
+        return Response({'error': 'Solicitud no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+
+    # Marcar como expirada si ya venció y sigue pendiente
+    if solicitud.estado == 'pendiente' and timezone.now() >= solicitud.expira:
+        solicitud.estado = 'expirada'
+        solicitud.save(update_fields=['estado'])
+
+    serializer = SolicitudPagoSerializer(solicitud)
+    return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@require_n8n_token
+def activar_solicitud(request, codigo):
+    """n8n llama este endpoint con el resultado del análisis del comprobante."""
+    solicitud = SolicitudPago.objects.filter(codigo=codigo).first()
+    if not solicitud:
+        return Response({'error': 'Solicitud no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+
+    if timezone.now() >= solicitud.expira and solicitud.estado == 'pendiente':
+        solicitud.estado = 'expirada'
+        solicitud.save(update_fields=['estado'])
+        return Response({'error': 'Solicitud expirada'}, status=status.HTTP_410_GONE)
+
+    if solicitud.estado in ('aprobada', 'rechazada'):
+        return Response({'estado': solicitud.estado, 'message': 'Ya procesada'}, status=status.HTTP_409_CONFLICT)
+
+    resultado = request.data.get('resultado')
+    if resultado not in ('aprobada', 'pre_aprobada', 'rechazada'):
+        return Response({'error': 'resultado inválido'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Dedupe por referencia bancaria
+    referencia = (request.data.get('extraccion') or {}).get('referencia', '') or ''
+    if referencia and resultado == 'aprobada':
+        duplicada = SolicitudPago.objects.filter(
+            referencia_bancaria=referencia, estado='aprobada'
+        ).exclude(id=solicitud.id).exists()
+        if duplicada:
+            resultado = 'rechazada'
+            request.data._mutable = True if hasattr(request.data, '_mutable') else None
+            motivo = 'Referencia bancaria ya utilizada'
+        else:
+            motivo = request.data.get('motivo', '')
+    else:
+        motivo = request.data.get('motivo', '')
+
+    # Actualizar solicitud
+    solicitud.estado = resultado
+    solicitud.motivo_rechazo = motivo
+    solicitud.extraccion_ia = request.data.get('extraccion') or {}
+    solicitud.confianza_ia = request.data.get('confianza')
+    solicitud.wa_from_number = request.data.get('wa_from_number', '')
+    solicitud.wa_message_id = request.data.get('wa_message_id', '')
+    if referencia:
+        solicitud.referencia_bancaria = referencia
+    solicitud.procesada = timezone.now()
+    solicitud.save()
+
+    # Actualizar membresía según resultado
+    tm = Tienda_Membresia.objects.filter(tienda=solicitud.tienda).first()
+    if resultado == 'aprobada':
+        tm = extender_membresia(solicitud.tienda_id, solicitud.membresia.nombre)
+    elif resultado == 'pre_aprobada':
+        if tm:
+            tm.estado = 'Pre-activada'
+            tm.pre_activada_hasta = datetime.date.today() + datetime.timedelta(days=3)
+            tm.save()
+
+    response_data = {'estado': resultado, 'motivo': motivo}
+    if tm:
+        response_data['fecha_vencimiento'] = str(tm.fecha_vencimiento)
+
+    return Response(response_data, status=status.HTTP_200_OK)
+
 
 def comprobar_estado_membresia(tienda_id):
     '''verificamos el estado de la membresia'''
