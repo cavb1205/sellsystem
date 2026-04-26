@@ -1,7 +1,9 @@
+import secrets
 from django.db import models
 from django.contrib.auth.models import User
 from django.db.models import Sum, Q
-from datetime import date
+from datetime import date, timedelta
+from django.utils import timezone
 
 
 class Tienda(models.Model):
@@ -211,14 +213,57 @@ class Tienda_Membresia(models.Model):
     estado_choices = (
         ('Activa','Activa'),
         ('Vencida','Vencida'),
-        ('Pendiente Pago','Pendiente Pago') ## si se vence el tiempo pasa a este por 3 dias si no se paga se bloquea
+        ('Pendiente Pago','Pendiente Pago'),
+        ('Pre-activada','Pre-activada'),
     )
-    tienda = models.OneToOneField(Tienda, on_delete=models.CASCADE, 
+    tienda = models.OneToOneField(Tienda, on_delete=models.CASCADE,
                                     null=False, blank=False)
     membresia = models.ForeignKey(Membresia, on_delete=models.CASCADE)
     fecha_activacion = models.DateField()
     fecha_vencimiento = models.DateField()
     estado = models.CharField(max_length=50, choices=estado_choices, default='Activa')
+    pre_activada_hasta = models.DateField(null=True, blank=True)
 
     def __str__(self):
-        return str(self.tienda) + ' - ' + str(self.membresia) 
+        return str(self.tienda) + ' - ' + str(self.membresia)
+
+
+def _generar_codigo_solicitud(plan):
+    prefijo = 'MM' if plan == 'Mensual' else 'AA'
+    while True:
+        codigo = f"{prefijo}-{secrets.token_hex(2).upper()}"
+        if not SolicitudPago.objects.filter(codigo=codigo).exists():
+            return codigo
+
+
+class SolicitudPago(models.Model):
+    ESTADOS = [
+        ('pendiente', 'Esperando comprobante'),
+        ('procesando', 'Validando'),
+        ('aprobada', 'Aprobada'),
+        ('pre_aprobada', 'Pre-aprobada (revisión manual)'),
+        ('rechazada', 'Rechazada'),
+        ('expirada', 'Expirada'),
+    ]
+    tienda = models.ForeignKey(Tienda, on_delete=models.CASCADE, related_name='solicitudes_pago')
+    membresia = models.ForeignKey(Membresia, on_delete=models.PROTECT)
+    codigo = models.CharField(max_length=12, unique=True, db_index=True)
+    estado = models.CharField(max_length=20, choices=ESTADOS, default='pendiente')
+
+    wa_from_number = models.CharField(max_length=30, blank=True)
+    wa_message_id = models.CharField(max_length=100, blank=True)
+    extraccion_ia = models.JSONField(default=dict, blank=True)
+    confianza_ia = models.FloatField(null=True, blank=True)
+    referencia_bancaria = models.CharField(max_length=100, blank=True, db_index=True)
+    monto_detectado = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    motivo_rechazo = models.TextField(blank=True)
+
+    creada = models.DateTimeField(auto_now_add=True)
+    procesada = models.DateTimeField(null=True, blank=True)
+    expira = models.DateTimeField()
+
+    def __str__(self):
+        return f"{self.codigo} - {self.tienda} ({self.estado})"
+
+    def esta_vigente(self):
+        return self.estado == 'pendiente' and timezone.now() < self.expira
