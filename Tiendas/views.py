@@ -305,15 +305,22 @@ def activar_membresia_ano(request, pk):
 def solicitar_pago(request):
     """Crea una SolicitudPago y devuelve el código + datos de cuenta para que el usuario pague."""
     membresia_id = request.data.get('membresia_id')
-    if not membresia_id:
-        return Response({'error': 'membresia_id requerido'}, status=status.HTTP_400_BAD_REQUEST)
+    plan_nombre = request.data.get('plan')
 
-    try:
-        membresia = Membresia.objects.get(id=membresia_id)
-    except Membresia.DoesNotExist:
-        return Response({'error': 'Membresía no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+    if membresia_id:
+        try:
+            membresia = Membresia.objects.get(id=membresia_id)
+        except Membresia.DoesNotExist:
+            return Response({'error': 'Membresía no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+    elif plan_nombre in ('Mensual', 'Anual'):
+        membresia = Membresia.objects.filter(nombre=plan_nombre).first()
+        if not membresia:
+            return Response({'error': f'Plan {plan_nombre} no configurado'}, status=status.HTTP_404_NOT_FOUND)
+    else:
+        return Response({'error': 'membresia_id o plan requerido'}, status=status.HTTP_400_BAD_REQUEST)
 
-    tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
+    tienda_id = request.data.get('tienda_id') or request.user.perfil.tienda.id
+    tienda = Tienda.objects.filter(id=tienda_id).first()
     if not tienda:
         return Response({'error': 'Tienda no encontrada'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -336,10 +343,6 @@ def solicitar_pago(request):
         'expira': expira,
         'monto': str(membresia.precio),
         'plan': membresia.nombre,
-        'cuenta_banco': getattr(settings, 'CUENTA_DESTINO_BANCO', ''),
-        'cuenta_numero': getattr(settings, 'CUENTA_DESTINO_NUMERO', ''),
-        'cuenta_titular': getattr(settings, 'CUENTA_DESTINO_TITULAR', ''),
-        'cuenta_tipo': getattr(settings, 'CUENTA_DESTINO_TIPO', ''),
         'wa_link': wa_link,
     }, status=status.HTTP_201_CREATED)
 
@@ -430,21 +433,79 @@ def activar_solicitud(request, codigo):
     return Response(response_data, status=status.HTTP_200_OK)
 
 
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def listar_solicitudes_revision(request):
+    """Devuelve todas las SolicitudPago en estado pre_aprobada. Solo superusuarios."""
+    if not request.user.is_superuser:
+        return Response({'error': 'forbidden'}, status=403)
+    solicitudes = SolicitudPago.objects.filter(estado='pre_aprobada').order_by('-creada')
+    serializer = SolicitudPagoSerializer(solicitudes, many=True)
+    return Response(serializer.data)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def revisar_solicitud_admin(request, codigo):
+    """Aprobación o rechazo manual por el superusuario."""
+    if not request.user.is_superuser:
+        return Response({'error': 'forbidden'}, status=403)
+
+    solicitud = SolicitudPago.objects.filter(codigo=codigo).first()
+    if not solicitud:
+        return Response({'error': 'Solicitud no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+
+    if solicitud.estado in ('aprobada', 'rechazada'):
+        return Response({'estado': solicitud.estado, 'message': 'Ya procesada'}, status=status.HTTP_409_CONFLICT)
+
+    resultado = request.data.get('resultado')
+    if resultado not in ('aprobada', 'rechazada'):
+        return Response({'error': 'resultado debe ser aprobada o rechazada'}, status=status.HTTP_400_BAD_REQUEST)
+
+    motivo = request.data.get('motivo', 'Revisión manual')
+    solicitud.estado = resultado
+    solicitud.motivo_rechazo = motivo if resultado == 'rechazada' else ''
+    solicitud.procesada = timezone.now()
+    solicitud.save()
+
+    tm = Tienda_Membresia.objects.filter(tienda=solicitud.tienda).first()
+    if resultado == 'aprobada':
+        tm = extender_membresia(solicitud.tienda_id, solicitud.membresia.nombre)
+    # Si rechazada, revertir pre-activación
+    elif tm and tm.estado == 'Pre-activada':
+        tm.estado = 'Pendiente Pago'
+        tm.pre_activada_hasta = None
+        tm.save()
+
+    response_data = {'estado': resultado}
+    if tm:
+        response_data['fecha_vencimiento'] = str(tm.fecha_vencimiento)
+    return Response(response_data, status=status.HTTP_200_OK)
+
+
 def comprobar_estado_membresia(tienda_id):
     '''verificamos el estado de la membresia'''
-    print('ingresa a comprobar membresia ')
-    print(tienda_id)
     suscripcion_tienda = Tienda_Membresia.objects.get(tienda=tienda_id)
-    pendiente_pago = suscripcion_tienda.fecha_vencimiento + \
-        datetime.timedelta(days=1)
+    hoy = datetime.date.today()
+
+    # Pre-activada: acceso temporal mientras se revisa el comprobante
+    if suscripcion_tienda.estado == 'Pre-activada':
+        if suscripcion_tienda.pre_activada_hasta and suscripcion_tienda.pre_activada_hasta >= hoy:
+            return  # Período temporal vigente, no degradar
+        # Período temporal expirado sin aprobación → degradar
+        suscripcion_tienda.estado = 'Pendiente Pago'
+        suscripcion_tienda.pre_activada_hasta = None
+        suscripcion_tienda.save()
+        return
+
+    pendiente_pago = suscripcion_tienda.fecha_vencimiento + datetime.timedelta(days=1)
     vencida = pendiente_pago + datetime.timedelta(days=2)
-    if suscripcion_tienda.estado == 'Activa' and datetime.date.today() >= pendiente_pago:
-        print('es activa')
+
+    if suscripcion_tienda.estado == 'Activa' and hoy >= pendiente_pago:
         suscripcion_tienda.estado = 'Pendiente Pago'
         suscripcion_tienda.save()
 
-    if suscripcion_tienda.estado == 'Pendiente Pago' and datetime.date.today() >= vencida:
-        print('espendiente pago')
+    if suscripcion_tienda.estado == 'Pendiente Pago' and hoy >= vencida:
         suscripcion_tienda.estado = 'Vencida'
         suscripcion_tienda.save()
 

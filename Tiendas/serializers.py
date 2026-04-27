@@ -78,21 +78,16 @@ class SolicitudPagoSerializer(serializers.ModelSerializer):
     plan = serializers.CharField(source='membresia.nombre', read_only=True)
     monto_plan = serializers.DecimalField(source='membresia.precio', max_digits=12, decimal_places=0, read_only=True)
     tienda_nombre = serializers.CharField(source='tienda.nombre', read_only=True)
-    cuenta_numero = serializers.SerializerMethodField()
 
     class Meta:
         model = SolicitudPago
         fields = [
             'id', 'codigo', 'estado', 'plan', 'monto_plan',
-            'tienda_nombre', 'cuenta_numero',
+            'tienda_nombre',
             'monto_detectado', 'motivo_rechazo',
             'confianza_ia', 'referencia_bancaria',
             'creada', 'procesada', 'expira',
         ]
-
-    def get_cuenta_numero(self, obj):
-        from django.conf import settings
-        return getattr(settings, 'CUENTA_DESTINO_NUMERO', '')
 
 
 class CajaSerializer(serializers.ModelSerializer):

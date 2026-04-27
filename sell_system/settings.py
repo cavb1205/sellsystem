@@ -216,3 +216,12 @@ SIMPLE_JWT = {
     'SLIDING_TOKEN_LIFETIME': timedelta(minutes=5),
     'SLIDING_TOKEN_REFRESH_LIFETIME': timedelta(days=1),
 }
+
+# n8n shared token (webhook auth)
+N8N_SHARED_TOKEN = '2122a0f76139ca172b0a2ea38c87286df0d1f350335945799eda61cb9a265cb7'
+
+# Datos de cuenta destino para pagos
+CUENTA_DESTINO_BANCO = ''
+CUENTA_DESTINO_NUMERO = ''
+CUENTA_DESTINO_TITULAR = ''
+CUENTA_DESTINO_TIPO = ''

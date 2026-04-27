@@ -31,6 +31,8 @@ urlpatterns = [
     path('solicitar-pago/', views.solicitar_pago, name='solicitar_pago'),
     path('solicitud-pago/<str:codigo>/', views.consultar_solicitud, name='consultar_solicitud'),
     path('activar-solicitud/<str:codigo>/', views.activar_solicitud, name='activar_solicitud'),
+    path('solicitudes/revision/', views.listar_solicitudes_revision, name='listar_solicitudes_revision'),
+    path('solicitud/<str:codigo>/revisar/', views.revisar_solicitud_admin, name='revisar_solicitud_admin'),
 ]
 
 
