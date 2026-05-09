@@ -38,6 +38,8 @@ class TiendaSerializer(serializers.ModelSerializer):
             'caja':instance.caja_inicial,
             'estado': instance.estado,
             'cupo_minimo_nuevo': instance.cupo_minimo_nuevo,
+            'cantidad_clientes': instance.cliente_set.count(),
+            'cantidad_ventas': instance.venta_set.count(),
             'inversion': instance.inversion(),
             'gastos': instance.gastos(),
             'utilidades': instance.utilidades(),

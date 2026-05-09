@@ -24,6 +24,29 @@ def require_n8n_token(view_func):
     return wrapper
 
 
+def _actualizar_estados_membresias():
+    """Recalcula en bulk los estados de todas las membresías según la fecha actual.
+    Activa → Pendiente Pago cuando fecha_vencimiento ya pasó (1 día de gracia ya consumido).
+    Pendiente Pago → Vencida cuando han pasado 3+ días desde el vencimiento.
+    Pre-activada → Pendiente Pago cuando pre_activada_hasta ya pasó."""
+    hoy = datetime.date.today()
+
+    Tienda_Membresia.objects.filter(
+        estado='Activa',
+        fecha_vencimiento__lte=hoy - datetime.timedelta(days=1)
+    ).update(estado='Pendiente Pago')
+
+    Tienda_Membresia.objects.filter(
+        estado='Pendiente Pago',
+        fecha_vencimiento__lte=hoy - datetime.timedelta(days=3)
+    ).update(estado='Vencida')
+
+    Tienda_Membresia.objects.filter(
+        estado='Pre-activada',
+        pre_activada_hasta__lt=hoy
+    ).update(estado='Pendiente Pago', pre_activada_hasta=None)
+
+
 def extender_membresia(tienda_id, plan_nombre):
     """Extiende la membresía desde max(fecha_vencimiento, hoy). Retorna la Tienda_Membresia."""
     tm = Tienda_Membresia.objects.get(tienda_id=tienda_id)
@@ -48,6 +71,8 @@ def list_all_tiendas(request):
 
     user = request.user
     if user.username == 'root':
+        # Recalcular estados antes de listar — rutas inactivas pasan a Pendiente/Vencida automáticamente
+        _actualizar_estados_membresias()
         tiendas = Tienda_Membresia.objects.all().order_by('fecha_vencimiento')
         if tiendas:
             serializer = TiendaMembresiaSerializer(tiendas, many=True)
@@ -167,6 +192,27 @@ def delete_tienda(request, pk):
         tienda.delete()
         return Response({'message': 'Tienda eliminada correctamente'}, status=status.HTTP_200_OK)
     return Response({'message': 'No se encontró la tienda'}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def delete_tienda_root(request, pk):
+    '''Elimina una tienda — solo root, solo si está vacía (0 clientes y 0 ventas).'''
+    if request.user.username != 'root':
+        return Response({'error': 'Solo el usuario root puede eliminar rutas'},
+                        status=status.HTTP_403_FORBIDDEN)
+    tienda = Tienda.objects.filter(id=pk).first()
+    if not tienda:
+        return Response({'error': 'No se encontró la ruta'}, status=status.HTTP_404_NOT_FOUND)
+    clientes = tienda.cliente_set.count()
+    ventas = tienda.venta_set.count()
+    if clientes > 0 or ventas > 0:
+        return Response({
+            'error': f'La ruta tiene {clientes} clientes y {ventas} ventas. No se puede eliminar para proteger los datos.'
+        }, status=status.HTTP_409_CONFLICT)
+    nombre = tienda.nombre
+    tienda.delete()
+    return Response({'message': f'Ruta "{nombre}" eliminada'}, status=status.HTTP_200_OK)
 
 @api_view(['DELETE'])
 @permission_classes([IsAuthenticated])
