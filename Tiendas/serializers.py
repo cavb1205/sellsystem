@@ -9,6 +9,16 @@ class TiendaCreateSerializer(serializers.ModelSerializer):
         model = Tienda
         fields = ['id', 'nombre', 'administrador']
 
+    def validate(self, attrs):
+        nombre = attrs.get('nombre', '').strip()
+        administrador = attrs.get('administrador')
+        if Tienda.objects.filter(nombre__iexact=nombre, administrador=administrador).exists():
+            raise serializers.ValidationError(
+                {'nombre': 'Ya tienes una ruta con ese nombre. Elige un nombre diferente.'}
+            )
+        attrs['nombre'] = nombre
+        return attrs
+
 
 class TiendaSerializer(serializers.ModelSerializer):
 

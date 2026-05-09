@@ -125,22 +125,37 @@ def patch_tienda_settings(request, pk):
 def post_tienda(request):
     '''creamos una tienda'''
     if request.method == 'POST':
+        # Verificar antes de guardar para que el flag sea correcto
+        es_primera_tienda = not Tienda.objects.filter(administrador=request.user).exists()
+
         serialize = TiendaCreateSerializer(data=request.data)
         if serialize.is_valid():
             tienda = serialize.save()
             Cierre_Caja.objects.create(tienda=tienda, valor=tienda.caja_inicial, fecha_cierre=(
                 datetime.date.today() - datetime.timedelta(days=1)))
-            Tienda_Membresia.objects.create(
-                tienda=tienda,
-                membresia=Membresia.objects.get(nombre='Prueba'),
-                fecha_activacion=datetime.date.today(),
-                fecha_vencimiento=(datetime.date.today() +
-                                   datetime.timedelta(days=7)),
-                estado='Activa'
-            )
+
+            if es_primera_tienda:
+                # Solo la primera ruta recibe trial de 7 días
+                Tienda_Membresia.objects.create(
+                    tienda=tienda,
+                    membresia=Membresia.objects.get(nombre='Prueba'),
+                    fecha_activacion=datetime.date.today(),
+                    fecha_vencimiento=datetime.date.today() + datetime.timedelta(days=7),
+                    estado='Activa'
+                )
+            else:
+                # Rutas adicionales nacen en Pendiente Pago — sin trial
+                Tienda_Membresia.objects.create(
+                    tienda=tienda,
+                    membresia=Membresia.objects.get(nombre='Prueba'),
+                    fecha_activacion=datetime.date.today(),
+                    fecha_vencimiento=datetime.date.today() - datetime.timedelta(days=1),
+                    estado='Pendiente Pago'
+                )
+
             Tienda_Administrador.objects.create(
                 tienda=tienda, administrador=request.user)
-                
+
             return Response(serialize.data, status=status.HTTP_200_OK)
         return Response(serialize.errors, status=status.HTTP_400_BAD_REQUEST)
 

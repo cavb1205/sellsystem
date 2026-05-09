@@ -16,6 +16,14 @@ class Tienda(models.Model):
     estado = models.BooleanField(default=True)
     cupo_minimo_nuevo = models.DecimalField(max_digits=12, decimal_places=2, default=100000)
     
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['nombre', 'administrador'],
+                name='unique_tienda_nombre_por_admin'
+            )
+        ]
+
     def __str__(self):
         return self.nombre
 
