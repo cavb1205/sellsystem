@@ -328,6 +328,36 @@ def delete_cliente(request, pk):
 
 
 @api_view(['GET'])
+def buscar_cliente_por_doc(request, doc, tienda_id):
+    """Busca un cliente por documento dentro de las rutas del mismo administrador.
+    Solo devuelve datos si el cliente pertenece a una ruta propia (no de otro admin).
+    """
+    tienda_destino = Tienda.objects.filter(id=tienda_id).first()
+    if not tienda_destino:
+        return Response({'found': False}, status=status.HTTP_200_OK)
+
+    cliente = (
+        Cliente.objects
+        .filter(identificacion=doc, tienda__administrador=request.user)
+        .exclude(tienda_id=tienda_id)
+        .select_related('tienda')
+        .first()
+    )
+    if not cliente:
+        return Response({'found': False}, status=status.HTTP_200_OK)
+
+    return Response({
+        'found': True,
+        'ruta_origen': cliente.tienda.nombre,
+        'nombres': cliente.nombres,
+        'apellidos': cliente.apellidos,
+        'telefono_principal': cliente.telefono_principal,
+        'direccion': cliente.direccion,
+        'nombre_local': cliente.nombre_local,
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
 def score_cliente(request, pk, tienda_id):
     """Score crediticio individual de un cliente."""
     cliente = Cliente.objects.filter(id=pk, tienda_id=tienda_id).first()

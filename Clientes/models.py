@@ -12,7 +12,7 @@ class Cliente(models.Model):
         ('Bloqueado','Bloqueado')
     ]
 
-    identificacion = models.CharField(max_length=12, unique=True)
+    identificacion = models.CharField(max_length=12)
     nombres = models.CharField(max_length=100)
     apellidos = models.CharField(max_length=100)
     nombre_local = models.CharField(max_length=100, blank=True)
@@ -22,6 +22,14 @@ class Cliente(models.Model):
     estado_cliente = models.CharField(choices=ESTADO_CLIENTE_CHOICES, max_length=50, default="Activo")
     tienda = models.ForeignKey(Tienda, on_delete=models.CASCADE)
     fecha_creacion = models.DateField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['identificacion', 'tienda'],
+                name='unique_cliente_identificacion_por_tienda'
+            )
+        ]
 
     def __str__(self):
         nombres = (self.nombres)
