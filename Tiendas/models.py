@@ -273,6 +273,8 @@ class SolicitudPago(models.Model):
         User, on_delete=models.SET_NULL, null=True, blank=True,
         related_name='solicitudes_pago_revisadas'
     )
+    # Vencimiento de la membresía ANTES de confirmar — permite revertir con exactitud
+    fecha_vencimiento_previa = models.DateField(null=True, blank=True)
 
     wa_from_number = models.CharField(max_length=30, blank=True)
     wa_message_id = models.CharField(max_length=100, blank=True)

@@ -90,16 +90,35 @@ class SolicitudPagoSerializer(serializers.ModelSerializer):
     plan = serializers.CharField(source='membresia.nombre', read_only=True)
     monto_plan = serializers.DecimalField(source='membresia.precio', max_digits=12, decimal_places=0, read_only=True)
     tienda_nombre = serializers.CharField(source='tienda.nombre', read_only=True)
+    tienda_id = serializers.IntegerField(source='tienda.id', read_only=True)
+    solicitante = serializers.SerializerMethodField()
+    revisor = serializers.SerializerMethodField()
+    tiene_comprobante = serializers.SerializerMethodField()
 
     class Meta:
         model = SolicitudPago
         fields = [
             'id', 'codigo', 'estado', 'plan', 'monto_plan',
-            'tienda_nombre',
+            'tienda_nombre', 'tienda_id',
+            'solicitante', 'revisor', 'tiene_comprobante',
             'monto_detectado', 'motivo_rechazo',
             'confianza_ia', 'referencia_bancaria',
             'creada', 'procesada', 'expira',
         ]
+
+    def _nombre_usuario(self, user):
+        if not user:
+            return None
+        return user.get_full_name() or user.username
+
+    def get_solicitante(self, obj):
+        return self._nombre_usuario(obj.solicitada_por)
+
+    def get_revisor(self, obj):
+        return self._nombre_usuario(obj.revisada_por)
+
+    def get_tiene_comprobante(self, obj):
+        return bool(obj.comprobante)
 
 
 class CajaSerializer(serializers.ModelSerializer):

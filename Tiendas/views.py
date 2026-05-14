@@ -65,6 +65,40 @@ def extender_membresia(tienda_id, plan_nombre):
     return tm
 
 
+def _confirmar_solicitud(solicitud, revisor=None):
+    """Confirma una solicitud y extiende la membresía. Guarda el vencimiento previo
+    para poder revertir con exactitud. revisor puede ser None (confirmado vía Telegram)."""
+    tm = Tienda_Membresia.objects.filter(tienda=solicitud.tienda).first()
+    solicitud.fecha_vencimiento_previa = tm.fecha_vencimiento if tm else None
+    solicitud.estado = 'confirmada'
+    solicitud.motivo_rechazo = ''
+    solicitud.revisada_por = revisor
+    solicitud.procesada = timezone.now()
+    solicitud.save()
+    return extender_membresia(solicitud.tienda_id, solicitud.membresia.nombre)
+
+
+def _revertir_solicitud(solicitud, motivo, revisor=None):
+    """Rechaza o revierte una solicitud. Si estaba confirmada, restaura el vencimiento previo."""
+    tm = Tienda_Membresia.objects.filter(tienda=solicitud.tienda).first()
+    era_confirmada = solicitud.estado == 'confirmada'
+    solicitud.estado = 'rechazada'
+    solicitud.motivo_rechazo = motivo
+    solicitud.revisada_por = revisor
+    solicitud.procesada = timezone.now()
+    solicitud.save()
+    if tm:
+        if era_confirmada and solicitud.fecha_vencimiento_previa:
+            tm.fecha_vencimiento = solicitud.fecha_vencimiento_previa
+        if tm.estado in ('Pre-activada', 'Activa'):
+            tm.estado = 'Pendiente Pago'
+            tm.pre_activada_hasta = None
+            tm.save()
+        else:
+            tm.save()
+    return tm
+
+
 ### VIEWS FOR TIENDA  ####
 
 @api_view(['GET'])
@@ -502,23 +536,12 @@ def telegram_webhook(request):
     )
 
     if accion == 'confirmar':
-        solicitud.estado = 'confirmada'
-        solicitud.procesada = timezone.now()
-        solicitud.save()
-        extender_membresia(solicitud.tienda_id, solicitud.membresia.nombre)
+        _confirmar_solicitud(solicitud)
         solicitud.refresh_from_db()
         telegram_bot.marcar_procesada(solicitud, 'confirmar', admin_nombre)
         telegram_bot.responder_callback(callback_id, f'✅ {codigo} confirmado')
     elif accion == 'rechazar':
-        solicitud.estado = 'rechazada'
-        solicitud.motivo_rechazo = 'Rechazado en revisión'
-        solicitud.procesada = timezone.now()
-        solicitud.save()
-        tm = Tienda_Membresia.objects.filter(tienda=solicitud.tienda).first()
-        if tm and tm.estado == 'Pre-activada':
-            tm.estado = 'Pendiente Pago'
-            tm.pre_activada_hasta = None
-            tm.save()
+        _revertir_solicitud(solicitud, 'Rechazado en revisión')
         telegram_bot.marcar_procesada(solicitud, 'rechazar', admin_nombre)
         telegram_bot.responder_callback(callback_id, f'❌ {codigo} rechazado')
     else:
@@ -616,18 +639,42 @@ def activar_solicitud(request, codigo):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def listar_solicitudes_revision(request):
-    """Devuelve todas las SolicitudPago en estado pre_aprobada. Solo superusuarios."""
+    """Panel de conciliación (solo superusuarios): solicitudes esperando confirmación
+    + confirmadas de los últimos 30 días para cruzar con el extracto bancario."""
     if not request.user.is_superuser:
         return Response({'error': 'forbidden'}, status=403)
-    solicitudes = SolicitudPago.objects.filter(estado='pre_aprobada').order_by('-creada')
-    serializer = SolicitudPagoSerializer(solicitudes, many=True)
-    return Response(serializer.data)
+
+    corte = timezone.now() - datetime.timedelta(days=30)
+    pendientes = SolicitudPago.objects.filter(
+        estado='pendiente_confirmacion'
+    ).select_related('tienda', 'membresia', 'solicitada_por').order_by('-creada')
+    confirmadas = SolicitudPago.objects.filter(
+        estado='confirmada', procesada__gte=corte
+    ).select_related('tienda', 'membresia', 'solicitada_por', 'revisada_por').order_by('-procesada')
+
+    return Response({
+        'pendientes': SolicitudPagoSerializer(pendientes, many=True).data,
+        'confirmadas': SolicitudPagoSerializer(confirmadas, many=True).data,
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def ver_comprobante(request, codigo):
+    """Sirve la imagen del comprobante. Solo superusuarios (la carpeta media no es pública)."""
+    if not request.user.is_superuser:
+        return Response({'error': 'forbidden'}, status=403)
+    solicitud = SolicitudPago.objects.filter(codigo=codigo).first()
+    if not solicitud or not solicitud.comprobante:
+        return Response({'error': 'Sin comprobante'}, status=status.HTTP_404_NOT_FOUND)
+    from django.http import FileResponse
+    return FileResponse(solicitud.comprobante.open('rb'), content_type='image/jpeg')
 
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def revisar_solicitud_admin(request, codigo):
-    """Aprobación o rechazo manual por el superusuario."""
+    """Confirmación / rechazo / reversión manual por el superusuario (web fallback de Telegram)."""
     if not request.user.is_superuser:
         return Response({'error': 'forbidden'}, status=403)
 
@@ -635,29 +682,27 @@ def revisar_solicitud_admin(request, codigo):
     if not solicitud:
         return Response({'error': 'Solicitud no encontrada'}, status=status.HTTP_404_NOT_FOUND)
 
-    if solicitud.estado in ('aprobada', 'rechazada'):
+    if solicitud.estado in ('rechazada', 'expirada'):
         return Response({'estado': solicitud.estado, 'message': 'Ya procesada'}, status=status.HTTP_409_CONFLICT)
 
     resultado = request.data.get('resultado')
-    if resultado not in ('aprobada', 'rechazada'):
-        return Response({'error': 'resultado debe ser aprobada o rechazada'}, status=status.HTTP_400_BAD_REQUEST)
+    if resultado not in ('confirmar', 'rechazar'):
+        return Response({'error': 'resultado debe ser confirmar o rechazar'}, status=status.HTTP_400_BAD_REQUEST)
 
-    motivo = request.data.get('motivo', 'Revisión manual')
-    solicitud.estado = resultado
-    solicitud.motivo_rechazo = motivo if resultado == 'rechazada' else ''
-    solicitud.procesada = timezone.now()
-    solicitud.save()
+    admin_nombre = request.user.get_full_name() or request.user.username
 
-    tm = Tienda_Membresia.objects.filter(tienda=solicitud.tienda).first()
-    if resultado == 'aprobada':
-        tm = extender_membresia(solicitud.tienda_id, solicitud.membresia.nombre)
-    # Si rechazada, revertir pre-activación
-    elif tm and tm.estado == 'Pre-activada':
-        tm.estado = 'Pendiente Pago'
-        tm.pre_activada_hasta = None
-        tm.save()
+    if resultado == 'confirmar':
+        if solicitud.estado == 'confirmada':
+            return Response({'estado': 'confirmada', 'message': 'Ya confirmada'}, status=status.HTTP_409_CONFLICT)
+        tm = _confirmar_solicitud(solicitud, revisor=request.user)
+        solicitud.refresh_from_db()
+        telegram_bot.marcar_procesada(solicitud, 'confirmar', admin_nombre)
+    else:  # rechazar — sirve también para revertir una confirmada en la conciliación
+        motivo = request.data.get('motivo', 'Rechazado en revisión manual')
+        tm = _revertir_solicitud(solicitud, motivo, revisor=request.user)
+        telegram_bot.marcar_procesada(solicitud, 'rechazar', admin_nombre)
 
-    response_data = {'estado': resultado}
+    response_data = {'estado': solicitud.estado}
     if tm:
         response_data['fecha_vencimiento'] = str(tm.fecha_vencimiento)
     return Response(response_data, status=status.HTTP_200_OK)
