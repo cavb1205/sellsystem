@@ -221,9 +221,6 @@ SIMPLE_JWT = {
     'SLIDING_TOKEN_REFRESH_LIFETIME': timedelta(days=1),
 }
 
-# n8n shared token (webhook auth) — legacy, en desuso
-N8N_SHARED_TOKEN = '2122a0f76139ca172b0a2ea38c87286df0d1f350335945799eda61cb9a265cb7'
-
 # Datos de cuenta destino para pagos — valores reales en sell_system/variables.py
 CUENTA_DESTINO_BANCO = globals().get('CUENTA_DESTINO_BANCO', '')
 CUENTA_DESTINO_NUMERO = globals().get('CUENTA_DESTINO_NUMERO', '')

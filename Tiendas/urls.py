@@ -36,8 +36,6 @@ urlpatterns = [
     path('solicitudes/revision/', views.listar_solicitudes_revision, name='listar_solicitudes_revision'),
     path('solicitud/<str:codigo>/revisar/', views.revisar_solicitud_admin, name='revisar_solicitud_admin'),
     path('solicitud/<str:codigo>/comprobante/ver/', views.ver_comprobante, name='ver_comprobante'),
-    # Legacy n8n — en desuso
-    path('activar-solicitud/<str:codigo>/', views.activar_solicitud, name='activar_solicitud'),
 ]
 
 

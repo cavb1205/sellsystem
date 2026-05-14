@@ -1,5 +1,3 @@
-from functools import wraps
-
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -16,15 +14,6 @@ from django.core.files.base import ContentFile
 from Tiendas.models import Tienda, Cierre_Caja, Tienda_Membresia, Membresia, Tienda_Administrador, SolicitudPago, _generar_codigo_solicitud
 from Tiendas.serializers import TiendaSerializer, CajaSerializer, TiendaMembresiaSerializer, TiendaCreateSerializer, TiendaAdminSerializer, SolicitudPagoSerializer
 from Tiendas import telegram_bot
-
-
-def require_n8n_token(view_func):
-    @wraps(view_func)
-    def wrapper(request, *args, **kwargs):
-        if request.headers.get('X-N8N-Token') != settings.N8N_SHARED_TOKEN:
-            return Response({'error': 'forbidden'}, status=403)
-        return view_func(request, *args, **kwargs)
-    return wrapper
 
 
 def _actualizar_estados_membresias():
@@ -551,14 +540,9 @@ def telegram_webhook(request):
 
 
 @api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def consultar_solicitud(request, codigo):
-    """Devuelve el estado actual de una SolicitudPago. Accesible por JWT (app) o token n8n."""
-    token_ok = request.headers.get('X-N8N-Token') == settings.N8N_SHARED_TOKEN
-    user_ok = request.user and request.user.is_authenticated
-
-    if not token_ok and not user_ok:
-        return Response({'error': 'forbidden'}, status=403)
-
+    """Devuelve el estado actual de una SolicitudPago. La app la consulta para hacer polling."""
     solicitud = SolicitudPago.objects.filter(codigo=codigo).first()
     if not solicitud:
         return Response({'error': 'Solicitud no encontrada'}, status=status.HTTP_404_NOT_FOUND)
@@ -570,70 +554,6 @@ def consultar_solicitud(request, codigo):
 
     serializer = SolicitudPagoSerializer(solicitud)
     return Response(serializer.data, status=status.HTTP_200_OK)
-
-
-@api_view(['POST'])
-@require_n8n_token
-def activar_solicitud(request, codigo):
-    """n8n llama este endpoint con el resultado del análisis del comprobante."""
-    solicitud = SolicitudPago.objects.filter(codigo=codigo).first()
-    if not solicitud:
-        return Response({'error': 'Solicitud no encontrada'}, status=status.HTTP_404_NOT_FOUND)
-
-    if timezone.now() >= solicitud.expira and solicitud.estado == 'pendiente':
-        solicitud.estado = 'expirada'
-        solicitud.save(update_fields=['estado'])
-        return Response({'error': 'Solicitud expirada'}, status=status.HTTP_410_GONE)
-
-    if solicitud.estado in ('aprobada', 'rechazada'):
-        return Response({'estado': solicitud.estado, 'message': 'Ya procesada'}, status=status.HTTP_409_CONFLICT)
-
-    resultado = request.data.get('resultado')
-    if resultado not in ('aprobada', 'pre_aprobada', 'rechazada'):
-        return Response({'error': 'resultado inválido'}, status=status.HTTP_400_BAD_REQUEST)
-
-    # Dedupe por referencia bancaria
-    referencia = (request.data.get('extraccion') or {}).get('referencia', '') or ''
-    if referencia and resultado == 'aprobada':
-        duplicada = SolicitudPago.objects.filter(
-            referencia_bancaria=referencia, estado='aprobada'
-        ).exclude(id=solicitud.id).exists()
-        if duplicada:
-            resultado = 'rechazada'
-            request.data._mutable = True if hasattr(request.data, '_mutable') else None
-            motivo = 'Referencia bancaria ya utilizada'
-        else:
-            motivo = request.data.get('motivo', '')
-    else:
-        motivo = request.data.get('motivo', '')
-
-    # Actualizar solicitud
-    solicitud.estado = resultado
-    solicitud.motivo_rechazo = motivo
-    solicitud.extraccion_ia = request.data.get('extraccion') or {}
-    solicitud.confianza_ia = request.data.get('confianza')
-    solicitud.wa_from_number = request.data.get('wa_from_number', '')
-    solicitud.wa_message_id = request.data.get('wa_message_id', '')
-    if referencia:
-        solicitud.referencia_bancaria = referencia
-    solicitud.procesada = timezone.now()
-    solicitud.save()
-
-    # Actualizar membresía según resultado
-    tm = Tienda_Membresia.objects.filter(tienda=solicitud.tienda).first()
-    if resultado == 'aprobada':
-        tm = extender_membresia(solicitud.tienda_id, solicitud.membresia.nombre)
-    elif resultado == 'pre_aprobada':
-        if tm:
-            tm.estado = 'Pre-activada'
-            tm.pre_activada_hasta = datetime.date.today() + datetime.timedelta(days=3)
-            tm.save()
-
-    response_data = {'estado': resultado, 'motivo': motivo}
-    if tm:
-        response_data['fecha_vencimiento'] = str(tm.fecha_vencimiento)
-
-    return Response(response_data, status=status.HTTP_200_OK)
 
 
 @api_view(['GET'])
