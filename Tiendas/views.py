@@ -11,8 +11,8 @@ from django.utils import timezone
 
 from django.core.files.base import ContentFile
 
-from Tiendas.models import Tienda, Cierre_Caja, Tienda_Membresia, Membresia, Tienda_Administrador, SolicitudPago, _generar_codigo_solicitud
-from Tiendas.serializers import TiendaSerializer, CajaSerializer, TiendaMembresiaSerializer, TiendaCreateSerializer, TiendaAdminSerializer, SolicitudPagoSerializer
+from Tiendas.models import Tienda, Cierre_Caja, Tienda_Membresia, Membresia, Tienda_Administrador, SolicitudPago, CuentaDestino, _generar_codigo_solicitud
+from Tiendas.serializers import TiendaSerializer, CajaSerializer, TiendaMembresiaSerializer, TiendaCreateSerializer, TiendaAdminSerializer, SolicitudPagoSerializer, CuentaDestinoSerializer
 from Tiendas import telegram_bot
 
 
@@ -432,13 +432,26 @@ def solicitar_pago(request):
         'monto': str(membresia.precio),
         'plan': membresia.nombre,
         'wa_link': wa_link,
-        'cuenta': {
-            'banco': getattr(settings, 'CUENTA_DESTINO_BANCO', ''),
-            'numero': getattr(settings, 'CUENTA_DESTINO_NUMERO', ''),
-            'titular': getattr(settings, 'CUENTA_DESTINO_TITULAR', ''),
-            'tipo': getattr(settings, 'CUENTA_DESTINO_TIPO', ''),
-        },
+        'cuenta': CuentaDestinoSerializer(CuentaDestino.get()).data,
     }, status=status.HTTP_201_CREATED)
+
+
+@api_view(['GET', 'PUT'])
+@permission_classes([IsAuthenticated])
+def cuenta_destino(request):
+    """Datos bancarios para pagos. GET y PUT solo para el superusuario (root)."""
+    if not request.user.is_superuser:
+        return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
+    cuenta = CuentaDestino.get()
+    if request.method == 'GET':
+        return Response(CuentaDestinoSerializer(cuenta).data, status=status.HTTP_200_OK)
+
+    serializer = CuentaDestinoSerializer(cuenta, data=request.data, partial=True)
+    if serializer.is_valid():
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 @api_view(['POST'])

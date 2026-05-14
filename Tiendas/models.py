@@ -293,3 +293,25 @@ class SolicitudPago(models.Model):
 
     def esta_vigente(self):
         return self.estado == 'pendiente' and timezone.now() < self.expira
+
+
+class CuentaDestino(models.Model):
+    """Datos bancarios a los que el usuario transfiere para pagar la membresía.
+    Registro único (singleton, pk=1) editable por el root desde la app."""
+    banco = models.CharField(max_length=100, blank=True)
+    numero = models.CharField(max_length=100, blank=True)
+    titular = models.CharField(max_length=100, blank=True)
+    tipo = models.CharField(max_length=100, blank=True)
+    actualizada = models.DateTimeField(auto_now=True)
+
+    def save(self, *args, **kwargs):
+        self.pk = 1
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def get(cls):
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
+
+    def __str__(self):
+        return f"{self.banco} - {self.numero}"

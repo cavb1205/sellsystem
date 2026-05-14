@@ -36,6 +36,7 @@ urlpatterns = [
     path('solicitudes/revision/', views.listar_solicitudes_revision, name='listar_solicitudes_revision'),
     path('solicitud/<str:codigo>/revisar/', views.revisar_solicitud_admin, name='revisar_solicitud_admin'),
     path('solicitud/<str:codigo>/comprobante/ver/', views.ver_comprobante, name='ver_comprobante'),
+    path('cuenta-destino/', views.cuenta_destino, name='cuenta_destino'),
 ]
 
 

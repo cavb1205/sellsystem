@@ -1,6 +1,6 @@
 
 from rest_framework import serializers
-from .models import Tienda, Cierre_Caja, Tienda_Membresia, Membresia, Tienda_Administrador, SolicitudPago
+from .models import Tienda, Cierre_Caja, Tienda_Membresia, Membresia, Tienda_Administrador, SolicitudPago, CuentaDestino
 from Trabajadores.serializers import UserSerializer, PerfilSerializer
 
 
@@ -119,6 +119,13 @@ class SolicitudPagoSerializer(serializers.ModelSerializer):
 
     def get_tiene_comprobante(self, obj):
         return bool(obj.comprobante)
+
+
+class CuentaDestinoSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CuentaDestino
+        fields = ['banco', 'numero', 'titular', 'tipo', 'actualizada']
+        read_only_fields = ['actualizada']
 
 
 class CajaSerializer(serializers.ModelSerializer):
