@@ -247,8 +247,10 @@ def _generar_codigo_solicitud(plan):
 class SolicitudPago(models.Model):
     ESTADOS = [
         ('pendiente', 'Esperando comprobante'),
+        ('pendiente_confirmacion', 'Pre-activada — esperando confirmación'),
         ('procesando', 'Validando'),
         ('aprobada', 'Aprobada'),
+        ('confirmada', 'Confirmada'),
         ('pre_aprobada', 'Pre-aprobada (revisión manual)'),
         ('rechazada', 'Rechazada'),
         ('expirada', 'Expirada'),
@@ -256,7 +258,21 @@ class SolicitudPago(models.Model):
     tienda = models.ForeignKey(Tienda, on_delete=models.CASCADE, related_name='solicitudes_pago')
     membresia = models.ForeignKey(Membresia, on_delete=models.PROTECT)
     codigo = models.CharField(max_length=12, unique=True, db_index=True)
-    estado = models.CharField(max_length=20, choices=ESTADOS, default='pendiente')
+    estado = models.CharField(max_length=25, choices=ESTADOS, default='pendiente')
+
+    # Comprobante subido por el usuario en la app
+    comprobante = models.ImageField(upload_to='comprobantes/%Y/%m/', null=True, blank=True)
+    solicitada_por = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='solicitudes_pago_creadas'
+    )
+
+    # Revisión vía Telegram / panel admin
+    telegram_message_id = models.CharField(max_length=50, blank=True)
+    revisada_por = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='solicitudes_pago_revisadas'
+    )
 
     wa_from_number = models.CharField(max_length=30, blank=True)
     wa_message_id = models.CharField(max_length=100, blank=True)

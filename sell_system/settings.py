@@ -161,6 +161,10 @@ STATIC_URL = '/static/'
 
 STATIC_ROOT = '/var/www/html/django-static/'
 
+# Media files (comprobantes de pago — carpeta NO pública, se sirve vía vista autenticada)
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/4.0/ref/settings/#default-auto-field
@@ -217,7 +221,7 @@ SIMPLE_JWT = {
     'SLIDING_TOKEN_REFRESH_LIFETIME': timedelta(days=1),
 }
 
-# n8n shared token (webhook auth)
+# n8n shared token (webhook auth) — legacy, en desuso
 N8N_SHARED_TOKEN = '2122a0f76139ca172b0a2ea38c87286df0d1f350335945799eda61cb9a265cb7'
 
 # Datos de cuenta destino para pagos
@@ -225,3 +229,9 @@ CUENTA_DESTINO_BANCO = ''
 CUENTA_DESTINO_NUMERO = ''
 CUENTA_DESTINO_TITULAR = ''
 CUENTA_DESTINO_TIPO = ''
+
+# Telegram bot — notificación y aprobación de solicitudes de pago
+# Estos valores reales viven en sell_system/variables.py (solo en el VPS)
+TELEGRAM_BOT_TOKEN = globals().get('TELEGRAM_BOT_TOKEN', '')
+TELEGRAM_ADMIN_CHAT_ID = globals().get('TELEGRAM_ADMIN_CHAT_ID', '')
+TELEGRAM_WEBHOOK_SECRET = globals().get('TELEGRAM_WEBHOOK_SECRET', '')

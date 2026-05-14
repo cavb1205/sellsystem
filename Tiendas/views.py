@@ -11,8 +11,11 @@ from itertools import chain
 from django.conf import settings
 from django.utils import timezone
 
+from django.core.files.base import ContentFile
+
 from Tiendas.models import Tienda, Cierre_Caja, Tienda_Membresia, Membresia, Tienda_Administrador, SolicitudPago, _generar_codigo_solicitud
 from Tiendas.serializers import TiendaSerializer, CajaSerializer, TiendaMembresiaSerializer, TiendaCreateSerializer, TiendaAdminSerializer, SolicitudPagoSerializer
+from Tiendas import telegram_bot
 
 
 def require_n8n_token(view_func):
@@ -393,10 +396,11 @@ def solicitar_pago(request):
         membresia=membresia,
         codigo=codigo,
         expira=expira,
+        solicitada_por=request.user,
     )
 
     numero_soporte = getattr(settings, 'WHATSAPP_SOPORTE_NUMERO', '')
-    texto_wa = f"Hola, envío comprobante código {codigo} de la tienda *{tienda.nombre}*."
+    texto_wa = f"Hola, necesito ayuda con el pago de mi plan, tienda *{tienda.nombre}* (código {codigo})."
     wa_link = f"https://wa.me/{numero_soporte}?text={texto_wa.replace(' ', '%20')}" if numero_soporte else ''
 
     return Response({
@@ -405,7 +409,122 @@ def solicitar_pago(request):
         'monto': str(membresia.precio),
         'plan': membresia.nombre,
         'wa_link': wa_link,
+        'cuenta': {
+            'banco': getattr(settings, 'CUENTA_DESTINO_BANCO', ''),
+            'numero': getattr(settings, 'CUENTA_DESTINO_NUMERO', ''),
+            'titular': getattr(settings, 'CUENTA_DESTINO_TITULAR', ''),
+            'tipo': getattr(settings, 'CUENTA_DESTINO_TIPO', ''),
+        },
     }, status=status.HTTP_201_CREATED)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def adjuntar_comprobante(request, codigo):
+    """El usuario sube el comprobante → pre-activa la membresía al instante y notifica al admin por Telegram."""
+    solicitud = SolicitudPago.objects.filter(codigo=codigo).first()
+    if not solicitud:
+        return Response({'error': 'Solicitud no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+
+    if solicitud.estado in ('aprobada', 'confirmada', 'rechazada'):
+        return Response({'error': 'Esta solicitud ya fue procesada'}, status=status.HTTP_409_CONFLICT)
+
+    archivo = request.FILES.get('comprobante')
+    comprobante_bytes = None
+    if archivo:
+        comprobante_bytes, nombre = telegram_bot.comprimir_imagen(archivo)
+        if comprobante_bytes:
+            solicitud.comprobante.save(nombre, ContentFile(comprobante_bytes), save=False)
+
+    referencia = (request.data.get('referencia') or '').strip()
+    if referencia:
+        solicitud.referencia_bancaria = referencia
+
+    # Pre-activación: acceso inmediato por 3 días mientras el admin confirma
+    tm = Tienda_Membresia.objects.filter(tienda=solicitud.tienda).first()
+    if tm:
+        tm.estado = 'Pre-activada'
+        tm.pre_activada_hasta = datetime.date.today() + datetime.timedelta(days=3)
+        tm.save()
+
+    solicitud.estado = 'pendiente_confirmacion'
+    solicitud.save()
+
+    # Notificar al admin por Telegram (no bloquea la respuesta si falla)
+    message_id = telegram_bot.notificar_solicitud(solicitud, comprobante_bytes)
+    if message_id:
+        solicitud.telegram_message_id = message_id
+        solicitud.save(update_fields=['telegram_message_id'])
+
+    return Response({
+        'estado': solicitud.estado,
+        'mensaje': 'Tu acceso ya está activo. Confirmaremos tu pago en las próximas horas.',
+        'pre_activada_hasta': str(tm.pre_activada_hasta) if tm else None,
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+def telegram_webhook(request):
+    """Recibe los toques de botón del admin desde Telegram (confirmar / rechazar)."""
+    secret = request.headers.get('X-Telegram-Bot-Api-Secret-Token')
+    if secret != settings.TELEGRAM_WEBHOOK_SECRET:
+        return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
+    callback = request.data.get('callback_query')
+    if not callback:
+        return Response({'ok': True})  # ignorar updates que no sean botones
+
+    chat_id = str(callback.get('message', {}).get('chat', {}).get('id', ''))
+    if chat_id != str(settings.TELEGRAM_ADMIN_CHAT_ID):
+        return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
+    callback_id = callback.get('id')
+    data = callback.get('data', '')
+    try:
+        accion, codigo = data.split(':', 1)
+    except ValueError:
+        telegram_bot.responder_callback(callback_id, 'Acción inválida')
+        return Response({'ok': True})
+
+    solicitud = SolicitudPago.objects.filter(codigo=codigo).first()
+    if not solicitud:
+        telegram_bot.responder_callback(callback_id, 'Solicitud no encontrada')
+        return Response({'ok': True})
+
+    if solicitud.estado in ('aprobada', 'confirmada', 'rechazada'):
+        telegram_bot.responder_callback(callback_id, 'Esta solicitud ya fue procesada')
+        return Response({'ok': True})
+
+    admin_tg = callback.get('from', {})
+    admin_nombre = (
+        f"{admin_tg.get('first_name', '')} {admin_tg.get('last_name', '')}".strip()
+        or admin_tg.get('username', 'admin')
+    )
+
+    if accion == 'confirmar':
+        solicitud.estado = 'confirmada'
+        solicitud.procesada = timezone.now()
+        solicitud.save()
+        extender_membresia(solicitud.tienda_id, solicitud.membresia.nombre)
+        solicitud.refresh_from_db()
+        telegram_bot.marcar_procesada(solicitud, 'confirmar', admin_nombre)
+        telegram_bot.responder_callback(callback_id, f'✅ {codigo} confirmado')
+    elif accion == 'rechazar':
+        solicitud.estado = 'rechazada'
+        solicitud.motivo_rechazo = 'Rechazado en revisión'
+        solicitud.procesada = timezone.now()
+        solicitud.save()
+        tm = Tienda_Membresia.objects.filter(tienda=solicitud.tienda).first()
+        if tm and tm.estado == 'Pre-activada':
+            tm.estado = 'Pendiente Pago'
+            tm.pre_activada_hasta = None
+            tm.save()
+        telegram_bot.marcar_procesada(solicitud, 'rechazar', admin_nombre)
+        telegram_bot.responder_callback(callback_id, f'❌ {codigo} rechazado')
+    else:
+        telegram_bot.responder_callback(callback_id, 'Acción desconocida')
+
+    return Response({'ok': True})
 
 
 @api_view(['GET'])
