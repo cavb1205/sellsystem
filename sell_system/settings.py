@@ -224,11 +224,11 @@ SIMPLE_JWT = {
 # n8n shared token (webhook auth) — legacy, en desuso
 N8N_SHARED_TOKEN = '2122a0f76139ca172b0a2ea38c87286df0d1f350335945799eda61cb9a265cb7'
 
-# Datos de cuenta destino para pagos
-CUENTA_DESTINO_BANCO = ''
-CUENTA_DESTINO_NUMERO = ''
-CUENTA_DESTINO_TITULAR = ''
-CUENTA_DESTINO_TIPO = ''
+# Datos de cuenta destino para pagos — valores reales en sell_system/variables.py
+CUENTA_DESTINO_BANCO = globals().get('CUENTA_DESTINO_BANCO', '')
+CUENTA_DESTINO_NUMERO = globals().get('CUENTA_DESTINO_NUMERO', '')
+CUENTA_DESTINO_TITULAR = globals().get('CUENTA_DESTINO_TITULAR', '')
+CUENTA_DESTINO_TIPO = globals().get('CUENTA_DESTINO_TIPO', '')
 
 # Telegram bot — notificación y aprobación de solicitudes de pago
 # Estos valores reales viven en sell_system/variables.py (solo en el VPS)
