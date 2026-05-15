@@ -27,9 +27,9 @@ SECRET_KEY = KEY
 DEBUG = False
 
 if DEBUG == True:
-    ALLOWED_HOSTS = ['137.184.176.199','192.168.1.160','localhost','*']
+    ALLOWED_HOSTS = ['localhost', '127.0.0.1', '192.168.1.160', '137.184.176.199']
 else:
-    ALLOWED_HOSTS = ['*','137.184.176.199','https://api.carterafinanciera.com']
+    ALLOWED_HOSTS = ['api.carterafinanciera.com', '137.184.176.199']
 
 if DEBUG == False:
     CSRF_TRUSTED_ORIGINS = ['https://*.carterafinanciera.com']
@@ -173,7 +173,18 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 
 
-CORS_ALLOW_ALL_ORIGINS = True
+if DEBUG == True:
+    CORS_ALLOW_ALL_ORIGINS = True
+else:
+    CORS_ALLOWED_ORIGINS = [
+        'https://app.carterafinanciera.com',
+        'https://carterafinanciera.com',
+        'https://www.carterafinanciera.com',
+    ]
+    # Permite preview deployments de Vercel (PRs, branches)
+    CORS_ALLOWED_ORIGIN_REGEXES = [
+        r'^https://.*\.vercel\.app$',
+    ]
 
 
 REST_FRAMEWORK = {
