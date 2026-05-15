@@ -177,15 +177,14 @@ CORS_ALLOW_ALL_ORIGINS = True
 
 
 REST_FRAMEWORK = {
-    #'COERCE_DECIMAL_TO_STRING': False,
-    
     'DEFAULT_AUTHENTICATION_CLASSES': (
-        
         'rest_framework_simplejwt.authentication.JWTAuthentication',
-        
     ),
-    
-    
+    # Por defecto TODO requiere autenticación. Los endpoints públicos
+    # (login, register, telegram_webhook) usan @permission_classes([AllowAny]).
+    'DEFAULT_PERMISSION_CLASSES': (
+        'rest_framework.permissions.IsAuthenticated',
+    ),
 }
 
 

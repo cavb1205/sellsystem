@@ -1,5 +1,5 @@
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from rest_framework import status
 
@@ -500,8 +500,10 @@ def adjuntar_comprobante(request, codigo):
 
 
 @api_view(['POST'])
+@permission_classes([AllowAny])
 def telegram_webhook(request):
-    """Recibe los toques de botón del admin desde Telegram (confirmar / rechazar)."""
+    """Recibe los toques de botón del admin desde Telegram (confirmar / rechazar).
+    Telegram no envía JWT — valida con X-Telegram-Bot-Api-Secret-Token."""
     secret = request.headers.get('X-Telegram-Bot-Api-Secret-Token')
     if secret != settings.TELEGRAM_WEBHOOK_SECRET:
         return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
