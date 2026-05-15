@@ -99,7 +99,6 @@ def put_aporte(request, pk, tienda_id=None):
 @api_view(['POST'])
 def post_aporte(request, tienda_id=None):
     '''creamos un aporte'''
-    print('ingresa create aporte')
     if request.method == 'POST':
         if tienda_id:
             tienda = Tienda.objects.filter(id=tienda_id).first()

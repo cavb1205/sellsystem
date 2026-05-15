@@ -255,7 +255,6 @@ def get_tiendas_admin(request):
     '''return list stores for a admin user'''
 
     user = request.user
-    print(user)
     if user.is_staff:
         tiendas = Tienda_Administrador.objects.filter(administrador=user)
         serializer = TiendaAdminSerializer(tiendas, many=True)
@@ -297,8 +296,6 @@ def get_caja_anterior(request, fecha, tienda_id=None):
     if caja_anterior:
         serializer = CajaSerializer(caja_anterior, many=False)
         return Response(serializer.data, status=status.HTTP_200_OK)
-    else:
-        print('no hay datos de caja anterior')
 
     return Response({'message': 'No se encontraron registros'}, status=status.HTTP_200_OK)
 
@@ -359,7 +356,6 @@ def get_tienda_membresia_admin(request, pk):
 @api_view(['GET'])
 def activar_membresia_mensual(request, pk):
     '''get store and activate membershi for a mounth + 30 days'''
-    print('ingresa a activar por messsss')
     tienda = Tienda_Membresia.objects.get(id=pk)
     if tienda:
         tienda.estado = 'Activa'

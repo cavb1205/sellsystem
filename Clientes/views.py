@@ -205,15 +205,11 @@ def _calcular_score(cliente_id, tienda_id):
 def list_clientes(request, tienda_id=None):
     '''obtenemos todos los clientes'''
 
-    print('ingresa a list clientessssss')
     user = request.user
 
-    print(tienda_id)
     if tienda_id:
-        print('list con el cliente id......')
         tienda = Tienda.objects.filter(id=tienda_id).first()
     else:
-        print('else clientes')
         tienda = Tienda.objects.filter(id=user.perfil.tienda.id).first()
     clientes = Cliente.objects.filter(tienda=tienda.id).order_by('nombres')
     if clientes:
