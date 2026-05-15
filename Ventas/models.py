@@ -36,6 +36,13 @@ class Venta(models.Model):
     saldo_actual = models.DecimalField(max_digits=10,decimal_places=2, null=True, blank=True)
     fecha_vencimiento = models.DateField(auto_now=False, null=True, blank=True)
     tienda = models.ForeignKey(Tienda,on_delete=models.CASCADE)
+    # Si esta venta fue creada renovando otra (vencida), apunta a la original.
+    # La inversa (venta.renovacion) marca a la vieja como "renovada" en el
+    # cálculo del score crediticio.
+    origen_renovacion = models.ForeignKey(
+        'self', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='renovacion',
+    )
 
     def __str__(self):
         return self.cliente.nombres

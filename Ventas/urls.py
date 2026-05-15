@@ -25,4 +25,6 @@ urlpatterns = [
     path('<int:pk>/delete/', views.delete_venta, name='delete_venta'),
     path('<int:pk>/delete/t/<str:tienda_id>/', views.delete_venta, name='delete_venta_admin'),
     path('<int:pk>/perdida/', views.perdida_venta, name='perdida_venta'),
+    path('<int:pk>/renovar/', views.renovar_venta, name='renovar_venta'),
+    path('<int:pk>/renovar/t/<str:tienda_id>/', views.renovar_venta, name='renovar_venta_admin'),
 ]

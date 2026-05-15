@@ -35,6 +35,9 @@ class Recaudo(models.Model):
     latitud = models.DecimalField(max_digits=10, decimal_places=7, null=True, blank=True)
     longitud = models.DecimalField(max_digits=10, decimal_places=7, null=True, blank=True)
     precision_gps = models.FloatField(null=True, blank=True)
+    # True cuando el recaudo se generó automáticamente al renovar un crédito.
+    # No es un pago real — se excluye del cálculo del score crediticio.
+    es_renovacion = models.BooleanField(default=False, db_index=True)
 
     def __str__(self):
         return str(self.fecha_recaudo)

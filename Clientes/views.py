@@ -15,9 +15,17 @@ from Clientes.serializers import ClienteSerializer, ClienteCreateSerializer
 
 
 def _calcular_score(cliente_id, tienda_id):
-    """Calcula el score crediticio (0-100) y el cupo recomendado para un cliente."""
+    """Calcula el score crediticio (0-100) y el cupo recomendado para un cliente.
+
+    Renovaciones: cuando un crédito vencido se renueva, se genera un Recaudo
+    con es_renovacion=True (excluido del conteo de pagos reales) y la venta
+    nueva queda vinculada a la vieja via origen_renovacion. La venta vieja
+    cierra como 'Pagado' pero NO cuenta como liquidada; se trata como un
+    vencido para el componente de salud de créditos activos.
+    """
     ventas = Venta.objects.filter(cliente_id=cliente_id, tienda_id=tienda_id)
-    recaudos = Recaudo.objects.filter(venta__in=ventas)
+    # Solo recaudos reales — excluye los generados al renovar
+    recaudos = Recaudo.objects.filter(venta__in=ventas, es_renovacion=False)
 
     pagos = recaudos.filter(visita_blanco__isnull=True).count()
     no_pagos = recaudos.filter(visita_blanco__isnull=False).count()
@@ -28,9 +36,12 @@ def _calcular_score(cliente_id, tienda_id):
     comp_pago = round(tasa_pago * 40, 1) if tasa_pago is not None else 20.0
 
     # Componente 2 — salud de créditos activos (25 pts)
+    # Las ventas renovadas (cerradas con un Recaudo de renovación) cuentan
+    # como vencidos: el cliente no pagó, le rolaron la deuda.
     vencidos = ventas.filter(estado_venta='Vencido').count()
     atrasados = ventas.filter(estado_venta='Atrasado').count()
-    if vencidos > 0:
+    renovaciones = ventas.filter(renovacion__isnull=False).distinct().count()
+    if (vencidos + renovaciones) > 0:
         comp_activos = 0
     elif atrasados > 0:
         comp_activos = 12
@@ -44,7 +55,8 @@ def _calcular_score(cliente_id, tienda_id):
     comp_perdidos = round((1 - tasa_perdidos) * 20, 1)
 
     # Componente 4 — historial positivo (15 pts)
-    liquidados = ventas.filter(estado_venta='Pagado').count()
+    # Excluye créditos cerrados-por-renovación: no son una liquidación real.
+    liquidados = ventas.filter(estado_venta='Pagado', renovacion__isnull=True).count()
     comp_historial = round(min(liquidados / 5, 1) * 15, 1)
 
     score = max(0, min(100, round(comp_pago + comp_activos + comp_perdidos + comp_historial)))
@@ -83,8 +95,11 @@ def _calcular_score(cliente_id, tienda_id):
         creditos_pagados = ventas.filter(estado_venta='Pagado')
 
         # Capacidad de pago: promedio de los últimos 90 recaudos reales
+        # (excluye renovaciones — su monto es el saldo total, no un pago real)
         recaudos_exitosos = list(
-            Recaudo.objects.filter(venta__in=ventas, visita_blanco__isnull=True)
+            Recaudo.objects.filter(
+                venta__in=ventas, visita_blanco__isnull=True, es_renovacion=False
+            )
             .order_by('-fecha_recaudo')[:90]
         )
         promedio_pago_real = (
@@ -124,9 +139,11 @@ def _calcular_score(cliente_id, tienda_id):
         elif score >= 40: factor_score = 0.70
         else:             factor_score = 0.40
 
-        # Factor por recencia
+        # Factor por recencia (excluye renovaciones)
         ultima_fecha = (
-            Recaudo.objects.filter(venta__in=ventas, visita_blanco__isnull=True)
+            Recaudo.objects.filter(
+                venta__in=ventas, visita_blanco__isnull=True, es_renovacion=False
+            )
             .order_by('-fecha_recaudo')
             .values_list('fecha_recaudo', flat=True)
             .first()

@@ -2,9 +2,12 @@ from decimal import Decimal
 from datetime import date, datetime, timedelta
 import Ventas
 
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
+
+from django.db import transaction
 
 from Ventas.models import Venta
 from Ventas.serializers import VentaSerializer, VentaDetailSerializer, VentaUpdateSerializer
@@ -218,3 +221,79 @@ def perdida_venta(request, pk):
         return Response({'message': 'Venta enviada como pérdida.'})
     else:
         return Response({'message': 'No se encontró la venta'}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def renovar_venta(request, pk, tienda_id=None):
+    """Renueva un crédito atómicamente:
+    1) Cierra el crédito vencido con un Recaudo marcado es_renovacion=True
+    2) Crea un crédito nuevo apuntando al viejo (origen_renovacion)
+    Caja no se mueve (entra el saldo y sale como nuevo capital → neto 0).
+    El recaudo de renovación NO cuenta como pago en el score crediticio.
+    """
+    if tienda_id:
+        tienda = Tienda.objects.filter(id=tienda_id).first()
+    else:
+        tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
+    if not tienda:
+        return Response({'error': 'Tienda no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+
+    venta_vieja = Venta.objects.filter(id=pk, tienda=tienda).first()
+    if not venta_vieja:
+        return Response({'error': 'Crédito no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+    if venta_vieja.estado_venta == 'Pagado':
+        return Response({'error': 'El crédito ya está pagado'}, status=status.HTTP_409_CONFLICT)
+    if venta_vieja.estado_venta == 'Perdida':
+        return Response({'error': 'No se puede renovar un crédito en pérdida'}, status=status.HTTP_409_CONFLICT)
+
+    try:
+        fecha_venta = datetime.strptime(request.data.get('fecha_venta'), '%Y-%m-%d').date()
+        interes = int(request.data.get('interes'))
+        cuotas = int(request.data.get('cuotas'))
+    except (TypeError, ValueError):
+        return Response({'error': 'fecha_venta, interes y cuotas son requeridos'}, status=status.HTTP_400_BAD_REQUEST)
+    if cuotas < 1 or interes < 0:
+        return Response({'error': 'interes y cuotas inválidos'}, status=status.HTTP_400_BAD_REQUEST)
+
+    saldo = venta_vieja.saldo_actual or Decimal('0')
+    if saldo <= 0:
+        return Response({'error': 'No hay saldo pendiente para renovar'}, status=status.HTTP_400_BAD_REQUEST)
+
+    with transaction.atomic():
+        # 1. Recaudo que cierra el viejo (marcado como renovación)
+        Recaudo.objects.create(
+            fecha_recaudo=fecha_venta,
+            valor_recaudo=saldo,
+            venta=venta_vieja,
+            tienda=tienda,
+            es_renovacion=True,
+        )
+        venta_vieja.saldo_actual = 0
+        venta_vieja.estado_venta = 'Pagado'
+        venta_vieja.save()
+
+        # 2. Nueva venta vinculada al original
+        nuevo_total = int(saldo + (Decimal(interes) / 100) * saldo)
+        fecha_vencimiento = fecha_venta + timedelta(days=cuotas + 4)
+        nueva_venta = Venta.objects.create(
+            fecha_venta=fecha_venta,
+            cliente=venta_vieja.cliente,
+            valor_venta=saldo,
+            interes=interes,
+            cuotas=cuotas,
+            plazo=venta_vieja.plazo,
+            comentario=f'Renovación de crédito #{venta_vieja.id}',
+            estado_venta='Vigente',
+            saldo_actual=nuevo_total,
+            fecha_vencimiento=fecha_vencimiento,
+            tienda=tienda,
+            origen_renovacion=venta_vieja,
+        )
+        # Caja: +saldo (recaudo) -saldo (capital nuevo) = neto 0. No tocar.
+
+    return Response({
+        'venta_anterior_id': venta_vieja.id,
+        'nueva_venta_id': nueva_venta.id,
+        'saldo_renovado': str(saldo),
+    }, status=status.HTTP_201_CREATED)
