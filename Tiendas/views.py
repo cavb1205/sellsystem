@@ -371,14 +371,18 @@ def get_tienda_membresia_admin(request, pk):
         return Response({'message': 'No se encontró la tienda'}, status=status.HTTP_400_BAD_REQUEST)
 
 def _registrar_pago_manual(tienda_membresia, user):
-    """Registra en el libro de pagos una activación manual hecha por el root."""
-    PagoMembresia.objects.create(
+    """Registra en el libro de pagos una activación manual hecha por el root.
+    Idempotente por día: si ya hay un pago manual de esa tienda y plan hoy,
+    no duplica (evita doble-conteo al tocar el botón dos veces)."""
+    PagoMembresia.objects.get_or_create(
         tienda=tienda_membresia.tienda,
         membresia=tienda_membresia.membresia,
-        monto=tienda_membresia.membresia.precio,
         fecha=datetime.date.today(),
         origen='manual',
-        registrado_por=user if getattr(user, 'is_authenticated', False) else None,
+        defaults={
+            'monto': tienda_membresia.membresia.precio,
+            'registrado_por': user if getattr(user, 'is_authenticated', False) else None,
+        },
     )
 
 
