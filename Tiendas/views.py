@@ -11,15 +11,17 @@ from django.utils import timezone
 
 from django.core.files.base import ContentFile
 
-from Tiendas.models import Tienda, Cierre_Caja, Tienda_Membresia, Membresia, Tienda_Administrador, SolicitudPago, CuentaDestino, _generar_codigo_solicitud
+from django.db.models import Sum
+
+from Tiendas.models import Tienda, Cierre_Caja, Tienda_Membresia, Membresia, Tienda_Administrador, SolicitudPago, CuentaDestino, PagoMembresia, _generar_codigo_solicitud
 from Tiendas.serializers import TiendaSerializer, CajaSerializer, TiendaMembresiaSerializer, TiendaCreateSerializer, TiendaAdminSerializer, SolicitudPagoSerializer, CuentaDestinoSerializer
 from Tiendas import telegram_bot
 
 
 def _actualizar_estados_membresias():
     """Recalcula en bulk los estados de todas las membresías según la fecha actual.
-    Activa → Pendiente Pago cuando fecha_vencimiento ya pasó (1 día de gracia ya consumido).
-    Pendiente Pago → Vencida cuando han pasado 3+ días desde el vencimiento.
+    Activa → Pendiente Pago cuando fecha_vencimiento ya pasó (día +1, único día de gracia).
+    Pendiente Pago → Vencida cuando han pasado 2+ días desde el vencimiento (bloqueo en V+2).
     Pre-activada → Pendiente Pago cuando pre_activada_hasta ya pasó."""
     hoy = datetime.date.today()
 
@@ -30,7 +32,7 @@ def _actualizar_estados_membresias():
 
     Tienda_Membresia.objects.filter(
         estado='Pendiente Pago',
-        fecha_vencimiento__lte=hoy - datetime.timedelta(days=3)
+        fecha_vencimiento__lte=hoy - datetime.timedelta(days=2)
     ).update(estado='Vencida')
 
     Tienda_Membresia.objects.filter(
@@ -64,7 +66,19 @@ def _confirmar_solicitud(solicitud, revisor=None):
     solicitud.revisada_por = revisor
     solicitud.procesada = timezone.now()
     solicitud.save()
-    return extender_membresia(solicitud.tienda_id, solicitud.membresia.nombre)
+    tm = extender_membresia(solicitud.tienda_id, solicitud.membresia.nombre)
+    # Registrar el ingreso en el libro de pagos (precio congelado al momento del cobro)
+    if not PagoMembresia.objects.filter(solicitud=solicitud).exists():
+        PagoMembresia.objects.create(
+            tienda_id=solicitud.tienda_id,
+            membresia=solicitud.membresia,
+            monto=solicitud.membresia.precio,
+            fecha=datetime.date.today(),
+            origen='panel' if revisor else 'telegram',
+            solicitud=solicitud,
+            registrado_por=revisor,
+        )
+    return tm
 
 
 def _revertir_solicitud(solicitud, motivo, revisor=None):
@@ -76,6 +90,9 @@ def _revertir_solicitud(solicitud, motivo, revisor=None):
     solicitud.revisada_por = revisor
     solicitud.procesada = timezone.now()
     solicitud.save()
+    if era_confirmada:
+        # El ingreso queda sin efecto — sacarlo del libro de pagos
+        PagoMembresia.objects.filter(solicitud=solicitud).delete()
     if tm:
         if era_confirmada and solicitud.fecha_vencimiento_previa:
             tm.fecha_vencimiento = solicitud.fecha_vencimiento_previa
@@ -353,6 +370,18 @@ def get_tienda_membresia_admin(request, pk):
     else:
         return Response({'message': 'No se encontró la tienda'}, status=status.HTTP_400_BAD_REQUEST)
 
+def _registrar_pago_manual(tienda_membresia, user):
+    """Registra en el libro de pagos una activación manual hecha por el root."""
+    PagoMembresia.objects.create(
+        tienda=tienda_membresia.tienda,
+        membresia=tienda_membresia.membresia,
+        monto=tienda_membresia.membresia.precio,
+        fecha=datetime.date.today(),
+        origen='manual',
+        registrado_por=user if getattr(user, 'is_authenticated', False) else None,
+    )
+
+
 @api_view(['GET'])
 def activar_membresia_mensual(request, pk):
     '''get store and activate membershi for a mounth + 30 days'''
@@ -363,6 +392,7 @@ def activar_membresia_mensual(request, pk):
         tienda.fecha_activacion = datetime.date.today()
         tienda.fecha_vencimiento = tienda.fecha_activacion + datetime.timedelta(days=30)
         tienda.save()
+        _registrar_pago_manual(tienda, request.user)
         return Response({'message':'Suscripción Mensual Activa'}, status=status.HTTP_200_OK)
     else:
         return Response({'message': 'No se encontró la tienda'}, status=status.HTTP_400_BAD_REQUEST)
@@ -377,6 +407,7 @@ def activar_membresia_ano(request, pk):
         tienda.fecha_activacion = datetime.date.today()
         tienda.fecha_vencimiento = tienda.fecha_activacion + datetime.timedelta(days=365)
         tienda.save()
+        _registrar_pago_manual(tienda, request.user)
         return Response({'message':'Suscripción Anual Activa'}, status=status.HTTP_200_OK)
     else:
         return Response({'message': 'No se encontró la tienda'}, status=status.HTTP_400_BAD_REQUEST)
@@ -664,4 +695,72 @@ def comprobar_estado_membresia(tienda_id):
     if suscripcion_tienda.estado == 'Pendiente Pago' and hoy >= vencida:
         suscripcion_tienda.estado = 'Vencida'
         suscripcion_tienda.save()
+
+
+####### INFORME DE INGRESOS POR MEMBRESÍAS (solo root) ##########
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def ingresos_membresias(request):
+    """Informe de ingresos por renovaciones de membresía, agrupado por mes.
+    ?year=2026 (default: año actual). Solo superusuarios."""
+    if not request.user.is_superuser:
+        return Response({'error': 'forbidden'}, status=403)
+
+    hoy = datetime.date.today()
+    try:
+        year = int(request.GET.get('year', hoy.year))
+    except (TypeError, ValueError):
+        year = hoy.year
+
+    pagos = PagoMembresia.objects.filter(
+        fecha__year=year
+    ).select_related('tienda', 'membresia', 'registrado_por').order_by('-fecha', '-creado')
+
+    por_mes = [
+        {'mes': m, 'total': 0, 'cantidad': 0,
+         'mensuales': 0, 'anuales': 0,
+         'monto_mensuales': 0, 'monto_anuales': 0}
+        for m in range(1, 13)
+    ]
+    detalle = []
+    total_anual = 0
+
+    for p in pagos:
+        mes = por_mes[p.fecha.month - 1]
+        monto = float(p.monto)
+        mes['total'] += monto
+        mes['cantidad'] += 1
+        if p.membresia.nombre == 'Anual':
+            mes['anuales'] += 1
+            mes['monto_anuales'] += monto
+        else:
+            mes['mensuales'] += 1
+            mes['monto_mensuales'] += monto
+        total_anual += monto
+        detalle.append({
+            'id': p.id,
+            'tienda': p.tienda.nombre,
+            'tienda_id': p.tienda_id,
+            'plan': p.membresia.nombre,
+            'monto': monto,
+            'fecha': str(p.fecha),
+            'origen': p.origen,
+            'codigo': p.solicitud.codigo if p.solicitud_id else None,
+        })
+
+    total_anterior = PagoMembresia.objects.filter(
+        fecha__year=year - 1
+    ).aggregate(t=Sum('monto'))['t'] or 0
+
+    anios = sorted({d.year for d in PagoMembresia.objects.dates('fecha', 'year')} | {hoy.year}, reverse=True)
+
+    return Response({
+        'year': year,
+        'anios_disponibles': anios,
+        'total_anual': total_anual,
+        'total_anio_anterior': float(total_anterior),
+        'por_mes': por_mes,
+        'pagos': detalle,
+    }, status=status.HTTP_200_OK)
 

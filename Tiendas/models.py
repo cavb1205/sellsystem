@@ -315,3 +315,29 @@ class CuentaDestino(models.Model):
 
     def __str__(self):
         return f"{self.banco} - {self.numero}"
+
+
+class PagoMembresia(models.Model):
+    """Libro de ingresos por membresías. Un registro inmutable por cada renovación
+    cobrada, con el precio congelado al momento del pago. Se crea al confirmar una
+    SolicitudPago o al activar manualmente desde el panel root; se elimina si la
+    solicitud se revierte en conciliación."""
+    ORIGENES = [
+        ('telegram', 'Confirmado vía Telegram'),
+        ('panel', 'Confirmado en panel web'),
+        ('manual', 'Activación manual (root)'),
+    ]
+    tienda = models.ForeignKey(Tienda, on_delete=models.CASCADE, related_name='pagos_membresia')
+    membresia = models.ForeignKey(Membresia, on_delete=models.PROTECT)
+    monto = models.DecimalField(max_digits=10, decimal_places=0)
+    fecha = models.DateField(db_index=True)
+    origen = models.CharField(max_length=20, choices=ORIGENES, default='telegram')
+    solicitud = models.ForeignKey(
+        SolicitudPago, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='pagos'
+    )
+    registrado_por = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+    creado = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.tienda} - {self.membresia.nombre} ({self.fecha}) ${self.monto}"
