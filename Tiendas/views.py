@@ -11,7 +11,7 @@ from django.utils import timezone
 
 from django.core.files.base import ContentFile
 
-from django.db.models import Sum
+from django.db.models import Sum, Count
 
 from Tiendas.models import Tienda, Cierre_Caja, Tienda_Membresia, Membresia, Tienda_Administrador, SolicitudPago, CuentaDestino, PagoMembresia, _generar_codigo_solicitud
 from Tiendas.serializers import TiendaSerializer, CajaSerializer, TiendaMembresiaSerializer, TiendaCreateSerializer, TiendaAdminSerializer, SolicitudPagoSerializer, CuentaDestinoSerializer, MembresiaSerializer
@@ -842,6 +842,38 @@ def admin_resumen(request):
     ingresos_anio = PagoMembresia.objects.filter(fecha__year=hoy.year).aggregate(t=Sum('monto'))['t'] or 0
     renovaciones_mes = PagoMembresia.objects.filter(fecha__gte=inicio_mes, fecha__lte=hoy).count()
 
+    # Mes anterior (para el % de crecimiento)
+    fin_mes_ant = inicio_mes - datetime.timedelta(days=1)
+    inicio_mes_ant = fin_mes_ant.replace(day=1)
+    ingresos_mes_anterior = PagoMembresia.objects.filter(
+        fecha__gte=inicio_mes_ant, fecha__lte=fin_mes_ant
+    ).aggregate(t=Sum('monto'))['t'] or 0
+
+    # Tendencia: ingresos de los últimos 6 meses (incluido el actual)
+    MESES_ES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
+    ingresos_6m = []
+    yy, mm = hoy.year, hoy.month
+    serie = []
+    for _ in range(6):
+        serie.append((yy, mm))
+        mm -= 1
+        if mm == 0:
+            mm = 12
+            yy -= 1
+    for (y, m) in reversed(serie):
+        total = PagoMembresia.objects.filter(fecha__year=y, fecha__month=m).aggregate(t=Sum('monto'))['t'] or 0
+        ingresos_6m.append({'label': MESES_ES[m - 1], 'anio': y, 'mes': m, 'total': float(total)})
+
+    # Composición de la base activa por plan
+    distribucion_plan = dict(
+        qs.filter(estado='Activa').values_list('membresia__nombre').annotate(n=Count('id'))
+    )
+
+    # Crecimiento: nuevas rutas registradas este mes
+    nuevas_rutas_mes = Tienda.objects.filter(
+        fecha_registro__year=hoy.year, fecha_registro__month=hoy.month
+    ).count()
+
     # MRR estimado: mensuales activas a precio mensual + anuales activas prorrateadas /12
     precio_mensual = (Membresia.objects.filter(nombre='Mensual').values_list('precio', flat=True).first()) or 0
     precio_anual = (Membresia.objects.filter(nombre='Anual').values_list('precio', flat=True).first()) or 0
@@ -857,8 +889,12 @@ def admin_resumen(request):
         'por_vencer': por_vencer,
         'ingresos_mes': float(ingresos_mes),
         'ingresos_anio': float(ingresos_anio),
+        'ingresos_mes_anterior': float(ingresos_mes_anterior),
         'renovaciones_mes': renovaciones_mes,
         'mrr_estimado': round(mrr_estimado),
         'conciliacion_pendiente': conciliacion_pendiente,
+        'ingresos_6m': ingresos_6m,
+        'distribucion_plan': distribucion_plan,
+        'nuevas_rutas_mes': nuevas_rutas_mes,
     }, status=status.HTTP_200_OK)
 
