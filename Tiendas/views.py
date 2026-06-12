@@ -52,6 +52,9 @@ def extender_membresia(tienda_id, plan_nombre):
     tm.fecha_vencimiento = base + datetime.timedelta(days=dias)
     tm.estado = 'Activa'
     tm.pre_activada_hasta = None
+    # Si la ruta estaba archivada por inactividad, al pagar vuelve a estar visible
+    tm.archivada = False
+    tm.fecha_archivado = None
     tm.save()
     return tm
 
@@ -400,6 +403,8 @@ def activar_membresia_mensual(request, pk):
         tienda.membresia = Membresia.objects.get(nombre='Mensual')
         tienda.fecha_activacion = datetime.date.today()
         tienda.fecha_vencimiento = tienda.fecha_activacion + datetime.timedelta(days=30)
+        tienda.archivada = False
+        tienda.fecha_archivado = None
         tienda.save()
         _registrar_pago_manual(tienda, request.user)
         return Response({'message':'Suscripción Mensual Activa'}, status=status.HTTP_200_OK)
@@ -415,6 +420,8 @@ def activar_membresia_ano(request, pk):
         tienda.membresia = Membresia.objects.get(nombre='Anual')
         tienda.fecha_activacion = datetime.date.today()
         tienda.fecha_vencimiento = tienda.fecha_activacion + datetime.timedelta(days=365)
+        tienda.archivada = False
+        tienda.fecha_archivado = None
         tienda.save()
         _registrar_pago_manual(tienda, request.user)
         return Response({'message':'Suscripción Anual Activa'}, status=status.HTTP_200_OK)
@@ -553,6 +560,9 @@ def adjuntar_comprobante(request, codigo):
     if tm:
         tm.estado = 'Pre-activada'
         tm.pre_activada_hasta = datetime.date.today() + datetime.timedelta(days=3)
+        # Si estaba archivada por inactividad, el pago la reactiva (deja de estar oculta)
+        tm.archivada = False
+        tm.fecha_archivado = None
         tm.save()
 
     solicitud.estado = 'pendiente_confirmacion'
