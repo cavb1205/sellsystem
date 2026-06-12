@@ -40,6 +40,9 @@ urlpatterns = [
 
     # Informe de ingresos por membresías (solo root)
     path('ingresos/', views.ingresos_membresias, name='ingresos_membresias'),
+
+    # Planes de membresía y precios (solo root)
+    path('planes/', views.planes, name='planes'),
 ]
 
 

@@ -14,7 +14,7 @@ from django.core.files.base import ContentFile
 from django.db.models import Sum
 
 from Tiendas.models import Tienda, Cierre_Caja, Tienda_Membresia, Membresia, Tienda_Administrador, SolicitudPago, CuentaDestino, PagoMembresia, _generar_codigo_solicitud
-from Tiendas.serializers import TiendaSerializer, CajaSerializer, TiendaMembresiaSerializer, TiendaCreateSerializer, TiendaAdminSerializer, SolicitudPagoSerializer, CuentaDestinoSerializer
+from Tiendas.serializers import TiendaSerializer, CajaSerializer, TiendaMembresiaSerializer, TiendaCreateSerializer, TiendaAdminSerializer, SolicitudPagoSerializer, CuentaDestinoSerializer, MembresiaSerializer
 from Tiendas import telegram_bot
 
 
@@ -483,6 +483,42 @@ def cuenta_destino(request):
         serializer.save()
         return Response(serializer.data, status=status.HTTP_200_OK)
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET', 'PUT'])
+@permission_classes([IsAuthenticated])
+def planes(request):
+    """Planes de membresía y sus precios. GET lista los planes; PUT actualiza
+    precios. Solo para el superusuario (root). El cambio de precio afecta
+    cobros futuros — el ledger PagoMembresia ya congela los precios históricos."""
+    if not request.user.is_superuser:
+        return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
+    if request.method == 'GET':
+        membresias = Membresia.objects.all().order_by('id')
+        return Response(MembresiaSerializer(membresias, many=True).data, status=status.HTTP_200_OK)
+
+    # PUT: espera [{"id": 1, "precio": 12000}, ...] — actualiza solo el precio
+    actualizaciones = request.data if isinstance(request.data, list) else request.data.get('planes', [])
+    if not isinstance(actualizaciones, list):
+        return Response({'error': 'Se espera una lista de planes'}, status=status.HTTP_400_BAD_REQUEST)
+
+    for item in actualizaciones:
+        plan = Membresia.objects.filter(id=item.get('id')).first()
+        if not plan:
+            continue
+        precio = item.get('precio')
+        try:
+            precio = int(precio)
+        except (TypeError, ValueError):
+            return Response({'error': f'Precio inválido para el plan {item.get("id")}'}, status=status.HTTP_400_BAD_REQUEST)
+        if precio < 0:
+            return Response({'error': 'El precio no puede ser negativo'}, status=status.HTTP_400_BAD_REQUEST)
+        plan.precio = precio
+        plan.save(update_fields=['precio'])
+
+    membresias = Membresia.objects.all().order_by('id')
+    return Response(MembresiaSerializer(membresias, many=True).data, status=status.HTTP_200_OK)
 
 
 @api_view(['POST'])
