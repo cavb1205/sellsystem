@@ -71,6 +71,7 @@ def _confirmar_solicitud(solicitud, revisor=None):
     if not PagoMembresia.objects.filter(solicitud=solicitud).exists():
         PagoMembresia.objects.create(
             tienda_id=solicitud.tienda_id,
+            tienda_nombre=solicitud.tienda.nombre,
             membresia=solicitud.membresia,
             monto=solicitud.membresia.precio,
             fecha=datetime.date.today(),
@@ -117,6 +118,9 @@ def list_all_tiendas(request):
         # Recalcular estados antes de listar — rutas inactivas pasan a Pendiente/Vencida automáticamente
         _actualizar_estados_membresias()
         tiendas = Tienda_Membresia.objects.all().order_by('fecha_vencimiento')
+        # Por defecto se ocultan las archivadas; ?archivadas=1 las incluye
+        if request.GET.get('archivadas') not in ('1', 'true'):
+            tiendas = tiendas.filter(archivada=False)
         if tiendas:
             serializer = TiendaMembresiaSerializer(tiendas, many=True)
             return Response(serializer.data, status=status.HTTP_200_OK)
@@ -380,6 +384,7 @@ def _registrar_pago_manual(tienda_membresia, user):
         fecha=datetime.date.today(),
         origen='manual',
         defaults={
+            'tienda_nombre': tienda_membresia.tienda.nombre,
             'monto': tienda_membresia.membresia.precio,
             'registrado_por': user if getattr(user, 'is_authenticated', False) else None,
         },
@@ -780,7 +785,7 @@ def ingresos_membresias(request):
         total_anual += monto
         detalle.append({
             'id': p.id,
-            'tienda': p.tienda.nombre,
+            'tienda': p.tienda.nombre if p.tienda else (p.tienda_nombre or 'Ruta eliminada'),
             'tienda_id': p.tienda_id,
             'plan': p.membresia.nombre,
             'monto': monto,
@@ -820,14 +825,15 @@ def admin_resumen(request):
     hoy = datetime.date.today()
     inicio_mes = hoy.replace(day=1)
 
-    # Rutas por estado
-    qs = Tienda_Membresia.objects.all()
+    # Rutas por estado (las archivadas no cuentan en las métricas activas)
+    qs = Tienda_Membresia.objects.filter(archivada=False)
     rutas = {
         'total': qs.count(),
         'activas': qs.filter(estado='Activa').count(),
         'pendientes': qs.filter(estado='Pendiente Pago').count(),
         'vencidas': qs.filter(estado='Vencida').count(),
         'preactivadas': qs.filter(estado='Pre-activada').count(),
+        'archivadas': Tienda_Membresia.objects.filter(archivada=True).count(),
     }
 
     # Próximas a vencer: activas que vencen en los próximos 3 días (incluido hoy)
@@ -897,4 +903,21 @@ def admin_resumen(request):
         'distribucion_plan': distribucion_plan,
         'nuevas_rutas_mes': nuevas_rutas_mes,
     }, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def archivar_ruta(request, pk):
+    """Archiva o desarchiva una ruta (Tienda_Membresia). Solo root.
+    Body: {"archivar": true|false}. El archivado es reversible y no borra datos."""
+    if not request.user.is_superuser:
+        return Response({'error': 'forbidden'}, status=403)
+    tm = Tienda_Membresia.objects.filter(id=pk).first()
+    if not tm:
+        return Response({'error': 'Ruta no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+    archivar = request.data.get('archivar', True)
+    tm.archivada = bool(archivar)
+    tm.fecha_archivado = datetime.date.today() if tm.archivada else None
+    tm.save(update_fields=['archivada', 'fecha_archivado'])
+    return Response({'archivada': tm.archivada, 'fecha_archivado': str(tm.fecha_archivado) if tm.fecha_archivado else None}, status=status.HTTP_200_OK)
 

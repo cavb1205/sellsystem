@@ -46,6 +46,9 @@ urlpatterns = [
 
     # Panel de administración del root — KPIs globales
     path('admin/resumen/', views.admin_resumen, name='admin_resumen'),
+
+    # Archivar / desarchivar una ruta (solo root)
+    path('<int:pk>/archivar/', views.archivar_ruta, name='archivar_ruta'),
 ]
 
 

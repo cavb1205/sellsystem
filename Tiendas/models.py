@@ -231,6 +231,9 @@ class Tienda_Membresia(models.Model):
     fecha_vencimiento = models.DateField()
     estado = models.CharField(max_length=50, choices=estado_choices, default='Activa')
     pre_activada_hasta = models.DateField(null=True, blank=True)
+    # Archivado: ruta inactiva mucho tiempo. Sale de métricas y listados, reversible.
+    archivada = models.BooleanField(default=False, db_index=True)
+    fecha_archivado = models.DateField(null=True, blank=True)
 
     def __str__(self):
         return str(self.tienda) + ' - ' + str(self.membresia)
@@ -327,7 +330,9 @@ class PagoMembresia(models.Model):
         ('panel', 'Confirmado en panel web'),
         ('manual', 'Activación manual (root)'),
     ]
-    tienda = models.ForeignKey(Tienda, on_delete=models.CASCADE, related_name='pagos_membresia')
+    # SET_NULL + snapshot del nombre: el ingreso sobrevive si la ruta se elimina
+    tienda = models.ForeignKey(Tienda, on_delete=models.SET_NULL, null=True, blank=True, related_name='pagos_membresia')
+    tienda_nombre = models.CharField(max_length=200, blank=True)
     membresia = models.ForeignKey(Membresia, on_delete=models.PROTECT)
     monto = models.DecimalField(max_digits=10, decimal_places=0)
     fecha = models.DateField(db_index=True)
@@ -340,4 +345,5 @@ class PagoMembresia(models.Model):
     creado = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f"{self.tienda} - {self.membresia.nombre} ({self.fecha}) ${self.monto}"
+        nombre = self.tienda.nombre if self.tienda else (self.tienda_nombre or 'ruta eliminada')
+        return f"{nombre} - {self.membresia.nombre} ({self.fecha}) ${self.monto}"
