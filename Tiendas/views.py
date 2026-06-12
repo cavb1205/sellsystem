@@ -804,3 +804,61 @@ def ingresos_membresias(request):
         'pagos': detalle,
     }, status=status.HTTP_200_OK)
 
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def admin_resumen(request):
+    """Panel de administración del root: KPIs globales del negocio en una sola
+    respuesta (rutas por estado, ingresos del mes/año, MRR estimado, conciliación
+    pendiente y próximas a vencer). Solo superusuarios."""
+    if not request.user.is_superuser:
+        return Response({'error': 'forbidden'}, status=403)
+
+    # Recalcular estados para que los conteos reflejen la realidad de hoy
+    _actualizar_estados_membresias()
+
+    hoy = datetime.date.today()
+    inicio_mes = hoy.replace(day=1)
+
+    # Rutas por estado
+    qs = Tienda_Membresia.objects.all()
+    rutas = {
+        'total': qs.count(),
+        'activas': qs.filter(estado='Activa').count(),
+        'pendientes': qs.filter(estado='Pendiente Pago').count(),
+        'vencidas': qs.filter(estado='Vencida').count(),
+        'preactivadas': qs.filter(estado='Pre-activada').count(),
+    }
+
+    # Próximas a vencer: activas que vencen en los próximos 3 días (incluido hoy)
+    por_vencer = qs.filter(
+        estado='Activa',
+        fecha_vencimiento__gte=hoy,
+        fecha_vencimiento__lte=hoy + datetime.timedelta(days=3),
+    ).count()
+
+    # Ingresos
+    ingresos_mes = PagoMembresia.objects.filter(fecha__gte=inicio_mes, fecha__lte=hoy).aggregate(t=Sum('monto'))['t'] or 0
+    ingresos_anio = PagoMembresia.objects.filter(fecha__year=hoy.year).aggregate(t=Sum('monto'))['t'] or 0
+    renovaciones_mes = PagoMembresia.objects.filter(fecha__gte=inicio_mes, fecha__lte=hoy).count()
+
+    # MRR estimado: mensuales activas a precio mensual + anuales activas prorrateadas /12
+    precio_mensual = (Membresia.objects.filter(nombre='Mensual').values_list('precio', flat=True).first()) or 0
+    precio_anual = (Membresia.objects.filter(nombre='Anual').values_list('precio', flat=True).first()) or 0
+    mensuales_activas = qs.filter(estado='Activa', membresia__nombre='Mensual').count()
+    anuales_activas = qs.filter(estado='Activa', membresia__nombre='Anual').count()
+    mrr_estimado = float(precio_mensual) * mensuales_activas + (float(precio_anual) / 12.0) * anuales_activas
+
+    # Conciliación pendiente
+    conciliacion_pendiente = SolicitudPago.objects.filter(estado='pendiente_confirmacion').count()
+
+    return Response({
+        'rutas': rutas,
+        'por_vencer': por_vencer,
+        'ingresos_mes': float(ingresos_mes),
+        'ingresos_anio': float(ingresos_anio),
+        'renovaciones_mes': renovaciones_mes,
+        'mrr_estimado': round(mrr_estimado),
+        'conciliacion_pendiente': conciliacion_pendiente,
+    }, status=status.HTTP_200_OK)
+

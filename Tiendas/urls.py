@@ -43,6 +43,9 @@ urlpatterns = [
 
     # Planes de membresía y precios (solo root)
     path('planes/', views.planes, name='planes'),
+
+    # Panel de administración del root — KPIs globales
+    path('admin/resumen/', views.admin_resumen, name='admin_resumen'),
 ]
 
 
