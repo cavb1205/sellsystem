@@ -4,7 +4,10 @@ from rest_framework.response import Response
 from rest_framework import status
 
 import datetime
+import logging
 from itertools import chain
+
+logger = logging.getLogger(__name__)
 
 from django.conf import settings
 from django.utils import timezone
@@ -247,20 +250,41 @@ def delete_tienda(request, pk):
 @api_view(['DELETE'])
 @permission_classes([IsAuthenticated])
 def delete_tienda_root(request, pk):
-    '''Elimina una tienda — solo root, solo si está vacía (0 clientes y 0 ventas).'''
+    '''Elimina una ruta — solo root. Reglas:
+    - Ruta vacía (0 clientes, 0 ventas): borrado directo.
+    - Ruta con datos: solo si está ARCHIVADA y se confirma el nombre exacto
+      (body confirmar_nombre). El borrado es irreversible y limpia los datos
+      sensibles (clientes, ventas, recaudos…). Los ingresos sobreviven:
+      PagoMembresia usa SET_NULL + snapshot del nombre.'''
     if request.user.username != 'root':
         return Response({'error': 'Solo el usuario root puede eliminar rutas'},
                         status=status.HTTP_403_FORBIDDEN)
     tienda = Tienda.objects.filter(id=pk).first()
     if not tienda:
         return Response({'error': 'No se encontró la ruta'}, status=status.HTTP_404_NOT_FOUND)
+
     clientes = tienda.cliente_set.count()
     ventas = tienda.venta_set.count()
-    if clientes > 0 or ventas > 0:
-        return Response({
-            'error': f'La ruta tiene {clientes} clientes y {ventas} ventas. No se puede eliminar para proteger los datos.'
-        }, status=status.HTTP_409_CONFLICT)
+    tiene_datos = clientes > 0 or ventas > 0
+
+    if tiene_datos:
+        tm = Tienda_Membresia.objects.filter(tienda=tienda).first()
+        if not tm or not tm.archivada:
+            return Response({
+                'error': 'Para eliminar una ruta con datos primero debes archivarla.'
+            }, status=status.HTTP_409_CONFLICT)
+        confirmar = (request.data.get('confirmar_nombre') or '').strip()
+        if confirmar != tienda.nombre:
+            return Response({
+                'error': 'Escribe el nombre exacto de la ruta para confirmar la eliminación.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
     nombre = tienda.nombre
+    # Auditoría: el borrado es irreversible
+    logger.warning(
+        'BORRADO DE RUTA por root: id=%s nombre="%s" clientes=%s ventas=%s',
+        tienda.id, nombre, clientes, ventas,
+    )
     tienda.delete()
     return Response({'message': f'Ruta "{nombre}" eliminada'}, status=status.HTTP_200_OK)
 
