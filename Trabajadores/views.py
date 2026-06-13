@@ -1,7 +1,7 @@
 from django.contrib.auth import authenticate
 import datetime
 
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework import status
@@ -18,10 +18,12 @@ from Tiendas.models import Tienda, Cierre_Caja, Tienda_Membresia, Membresia, Tie
 from Tiendas.serializers import TiendaCreateSerializer
 from Tiendas.views import comprobar_estado_membresia
 from Tiendas.permissions import requiere_acceso_tienda, usuario_puede_acceder_tienda, respuesta_sin_permiso
+from Trabajadores.throttles import LoginRateThrottle, RegisterRateThrottle
 ##### LOGIN #####
 
 class Login(TokenObtainPairView):
     serializer_class = UserTokenLoginObtainSerializer
+    throttle_classes = [LoginRateThrottle]
 
     def post(self, request, *args, **kwargs):
         username = request.data.get('username','')
@@ -175,6 +177,7 @@ def post_trabajador(request, tienda_id = None):
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
+@throttle_classes([RegisterRateThrottle])
 def register_user(request):
     username = request.data.get('username', '')
     user_data = {

@@ -196,6 +196,15 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',
     ),
+    # Throttling: solo se aplica donde se declara explícitamente (login y
+    # register), no global, para no afectar a los cobradores en campo.
+    # Las tasas son por-IP. Nota: sin un cache compartido (Redis) el conteo
+    # es por worker de gunicorn (~3x el límite efectivo); suficiente como
+    # freno de fuerza bruta, endurecer con Redis si se requiere más estricto.
+    'DEFAULT_THROTTLE_RATES': {
+        'login': '20/min',
+        'register': '10/hour',
+    },
 }
 
 
