@@ -183,7 +183,7 @@ def register_user(request):
         user.set_password(request.data['password'])
         user.email = f"{username}@carterafinanciera.com"
         user.is_staff = True
-        user.is_superuser = True
+        user.is_superuser = False
         user.save()
 
         tienda_data = {

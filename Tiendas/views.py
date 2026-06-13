@@ -137,7 +137,7 @@ def list_tiendas_admin(request):
     '''return list stores for a admin user'''
 
     user = request.user
-    if user.is_superuser:
+    if user.is_staff:
         tiendas = Tienda.objects.filter(administrador=user)
         if tiendas:
             serializer = TiendaSerializer(tiendas, many=True)
