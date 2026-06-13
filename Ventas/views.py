@@ -14,9 +14,11 @@ from Ventas.serializers import VentaSerializer, VentaDetailSerializer, VentaUpda
 from Tiendas.models import Tienda
 from Recaudos.models import Recaudo
 from Clientes.models import Cliente
+from Tiendas.permissions import requiere_acceso_tienda, usuario_puede_acceder_tienda, respuesta_sin_permiso
 
 
 @api_view(['GET'])
+@requiere_acceso_tienda
 def list_ventas_activas(request, tienda_id=None):
     '''obtenemos todas las ventas'''
 
@@ -35,6 +37,7 @@ def list_ventas_activas(request, tienda_id=None):
 
 
 @api_view(['GET'])
+@requiere_acceso_tienda
 def list_ventas_a_liquidar(request, date, tienda_id=None):
     '''obtenemos todas las ventas'''
 
@@ -57,6 +60,7 @@ def list_ventas_a_liquidar(request, date, tienda_id=None):
 
 
 @api_view(['GET'])
+@requiere_acceso_tienda
 def list_ventas_x_fecha(request, date, tienda_id=None):
     """obtenemos lista de ventas ingresadas en una fecha determinada"""
 
@@ -72,6 +76,7 @@ def list_ventas_x_fecha(request, date, tienda_id=None):
     return Response({'message': 'No se encontraron ventas'}, status=status.HTTP_200_OK)
 
 @api_view(['GET'])
+@requiere_acceso_tienda
 def list_ventas_x_fecha_range(request, date1, date2, tienda_id=None):
     """obtenemos lista de ventas ingresadas en un rango de fechas determinado"""
 
@@ -88,6 +93,7 @@ def list_ventas_x_fecha_range(request, date1, date2, tienda_id=None):
 
 
 @api_view(['GET'])
+@requiere_acceso_tienda
 def list_ventas_activas_cliente(request, pk, tienda_id=None):
     user = request.user
     if tienda_id:
@@ -103,6 +109,7 @@ def list_ventas_activas_cliente(request, pk, tienda_id=None):
 
 
 @api_view(['GET'])
+@requiere_acceso_tienda
 def list_ventas_perdidas(request, tienda_id=None):
     user = request.user
     if tienda_id:
@@ -121,6 +128,8 @@ def list_ventas_perdidas(request, tienda_id=None):
 def get_venta(request, pk):
     venta = Venta.objects.filter(id=pk).first()
     if venta:
+        if not usuario_puede_acceder_tienda(request.user, venta.tienda_id):
+            return respuesta_sin_permiso()
         venta_serializer = VentaDetailSerializer(venta, many=False)
         return Response(venta_serializer.data, status=status.HTTP_200_OK)
     else:
@@ -135,6 +144,8 @@ def put_venta(request, pk, tienda_id=None):
         tienda = Tienda.objects.filter(
             id=request.user.perfil.tienda.id).first()
     venta = Venta.objects.filter(id=pk).first()
+    if venta and not usuario_puede_acceder_tienda(request.user, venta.tienda_id):
+        return respuesta_sin_permiso()
     if venta:
         new_data = request.data
         fecha_venta = datetime.strptime(new_data['fecha_venta'], '%Y-%m-%d')
@@ -162,6 +173,7 @@ def put_venta(request, pk, tienda_id=None):
 
 
 @api_view(['POST'])
+@requiere_acceso_tienda
 def post_venta(request, tienda_id=None):
     '''creamos una venta'''
     if request.method == 'POST':
@@ -197,6 +209,8 @@ def delete_venta(request, pk, tienda_id=None):
         tienda = Tienda.objects.filter(
             id=request.user.perfil.tienda.id).first()
     venta = Venta.objects.filter(id=pk).first()
+    if venta and not usuario_puede_acceder_tienda(request.user, venta.tienda_id):
+        return respuesta_sin_permiso()
     recaudos = Recaudo.objects.filter(venta=venta.id)
     if recaudos:
         return Response({'message': 'No se puede eliminar la venta por que ya se realizaron pagos a la misma.'}, status=status.HTTP_406_NOT_ACCEPTABLE)
@@ -212,6 +226,8 @@ def delete_venta(request, pk, tienda_id=None):
 def perdida_venta(request, pk):
     venta = Venta.objects.filter(id=pk).first()
     if venta:
+        if not usuario_puede_acceder_tienda(request.user, venta.tienda_id):
+            return respuesta_sin_permiso()
         cliente = Cliente.objects.get(pk=venta.cliente.id)
         cliente.estado_cliente = 'Bloqueado'
         cliente.save()
@@ -225,6 +241,7 @@ def perdida_venta(request, pk):
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
+@requiere_acceso_tienda
 def renovar_venta(request, pk, tienda_id=None):
     """Renueva un crédito atómicamente:
     1) Cierra el crédito vencido con un Recaudo marcado es_renovacion=True

@@ -16,6 +16,7 @@ from django.db.models import Sum, Count
 from Tiendas.models import Tienda, Cierre_Caja, Tienda_Membresia, Membresia, Tienda_Administrador, SolicitudPago, CuentaDestino, PagoMembresia, _generar_codigo_solicitud
 from Tiendas.serializers import TiendaSerializer, CajaSerializer, TiendaMembresiaSerializer, TiendaCreateSerializer, TiendaAdminSerializer, SolicitudPagoSerializer, CuentaDestinoSerializer, MembresiaSerializer
 from Tiendas import telegram_bot
+from Tiendas.permissions import requiere_acceso_tienda, usuario_puede_acceder_tienda, respuesta_sin_permiso
 
 
 def _actualizar_estados_membresias():
@@ -175,6 +176,8 @@ def get_tienda(request):
 def put_tienda(request, pk):
     tienda = Tienda.objects.filter(id=pk).first()
     if tienda:
+        if not usuario_puede_acceder_tienda(request.user, pk):
+            return respuesta_sin_permiso()
         serialize = TiendaSerializer(tienda, data=request.data)
         if serialize.is_valid():
             serialize.save()
@@ -188,6 +191,8 @@ def patch_tienda_settings(request, pk):
     tienda = Tienda.objects.filter(id=pk).first()
     if not tienda:
         return Response({'message': 'Tienda no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+    if not usuario_puede_acceder_tienda(request.user, pk):
+        return respuesta_sin_permiso()
     allowed = ['prefijo_telefono', 'telefono', 'cupo_minimo_nuevo']
     for field in allowed:
         if field in request.data:
@@ -237,6 +242,8 @@ def post_tienda(request):
 
 @api_view(['DELETE'])
 def delete_tienda(request, pk):
+    if not request.user.is_superuser:
+        return respuesta_sin_permiso()
     tienda = Tienda.objects.filter(id=pk).first()
     if tienda:
         tienda.delete()
@@ -292,6 +299,7 @@ def get_tiendas_admin(request):
 
 
 @api_view(['GET'])
+@requiere_acceso_tienda
 def get_cierres_caja(request, tienda_id=None):
     """obtenemos la lista de los cierres de caja"""
     if tienda_id:
@@ -308,6 +316,7 @@ def get_cierres_caja(request, tienda_id=None):
 
 
 @api_view(['GET'])
+@requiere_acceso_tienda
 def get_caja_anterior(request, fecha, tienda_id=None):
     """obtenemos el valor de la caja del dia anterior a la fecha que recibimos como parametro"""
     if tienda_id:
@@ -327,6 +336,7 @@ def get_caja_anterior(request, fecha, tienda_id=None):
 
 
 @api_view(['POST'])
+@requiere_acceso_tienda
 def post_cierre_caja(request, fecha, tienda_id=None):
     """guardamos el cierre de caja con la fecha, valor y tienda"""
 
@@ -345,6 +355,8 @@ def delete_cierre_caja(request, pk):
     '''eliminamos un registro de cierre de caja'''
 
     cierre_caja = Cierre_Caja.objects.get(id=pk)
+    if not usuario_puede_acceder_tienda(request.user, cierre_caja.tienda_id):
+        return respuesta_sin_permiso()
     cierre_caja.delete()
     return Response({'message': 'Cierre Caja Eliminado'}, status=status.HTTP_200_OK)
 
@@ -372,6 +384,8 @@ def get_tienda_membresia_admin(request, pk):
     '''get info of store and info the acount store for a admin user'''
     
     tienda = Tienda.objects.filter(id=pk).first()
+    if tienda and not usuario_puede_acceder_tienda(request.user, pk):
+        return respuesta_sin_permiso()
     tienda_membresia = Tienda_Membresia.objects.get(tienda=tienda.id)
     if tienda_membresia:
         serialize = TiendaMembresiaSerializer(tienda_membresia, many=False)
@@ -399,6 +413,8 @@ def _registrar_pago_manual(tienda_membresia, user):
 @api_view(['GET'])
 def activar_membresia_mensual(request, pk):
     '''get store and activate membershi for a mounth + 30 days'''
+    if not request.user.is_superuser:
+        return respuesta_sin_permiso()
     tienda = Tienda_Membresia.objects.get(id=pk)
     if tienda:
         tienda.estado = 'Activa'
@@ -416,6 +432,8 @@ def activar_membresia_mensual(request, pk):
 @api_view(['GET'])
 def activar_membresia_ano(request, pk):
     '''get store and activate membershi for a year + 365 days'''
+    if not request.user.is_superuser:
+        return respuesta_sin_permiso()
     tienda = Tienda_Membresia.objects.get(id=pk)
     if tienda:
         tienda.estado = 'Activa'
@@ -455,6 +473,8 @@ def solicitar_pago(request):
     tienda = Tienda.objects.filter(id=tienda_id).first()
     if not tienda:
         return Response({'error': 'Tienda no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+    if not usuario_puede_acceder_tienda(request.user, tienda_id):
+        return respuesta_sin_permiso()
 
     codigo = _generar_codigo_solicitud(membresia.nombre)
     expira = timezone.now() + datetime.timedelta(hours=24)

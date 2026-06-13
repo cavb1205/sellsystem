@@ -10,6 +10,7 @@ from Recaudos.models import Recaudo, Visita_Blanco
 from Recaudos.serializers import RecaudoSerializer, Visitas_BlancoSerializer, RecaudoDetailSerializer,RecaudoUpdateSerializer
 from Tiendas.models import Tienda
 from Tiendas.views import comprobar_estado_membresia
+from Tiendas.permissions import requiere_acceso_tienda, usuario_puede_acceder_tienda, respuesta_sin_permiso
 from Ventas.models import Venta
 
 from datetime import datetime
@@ -27,6 +28,7 @@ def list_recaudos(request):
     return Response({'message':'No se han creado recaudos'}, status=status.HTTP_200_OK)
 
 @api_view(['GET'])
+@requiere_acceso_tienda
 def list_recaudos_fecha(request, date, tienda_id=None):
     '''obtenemos todas las recaudos'''
 
@@ -44,6 +46,7 @@ def list_recaudos_fecha(request, date, tienda_id=None):
 
 
 @api_view(['GET'])
+@requiere_acceso_tienda
 def calcular_sueldo_trabajador(request, date1, date2, porcentaje=None, tienda_id=None):
     '''
     Calcula el sueldo del trabajador basado en un porcentaje de los recaudos 
@@ -124,8 +127,11 @@ def calcular_sueldo_trabajador(request, date1, date2, porcentaje=None, tienda_id
 def list_recaudos_venta(request, venta_id):
     '''obtenemos los recaudos pertenecientes a una venta en particular'''
 
+    venta = Venta.objects.filter(id=venta_id).first()
+    if venta and not usuario_puede_acceder_tienda(request.user, venta.tienda_id):
+        return respuesta_sin_permiso()
     recaudos = Recaudo.objects.filter(venta=venta_id).order_by('-id')
-    
+
     if recaudos:
         recaudo_serializer = RecaudoDetailSerializer(recaudos, many=True)
         return Response(recaudo_serializer.data, status=status.HTTP_200_OK)
@@ -137,6 +143,8 @@ def list_recaudos_venta(request, venta_id):
 def get_recaudo(request, pk):
     recaudo = Recaudo.objects.filter(id=pk).first()
     if recaudo:
+        if not usuario_puede_acceder_tienda(request.user, recaudo.tienda_id):
+            return respuesta_sin_permiso()
         recaudo_serializer = RecaudoDetailSerializer(recaudo, many=False)
         return Response(recaudo_serializer.data, status=status.HTTP_200_OK)
     else:
@@ -146,6 +154,8 @@ def get_recaudo(request, pk):
 @api_view(['PUT'])
 def put_recaudo(request, pk, tienda_id=None):
     recaudo = Recaudo.objects.filter(id=pk).first()
+    if recaudo and not usuario_puede_acceder_tienda(request.user, recaudo.tienda_id):
+        return respuesta_sin_permiso()
     if tienda_id:
         tienda = Tienda.objects.get(id=tienda_id)
     else:
@@ -179,6 +189,7 @@ def put_recaudo(request, pk, tienda_id=None):
         
 
 @api_view(['POST'])
+@requiere_acceso_tienda
 def post_recaudo(request, tienda_id=None):
     '''creamos una recaudo'''
     user = request.user
@@ -188,9 +199,11 @@ def post_recaudo(request, tienda_id=None):
         tienda = Tienda.objects.filter(id=user.perfil.tienda.id).first()
     new_data = request.data
     new_data['tienda']=tienda.id
-    
+
     venta = Venta.objects.get(id = new_data['venta'])
-    
+    if not usuario_puede_acceder_tienda(request.user, venta.tienda_id):
+        return respuesta_sin_permiso()
+
     if request.method == 'POST':
         recaudo_serializer = RecaudoSerializer(data = new_data)
         if recaudo_serializer.is_valid():
@@ -213,6 +226,7 @@ def post_recaudo(request, tienda_id=None):
     
 
 @api_view(['POST'])
+@requiere_acceso_tienda
 def post_recaudo_no_pay(request, tienda_id=None):
     '''creamos una recaudo'''
     user = request.user
@@ -222,10 +236,12 @@ def post_recaudo_no_pay(request, tienda_id=None):
         tienda = Tienda.objects.filter(id=user.perfil.tienda.id).first()
     new_data = request.data
     visita_blanco = new_data['visita_blanco']
-    
+
     new_data['tienda']=tienda.id
     venta = Venta.objects.get(id = new_data['venta'])
-    
+    if not usuario_puede_acceder_tienda(request.user, venta.tienda_id):
+        return respuesta_sin_permiso()
+
     if request.method == 'POST':
         visita_blanco_serializer = Visitas_BlancoSerializer(data=visita_blanco)
         if visita_blanco_serializer.is_valid():
@@ -257,6 +273,8 @@ def post_recaudo_no_pay(request, tienda_id=None):
 @api_view(['DELETE'])
 def delete_recaudo(request, pk):
     recaudo = Recaudo.objects.filter(id=pk).first()
+    if recaudo and not usuario_puede_acceder_tienda(request.user, recaudo.tienda_id):
+        return respuesta_sin_permiso()
     tienda = Tienda.objects.get(id=recaudo.tienda.id)
     venta = Venta.objects.get(id=recaudo.venta.id)
     if recaudo:

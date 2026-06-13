@@ -5,9 +5,11 @@ from rest_framework import status
 from Utilidades.models import Utilidad
 from Tiendas.models import Tienda
 from Utilidades.serializers import UtilidadSerializer, UtilidadDetailSerializer, UtilidadUpdateSerializer
+from Tiendas.permissions import requiere_acceso_tienda, usuario_puede_acceder_tienda, respuesta_sin_permiso
 
 
 @api_view(['GET'])
+@requiere_acceso_tienda
 def list_utilidades(request, tienda_id=None):
     '''obtenemos todas las utilidades'''
     user = request.user
@@ -22,6 +24,7 @@ def list_utilidades(request, tienda_id=None):
 
 
 @api_view(['GET'])
+@requiere_acceso_tienda
 def list_utilidades_x_fecha(request, date, tienda_id=None):
     '''obtenemos todas las utilidades por fecha'''
     user = request.user
@@ -41,6 +44,8 @@ def list_utilidades_x_fecha(request, date, tienda_id=None):
 def get_utilidad(request, pk):
     utilidad = Utilidad.objects.filter(id=pk).first()
     if utilidad:
+        if not usuario_puede_acceder_tienda(request.user, utilidad.tienda_id):
+            return respuesta_sin_permiso()
         utilidad_serializer = UtilidadSerializer(utilidad, many=False)
         return Response(utilidad_serializer.data, status=status.HTTP_200_OK)
     else:
@@ -54,6 +59,8 @@ def put_utilidad(request, pk, tienda_id=None):
     else:
         tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
     utilidad = Utilidad.objects.filter(id=pk).first()
+    if utilidad and not usuario_puede_acceder_tienda(request.user, utilidad.tienda_id):
+        return respuesta_sin_permiso()
     utilidad_valor = utilidad.valor
     if utilidad:
         utilidad_serializer = UtilidadUpdateSerializer(
@@ -75,6 +82,7 @@ def put_utilidad(request, pk, tienda_id=None):
 
 
 @api_view(['POST'])
+@requiere_acceso_tienda
 def post_utilidad(request, tienda_id=None):
     '''creamos una utilidad'''
 
@@ -104,6 +112,8 @@ def delete_utilidad(request, pk, tienda_id=None):
     else:
         tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
     utilidad = Utilidad.objects.filter(id=pk).first()
+    if utilidad and not usuario_puede_acceder_tienda(request.user, utilidad.tienda_id):
+        return respuesta_sin_permiso()
     if utilidad:
         tienda.caja_inicial = tienda.caja_inicial + utilidad.valor
         utilidad.delete()

@@ -17,6 +17,7 @@ from Trabajadores.serializers import UserTokenLoginObtainSerializer,UserLoginSer
 from Tiendas.models import Tienda, Cierre_Caja, Tienda_Membresia, Membresia, Tienda_Administrador
 from Tiendas.serializers import TiendaCreateSerializer
 from Tiendas.views import comprobar_estado_membresia
+from Tiendas.permissions import requiere_acceso_tienda, usuario_puede_acceder_tienda, respuesta_sin_permiso
 ##### LOGIN #####
 
 class Login(TokenObtainPairView):
@@ -53,6 +54,7 @@ class Login(TokenObtainPairView):
 #### CRUD TRABAJADORES #####
 
 @api_view(['GET'])
+@requiere_acceso_tienda
 def list_trabajadores(request, tienda_id = None):
     if tienda_id:
         tienda = Tienda.objects.filter(id=tienda_id).first()    
@@ -69,6 +71,8 @@ def list_trabajadores(request, tienda_id = None):
 def get_trabajador(request, pk):
     trabajador = Perfil.objects.filter(id=pk).first()
     if trabajador:
+        if not usuario_puede_acceder_tienda(request.user, trabajador.tienda_id):
+            return respuesta_sin_permiso()
         user_id = trabajador.trabajador.id
         user = User.objects.filter(id=user_id).first()
         trabajador_serializer = PerfilSerializer(trabajador, many=False)
@@ -99,6 +103,8 @@ def put_trabajador(request, pk):
     
     trabajador = Perfil.objects.filter(id=pk).first()
     if trabajador:
+        if not usuario_puede_acceder_tienda(request.user, trabajador.tienda_id):
+            return respuesta_sin_permiso()
         user = User.objects.filter(id=trabajador.trabajador.id).first()
         user_data = {
             "username":request.data['username'],
@@ -126,6 +132,7 @@ def put_trabajador(request, pk):
         
 
 @api_view(['POST'])
+@requiere_acceso_tienda
 def post_trabajador(request, tienda_id = None):
     user_data = {
         "username":request.data['username'],
@@ -234,6 +241,8 @@ def register_user(request):
 def delete_trabajador(request, pk):
     trabajador = Perfil.objects.filter(id=pk).first()
     if trabajador:
+        if not usuario_puede_acceder_tienda(request.user, trabajador.tienda_id):
+            return respuesta_sin_permiso()
         user = User.objects.filter(id=trabajador.trabajador.id).first()
         trabajador.delete()
         user.delete()
@@ -246,6 +255,8 @@ def delete_trabajador(request, pk):
 def update_password(request, pk):
     trabajador = Perfil.objects.filter(id=pk).first()
     if trabajador:
+        if not usuario_puede_acceder_tienda(request.user, trabajador.tienda_id):
+            return respuesta_sin_permiso()
         user = User.objects.filter(id=trabajador.trabajador.id).first()
         user.set_password(request.data['passwordNuevo'])
         user.save()

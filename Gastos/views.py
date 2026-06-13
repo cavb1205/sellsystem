@@ -4,6 +4,7 @@ from rest_framework.decorators import api_view
 
 from .models import *
 from .serializers import GastoSerializer, TipoGastoSerializer, GastoUpdateSerializer, GastoDetailSerializer
+from Tiendas.permissions import requiere_acceso_tienda, usuario_puede_acceder_tienda, respuesta_sin_permiso
 
 
 
@@ -66,6 +67,7 @@ def delete_tipo_gasto(request, pk):
 ######## GASTOS ######
 
 @api_view(['GET'])
+@requiere_acceso_tienda
 def list_gastos(request, tienda_id=None):
     '''obtenemos todos los gastos'''
     if tienda_id:
@@ -79,6 +81,7 @@ def list_gastos(request, tienda_id=None):
     return Response({'message':'No se han creado gastos'}, status=status.HTTP_200_OK)
     
 @api_view(['GET'])
+@requiere_acceso_tienda
 def list_gastos_x_fecha(request, date, tienda_id=None):
     '''obtenemos todos los gastos x fecha'''
 
@@ -93,6 +96,7 @@ def list_gastos_x_fecha(request, date, tienda_id=None):
     return Response({'message':'No se han creado gastos'}, status=status.HTTP_200_OK)
 
 @api_view(['GET'])
+@requiere_acceso_tienda
 def list_gastos_x_fecha_range(request, date1, date2, tienda_id=None):
     '''obtenemos todos los gastos x rango de fechas'''
     if tienda_id:
@@ -109,6 +113,8 @@ def list_gastos_x_fecha_range(request, date1, date2, tienda_id=None):
 def get_gasto(request, pk):
     gasto = Gasto.objects.filter(id=pk).first()
     if gasto:
+        if not usuario_puede_acceder_tienda(request.user, gasto.tienda_id):
+            return respuesta_sin_permiso()
         gasto_serializer = GastoSerializer(gasto, many=False)
         return Response(gasto_serializer.data, status=status.HTTP_200_OK)
     else:
@@ -123,6 +129,8 @@ def put_gasto(request, pk, tienda_id=None):
     else:
         tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
     gasto = Gasto.objects.filter(id=pk).first()
+    if gasto and not usuario_puede_acceder_tienda(request.user, gasto.tienda_id):
+        return respuesta_sin_permiso()
     gasto_valor = gasto.valor
     if gasto:
         gasto_serializer = GastoUpdateSerializer(gasto, data=request.data)
@@ -139,6 +147,7 @@ def put_gasto(request, pk, tienda_id=None):
         
 
 @api_view(['POST'])
+@requiere_acceso_tienda
 def post_gasto(request, tienda_id=None):
     '''creamos un gasto'''
 
@@ -166,6 +175,8 @@ def delete_gasto(request, pk, tienda_id=None):
     else:
         tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
     gasto = Gasto.objects.filter(id=pk).first()
+    if gasto and not usuario_puede_acceder_tienda(request.user, gasto.tienda_id):
+        return respuesta_sin_permiso()
     if gasto:
         gasto.delete()
         tienda.caja_inicial = tienda.caja_inicial + gasto.valor

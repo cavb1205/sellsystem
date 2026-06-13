@@ -7,11 +7,13 @@ from django.utils import timezone
 from Publicidad.models import Publicidad
 from Publicidad.serializers import PublicidadSerializer, PublicidadCreateSerializer
 from Tiendas.models import Tienda
+from Tiendas.permissions import requiere_acceso_tienda, usuario_puede_acceder_tienda, respuesta_sin_permiso
 from Trabajadores.models import Perfil
 
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
+@requiere_acceso_tienda
 def list_publicidad_fecha(request, date, tienda_id):
     tienda = Tienda.objects.filter(id=tienda_id).first()
     if not tienda:
@@ -23,6 +25,7 @@ def list_publicidad_fecha(request, date, tienda_id):
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
+@requiere_acceso_tienda
 def list_publicidad_fecha_worker(request, date, tienda_id):
     """Solo los puntos del trabajador autenticado."""
     tienda = Tienda.objects.filter(id=tienda_id).first()
@@ -36,6 +39,7 @@ def list_publicidad_fecha_worker(request, date, tienda_id):
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
+@requiere_acceso_tienda
 def create_publicidad(request, tienda_id):
     tienda = Tienda.objects.filter(id=tienda_id).first()
     if not tienda:
@@ -54,6 +58,9 @@ def delete_publicidad(request, pk):
     publicidad = Publicidad.objects.filter(id=pk).first()
     if not publicidad:
         return Response({'message': 'Registro no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+
+    if not usuario_puede_acceder_tienda(request.user, publicidad.tienda_id):
+        return respuesta_sin_permiso()
 
     is_admin = request.user.is_staff or request.user.is_superuser
     is_owner = publicidad.trabajador == request.user.perfil

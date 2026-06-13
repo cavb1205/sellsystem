@@ -12,6 +12,7 @@ from Ventas.models import Venta
 from Recaudos.models import Recaudo
 
 from Clientes.serializers import ClienteSerializer, ClienteCreateSerializer
+from Tiendas.permissions import requiere_acceso_tienda, usuario_puede_acceder_tienda, respuesta_sin_permiso
 
 
 def _calcular_score(cliente_id, tienda_id):
@@ -219,6 +220,7 @@ def _calcular_score(cliente_id, tienda_id):
 
 
 @api_view(['GET'])
+@requiere_acceso_tienda
 def list_clientes(request, tienda_id=None):
     '''obtenemos todos los clientes'''
 
@@ -236,6 +238,7 @@ def list_clientes(request, tienda_id=None):
 
 
 @api_view(['GET'])
+@requiere_acceso_tienda
 def list_clientes_activos(request, tienda_id=None):
     '''obtenemos todos los clientes activos'''
     user = request.user
@@ -252,6 +255,7 @@ def list_clientes_activos(request, tienda_id=None):
 
 
 @api_view(['GET'])
+@requiere_acceso_tienda
 def list_clientes_disponibles(request, tienda_id=None):
     '''obtenemos todos los clientes sin ventas activas'''
 
@@ -292,6 +296,8 @@ class ClientesListAPIView(ListAPIView):
 def get_cliente(request, pk):
     cliente = Cliente.objects.filter(id=pk).first()
     if cliente:
+        if not usuario_puede_acceder_tienda(request.user, cliente.tienda_id):
+            return respuesta_sin_permiso()
         cliente_serializer = ClienteSerializer(cliente, many=False)
         return Response(cliente_serializer.data, status=status.HTTP_200_OK)
     else:
@@ -299,6 +305,7 @@ def get_cliente(request, pk):
 
 
 @api_view(['POST'])
+@requiere_acceso_tienda
 def post_cliente(request, tienda_id=None):
     '''creamos un cliente'''
     if request.method == 'POST':
@@ -320,6 +327,8 @@ def post_cliente(request, tienda_id=None):
 def put_cliente(request, pk):
     cliente = Cliente.objects.filter(id=pk).first()
     if cliente:
+        if not usuario_puede_acceder_tienda(request.user, cliente.tienda_id):
+            return respuesta_sin_permiso()
         cliente_serializer = ClienteSerializer(cliente, data=request.data)
         if cliente_serializer.is_valid():
             cliente_serializer.save()
@@ -331,6 +340,8 @@ def put_cliente(request, pk):
 @api_view(['DELETE'])
 def delete_cliente(request, pk):
     cliente = Cliente.objects.filter(id=pk).first()
+    if cliente and not usuario_puede_acceder_tienda(request.user, cliente.tienda_id):
+        return respuesta_sin_permiso()
     ventas = Venta.objects.filter(cliente=cliente.id)
     if cliente:
         if ventas:
@@ -341,6 +352,7 @@ def delete_cliente(request, pk):
 
 
 @api_view(['GET'])
+@requiere_acceso_tienda
 def buscar_cliente_por_doc(request, doc, tienda_id):
     """Busca un cliente por documento dentro de las rutas del mismo administrador.
     Solo devuelve datos si el cliente pertenece a una ruta propia (no de otro admin).
@@ -371,6 +383,7 @@ def buscar_cliente_por_doc(request, doc, tienda_id):
 
 
 @api_view(['GET'])
+@requiere_acceso_tienda
 def score_cliente(request, pk, tienda_id):
     """Score crediticio individual de un cliente."""
     cliente = Cliente.objects.filter(id=pk, tienda_id=tienda_id).first()
@@ -380,6 +393,7 @@ def score_cliente(request, pk, tienda_id):
 
 
 @api_view(['GET'])
+@requiere_acceso_tienda
 def scores_tienda(request, tienda_id):
     """Score crediticio de todos los clientes de una tienda (bulk)."""
     tienda = Tienda.objects.filter(id=tienda_id).first()
