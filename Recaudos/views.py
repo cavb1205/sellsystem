@@ -6,6 +6,8 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.pagination import LimitOffsetPagination
 
+from django.db import transaction
+
 from Recaudos.models import Recaudo, Visita_Blanco
 from Recaudos.serializers import RecaudoSerializer, Visitas_BlancoSerializer, RecaudoDetailSerializer,RecaudoUpdateSerializer
 from Tiendas.models import Tienda
@@ -154,17 +156,19 @@ def get_recaudo(request, pk):
 @api_view(['PUT'])
 def put_recaudo(request, pk, tienda_id=None):
     recaudo = Recaudo.objects.filter(id=pk).first()
-    if recaudo and not usuario_puede_acceder_tienda(request.user, recaudo.tienda_id):
+    if not recaudo:
+        return Response({'message':'No se encontró el recaudo'}, status=status.HTTP_400_BAD_REQUEST)
+    if not usuario_puede_acceder_tienda(request.user, recaudo.tienda_id):
         return respuesta_sin_permiso()
     if tienda_id:
-        tienda = Tienda.objects.get(id=tienda_id)
+        tienda = Tienda.objects.filter(id=tienda_id).first()
     else:
-        tienda = Tienda.objects.get(id=recaudo.tienda.id)
-    venta = Venta.objects.get(id=recaudo.venta.id)
-    if recaudo:
-        recaudo_serializer = RecaudoUpdateSerializer(recaudo, data=request.data)
-        if recaudo_serializer.is_valid():
-            if recaudo_serializer.validated_data['valor_recaudo'] != recaudo.valor_recaudo:
+        tienda = Tienda.objects.filter(id=recaudo.tienda_id).first()
+    venta = Venta.objects.filter(id=recaudo.venta_id).first()
+    recaudo_serializer = RecaudoUpdateSerializer(recaudo, data=request.data)
+    if recaudo_serializer.is_valid():
+        if recaudo_serializer.validated_data['valor_recaudo'] != recaudo.valor_recaudo:
+            with transaction.atomic():
                 venta.saldo_actual = venta.saldo_actual + recaudo.valor_recaudo
                 venta.saldo_actual = venta.saldo_actual - recaudo_serializer.validated_data['valor_recaudo']
                 tienda.caja_inicial = tienda.caja_inicial - recaudo.valor_recaudo
@@ -181,11 +185,10 @@ def put_recaudo(request, pk, tienda_id=None):
                     venta.estado_venta = 'Pagado'
                 tienda.save()
                 venta.save()
-            else:
-                recaudo_serializer.save()
-            return Response(recaudo_serializer.data,status=status.HTTP_200_OK)
-        return Response(recaudo_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    return Response({'message':'No se encontró el recaudo'}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            recaudo_serializer.save()
+        return Response(recaudo_serializer.data,status=status.HTTP_200_OK)
+    return Response(recaudo_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         
 
 @api_view(['POST'])
@@ -200,30 +203,33 @@ def post_recaudo(request, tienda_id=None):
     new_data = request.data
     new_data['tienda']=tienda.id
 
-    venta = Venta.objects.get(id = new_data['venta'])
+    venta = Venta.objects.filter(id=new_data.get('venta')).first()
+    if not venta:
+        return Response({'message': 'Venta no encontrada'}, status=status.HTTP_404_NOT_FOUND)
     if not usuario_puede_acceder_tienda(request.user, venta.tienda_id):
         return respuesta_sin_permiso()
 
     if request.method == 'POST':
         recaudo_serializer = RecaudoSerializer(data = new_data)
         if recaudo_serializer.is_valid():
-            recaudo_serializer.save()
-            tienda.caja_inicial = tienda.caja_inicial + recaudo_serializer.validated_data['valor_recaudo']
-            venta.saldo_actual = venta.saldo_actual - recaudo_serializer.validated_data['valor_recaudo']
-            recaudos = Recaudo.objects.filter(venta=venta.id)
-            if venta.promedio_pago() >= venta.valor_cuota():
-                venta.estado_venta = 'Vigente'
-            if venta.promedio_pago() < venta.valor_cuota():
-                venta.estado_venta = 'Atrasado'
-            if venta.cuotas < recaudos.count():
-                venta.estado_venta = 'Vencido'
-            if venta.saldo_actual <= 0:
-                venta.estado_venta = 'Pagado'
-            tienda.save()
-            venta.save()
+            with transaction.atomic():
+                recaudo_serializer.save()
+                tienda.caja_inicial = tienda.caja_inicial + recaudo_serializer.validated_data['valor_recaudo']
+                venta.saldo_actual = venta.saldo_actual - recaudo_serializer.validated_data['valor_recaudo']
+                recaudos = Recaudo.objects.filter(venta=venta.id)
+                if venta.promedio_pago() >= venta.valor_cuota():
+                    venta.estado_venta = 'Vigente'
+                if venta.promedio_pago() < venta.valor_cuota():
+                    venta.estado_venta = 'Atrasado'
+                if venta.cuotas < recaudos.count():
+                    venta.estado_venta = 'Vencido'
+                if venta.saldo_actual <= 0:
+                    venta.estado_venta = 'Pagado'
+                tienda.save()
+                venta.save()
             return Response(recaudo_serializer.data, status=status.HTTP_200_OK)
         return Response(recaudo_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
+
 
 @api_view(['POST'])
 @requiere_acceso_tienda
@@ -238,60 +244,66 @@ def post_recaudo_no_pay(request, tienda_id=None):
     visita_blanco = new_data['visita_blanco']
 
     new_data['tienda']=tienda.id
-    venta = Venta.objects.get(id = new_data['venta'])
+    venta = Venta.objects.filter(id=new_data.get('venta')).first()
+    if not venta:
+        return Response({'message': 'Venta no encontrada'}, status=status.HTTP_404_NOT_FOUND)
     if not usuario_puede_acceder_tienda(request.user, venta.tienda_id):
         return respuesta_sin_permiso()
 
     if request.method == 'POST':
         visita_blanco_serializer = Visitas_BlancoSerializer(data=visita_blanco)
-        if visita_blanco_serializer.is_valid():
+        if not visita_blanco_serializer.is_valid():
+            return Response(visita_blanco_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
             visita_blanco = visita_blanco_serializer.save()
-            new_data['visita_blanco']=visita_blanco.id
-            
-            recaudo_serializer = RecaudoSerializer(data = new_data)
-            
-            if recaudo_serializer.is_valid():
-                
-                recaudo_serializer.save()
-                tienda.caja_inicial = tienda.caja_inicial + recaudo_serializer.validated_data['valor_recaudo']
-                venta.saldo_actual = venta.saldo_actual - recaudo_serializer.validated_data['valor_recaudo']
-                recaudos = Recaudo.objects.filter(venta=venta.id)
-                
-                if venta.promedio_pago() >= venta.valor_cuota():
-                    venta.estado_venta = 'Vigente'
-                if venta.promedio_pago() < venta.valor_cuota():
-                    venta.estado_venta = 'Atrasado'
-                if venta.cuotas < recaudos.count():
-                    venta.estado_venta = 'Vencido'
-                if venta.saldo_actual <= 0:
-                    venta.estado_venta = 'Pagado'
-                tienda.save()
-                venta.save()
-                return Response(recaudo_serializer.data, status=status.HTTP_200_OK)
-        return Response(recaudo_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            new_data['visita_blanco'] = visita_blanco.id
+            recaudo_serializer = RecaudoSerializer(data=new_data)
+            if not recaudo_serializer.is_valid():
+                # recaudo inválido → revierte la visita_blanco recién creada
+                transaction.set_rollback(True)
+                return Response(recaudo_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            recaudo_serializer.save()
+            tienda.caja_inicial = tienda.caja_inicial + recaudo_serializer.validated_data['valor_recaudo']
+            venta.saldo_actual = venta.saldo_actual - recaudo_serializer.validated_data['valor_recaudo']
+            recaudos = Recaudo.objects.filter(venta=venta.id)
+            if venta.promedio_pago() >= venta.valor_cuota():
+                venta.estado_venta = 'Vigente'
+            if venta.promedio_pago() < venta.valor_cuota():
+                venta.estado_venta = 'Atrasado'
+            if venta.cuotas < recaudos.count():
+                venta.estado_venta = 'Vencido'
+            if venta.saldo_actual <= 0:
+                venta.estado_venta = 'Pagado'
+            tienda.save()
+            venta.save()
+        return Response(recaudo_serializer.data, status=status.HTTP_200_OK)
 
 @api_view(['DELETE'])
 def delete_recaudo(request, pk):
     recaudo = Recaudo.objects.filter(id=pk).first()
-    if recaudo and not usuario_puede_acceder_tienda(request.user, recaudo.tienda_id):
+    if not recaudo:
+        return Response({'message':'No se encontró el recaudo'}, status=status.HTTP_400_BAD_REQUEST)
+    if not usuario_puede_acceder_tienda(request.user, recaudo.tienda_id):
         return respuesta_sin_permiso()
-    tienda = Tienda.objects.get(id=recaudo.tienda.id)
-    venta = Venta.objects.get(id=recaudo.venta.id)
+    tienda = Tienda.objects.filter(id=recaudo.tienda_id).first()
+    venta = Venta.objects.filter(id=recaudo.venta_id).first()
     if recaudo:
-        tienda.caja_inicial = tienda.caja_inicial - recaudo.valor_recaudo
-        venta.saldo_actual = venta.saldo_actual + recaudo.valor_recaudo
-        recaudos = Recaudo.objects.filter(venta=venta.id)
-        recaudo.delete()        
-        if venta.promedio_pago() >= venta.valor_cuota():
-            venta.estado_venta = 'Vigente'
-        elif venta.promedio_pago() < venta.valor_cuota():
-            venta.estado_venta = 'Atrasado'
-        elif venta.cuotas < recaudos.count():
-            venta.estado_venta = 'Vencido'
-        elif venta.saldo_actual <= 0:
-            venta.estado_venta = 'Pagado'
-        tienda.save()
-        venta.save()
+        with transaction.atomic():
+            tienda.caja_inicial = tienda.caja_inicial - recaudo.valor_recaudo
+            venta.saldo_actual = venta.saldo_actual + recaudo.valor_recaudo
+            recaudos = Recaudo.objects.filter(venta=venta.id)
+            recaudo.delete()
+            if venta.promedio_pago() >= venta.valor_cuota():
+                venta.estado_venta = 'Vigente'
+            elif venta.promedio_pago() < venta.valor_cuota():
+                venta.estado_venta = 'Atrasado'
+            elif venta.cuotas < recaudos.count():
+                venta.estado_venta = 'Vencido'
+            elif venta.saldo_actual <= 0:
+                venta.estado_venta = 'Pagado'
+            tienda.save()
+            venta.save()
         return Response({'message':'Recaudo eliminado correctamente'},status=status.HTTP_200_OK)
     return Response({'message':'No se encontró el recaudo'}, status=status.HTTP_400_BAD_REQUEST)
 

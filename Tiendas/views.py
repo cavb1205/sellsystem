@@ -12,6 +12,7 @@ from django.utils import timezone
 from django.core.files.base import ContentFile
 
 from django.db.models import Sum, Count
+from django.db import transaction
 
 from Tiendas.models import Tienda, Cierre_Caja, Tienda_Membresia, Membresia, Tienda_Administrador, SolicitudPago, CuentaDestino, PagoMembresia, _generar_codigo_solicitud
 from Tiendas.serializers import TiendaSerializer, CajaSerializer, TiendaMembresiaSerializer, TiendaCreateSerializer, TiendaAdminSerializer, SolicitudPagoSerializer, CuentaDestinoSerializer, MembresiaSerializer
@@ -354,7 +355,9 @@ def post_cierre_caja(request, fecha, tienda_id=None):
 def delete_cierre_caja(request, pk):
     '''eliminamos un registro de cierre de caja'''
 
-    cierre_caja = Cierre_Caja.objects.get(id=pk)
+    cierre_caja = Cierre_Caja.objects.filter(id=pk).first()
+    if not cierre_caja:
+        return Response({'message': 'Cierre de caja no encontrado'}, status=status.HTTP_404_NOT_FOUND)
     if not usuario_puede_acceder_tienda(request.user, cierre_caja.tienda_id):
         return respuesta_sin_permiso()
     cierre_caja.delete()
@@ -370,7 +373,7 @@ def get_tienda_membresia(request):
     '''get info of store and info the acount store'''
 
     tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
-    tienda_membresia = Tienda_Membresia.objects.get(tienda=tienda.id)
+    tienda_membresia = Tienda_Membresia.objects.filter(tienda=tienda).first() if tienda else None
     if tienda_membresia:
         serialize = TiendaMembresiaSerializer(tienda_membresia, many=False)
         return Response(serialize.data)
@@ -382,11 +385,13 @@ def get_tienda_membresia(request):
 # @permission_classes([IsAuthenticated])
 def get_tienda_membresia_admin(request, pk):
     '''get info of store and info the acount store for a admin user'''
-    
+
     tienda = Tienda.objects.filter(id=pk).first()
-    if tienda and not usuario_puede_acceder_tienda(request.user, pk):
+    if not tienda:
+        return Response({'message': 'No se encontró la tienda'}, status=status.HTTP_400_BAD_REQUEST)
+    if not usuario_puede_acceder_tienda(request.user, pk):
         return respuesta_sin_permiso()
-    tienda_membresia = Tienda_Membresia.objects.get(tienda=tienda.id)
+    tienda_membresia = Tienda_Membresia.objects.filter(tienda=tienda).first()
     if tienda_membresia:
         serialize = TiendaMembresiaSerializer(tienda_membresia, many=False)
         return Response(serialize.data)
@@ -415,16 +420,17 @@ def activar_membresia_mensual(request, pk):
     '''get store and activate membershi for a mounth + 30 days'''
     if not request.user.is_superuser:
         return respuesta_sin_permiso()
-    tienda = Tienda_Membresia.objects.get(id=pk)
+    tienda = Tienda_Membresia.objects.filter(id=pk).first()
     if tienda:
-        tienda.estado = 'Activa'
-        tienda.membresia = Membresia.objects.get(nombre='Mensual')
-        tienda.fecha_activacion = datetime.date.today()
-        tienda.fecha_vencimiento = tienda.fecha_activacion + datetime.timedelta(days=30)
-        tienda.archivada = False
-        tienda.fecha_archivado = None
-        tienda.save()
-        _registrar_pago_manual(tienda, request.user)
+        with transaction.atomic():
+            tienda.estado = 'Activa'
+            tienda.membresia = Membresia.objects.get(nombre='Mensual')
+            tienda.fecha_activacion = datetime.date.today()
+            tienda.fecha_vencimiento = tienda.fecha_activacion + datetime.timedelta(days=30)
+            tienda.archivada = False
+            tienda.fecha_archivado = None
+            tienda.save()
+            _registrar_pago_manual(tienda, request.user)
         return Response({'message':'Suscripción Mensual Activa'}, status=status.HTTP_200_OK)
     else:
         return Response({'message': 'No se encontró la tienda'}, status=status.HTTP_400_BAD_REQUEST)
@@ -434,16 +440,17 @@ def activar_membresia_ano(request, pk):
     '''get store and activate membershi for a year + 365 days'''
     if not request.user.is_superuser:
         return respuesta_sin_permiso()
-    tienda = Tienda_Membresia.objects.get(id=pk)
+    tienda = Tienda_Membresia.objects.filter(id=pk).first()
     if tienda:
-        tienda.estado = 'Activa'
-        tienda.membresia = Membresia.objects.get(nombre='Anual')
-        tienda.fecha_activacion = datetime.date.today()
-        tienda.fecha_vencimiento = tienda.fecha_activacion + datetime.timedelta(days=365)
-        tienda.archivada = False
-        tienda.fecha_archivado = None
-        tienda.save()
-        _registrar_pago_manual(tienda, request.user)
+        with transaction.atomic():
+            tienda.estado = 'Activa'
+            tienda.membresia = Membresia.objects.get(nombre='Anual')
+            tienda.fecha_activacion = datetime.date.today()
+            tienda.fecha_vencimiento = tienda.fecha_activacion + datetime.timedelta(days=365)
+            tienda.archivada = False
+            tienda.fecha_archivado = None
+            tienda.save()
+            _registrar_pago_manual(tienda, request.user)
         return Response({'message':'Suscripción Anual Activa'}, status=status.HTTP_200_OK)
     else:
         return Response({'message': 'No se encontró la tienda'}, status=status.HTTP_400_BAD_REQUEST)

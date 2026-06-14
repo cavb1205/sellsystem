@@ -2,6 +2,8 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 
+from django.db import transaction
+
 from Utilidades.models import Utilidad
 from Tiendas.models import Tienda
 from Utilidades.serializers import UtilidadSerializer, UtilidadDetailSerializer, UtilidadUpdateSerializer
@@ -59,7 +61,9 @@ def put_utilidad(request, pk, tienda_id=None):
     else:
         tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
     utilidad = Utilidad.objects.filter(id=pk).first()
-    if utilidad and not usuario_puede_acceder_tienda(request.user, utilidad.tienda_id):
+    if not utilidad:
+        return Response({'message': 'No se encontró la utilidad'}, status=status.HTTP_400_BAD_REQUEST)
+    if not usuario_puede_acceder_tienda(request.user, utilidad.tienda_id):
         return respuesta_sin_permiso()
     utilidad_valor = utilidad.valor
     if utilidad:
@@ -74,8 +78,9 @@ def put_utilidad(request, pk, tienda_id=None):
                 tienda.caja_inicial = tienda.caja_inicial + \
                     (utilidad_valor -
                      utilidad_serializer.validated_data['valor'])
-            utilidad_serializer.save()
-            tienda.save()
+            with transaction.atomic():
+                utilidad_serializer.save()
+                tienda.save()
             return Response(utilidad_serializer.data, status=status.HTTP_200_OK)
         return Response(utilidad_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     return Response({'message': 'No se encontró la utilidad'}, status=status.HTTP_400_BAD_REQUEST)
@@ -97,10 +102,11 @@ def post_utilidad(request, tienda_id=None):
         new_data['tienda'] = tienda.id
         utilidad_serializer = UtilidadSerializer(data=new_data)
         if utilidad_serializer.is_valid():
-            utilidad_serializer.save()
-            tienda.caja_inicial = tienda.caja_inicial - \
-                utilidad_serializer.validated_data['valor']
-            tienda.save()
+            with transaction.atomic():
+                utilidad_serializer.save()
+                tienda.caja_inicial = tienda.caja_inicial - \
+                    utilidad_serializer.validated_data['valor']
+                tienda.save()
             return Response(utilidad_serializer.data, status=status.HTTP_200_OK)
         return Response(utilidad_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -115,8 +121,9 @@ def delete_utilidad(request, pk, tienda_id=None):
     if utilidad and not usuario_puede_acceder_tienda(request.user, utilidad.tienda_id):
         return respuesta_sin_permiso()
     if utilidad:
-        tienda.caja_inicial = tienda.caja_inicial + utilidad.valor
-        utilidad.delete()
-        tienda.save()
+        with transaction.atomic():
+            tienda.caja_inicial = tienda.caja_inicial + utilidad.valor
+            utilidad.delete()
+            tienda.save()
         return Response({'message': 'Utilidad eliminada correctamente'}, status=status.HTTP_200_OK)
     return Response({'message': 'No se encontró la utilidad'}, status=status.HTTP_400_BAD_REQUEST)

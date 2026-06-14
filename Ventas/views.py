@@ -160,11 +160,12 @@ def put_venta(request, pk, tienda_id=None):
             venta_serializer.validated_data['saldo_actual'] = venta_serializer.validated_data['valor_venta'] + (
                 Decimal(venta_serializer.validated_data['interes'] / 100) * venta_serializer.validated_data['valor_venta'])
             if venta_serializer.validated_data['valor_venta'] != venta.valor_venta:
-                tienda.caja_inicial = tienda.caja_inicial + venta.valor_venta
-                tienda.caja_inicial = tienda.caja_inicial - \
-                    venta_serializer.validated_data['valor_venta']
-                venta_serializer.save()
-                tienda.save()
+                with transaction.atomic():
+                    tienda.caja_inicial = tienda.caja_inicial + venta.valor_venta
+                    tienda.caja_inicial = tienda.caja_inicial - \
+                        venta_serializer.validated_data['valor_venta']
+                    venta_serializer.save()
+                    tienda.save()
             else:
                 venta_serializer.save()
             return Response(venta_serializer.data, status=status.HTTP_200_OK)
@@ -193,10 +194,11 @@ def post_venta(request, tienda_id=None):
             fecha_venta + timedelta(days=(int(new_data['cuotas'])+4)))
         venta_serializer = VentaSerializer(data=new_data)
         if venta_serializer.is_valid():
-            venta_serializer.save()
-            tienda.caja_inicial = tienda.caja_inicial - \
-                venta_serializer.validated_data['valor_venta']
-            tienda.save()
+            with transaction.atomic():
+                venta_serializer.save()
+                tienda.caja_inicial = tienda.caja_inicial - \
+                    venta_serializer.validated_data['valor_venta']
+                tienda.save()
             return Response(venta_serializer.data, status=status.HTTP_200_OK)
         return Response(venta_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -209,17 +211,18 @@ def delete_venta(request, pk, tienda_id=None):
         tienda = Tienda.objects.filter(
             id=request.user.perfil.tienda.id).first()
     venta = Venta.objects.filter(id=pk).first()
-    if venta and not usuario_puede_acceder_tienda(request.user, venta.tienda_id):
+    if not venta:
+        return Response({'message': 'No se encontró la venta'}, status=status.HTTP_400_BAD_REQUEST)
+    if not usuario_puede_acceder_tienda(request.user, venta.tienda_id):
         return respuesta_sin_permiso()
     recaudos = Recaudo.objects.filter(venta=venta.id)
     if recaudos:
         return Response({'message': 'No se puede eliminar la venta por que ya se realizaron pagos a la misma.'}, status=status.HTTP_406_NOT_ACCEPTABLE)
-    else:
+    with transaction.atomic():
         venta.delete()
         tienda.caja_inicial = tienda.caja_inicial + venta.valor_venta
         tienda.save()
-        return Response({'message': 'Venta eliminada correctamente'}, status=status.HTTP_200_OK)
-    return Response({'message': 'No se encontró la venta'}, status=status.HTTP_400_BAD_REQUEST)
+    return Response({'message': 'Venta eliminada correctamente'}, status=status.HTTP_200_OK)
 
 
 @api_view(['PUT'])

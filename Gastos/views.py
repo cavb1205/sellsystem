@@ -2,6 +2,8 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.decorators import api_view
 
+from django.db import transaction
+
 from .models import *
 from .serializers import GastoSerializer, TipoGastoSerializer, GastoUpdateSerializer, GastoDetailSerializer
 from Tiendas.permissions import requiere_acceso_tienda, usuario_puede_acceder_tienda, respuesta_sin_permiso
@@ -129,7 +131,9 @@ def put_gasto(request, pk, tienda_id=None):
     else:
         tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
     gasto = Gasto.objects.filter(id=pk).first()
-    if gasto and not usuario_puede_acceder_tienda(request.user, gasto.tienda_id):
+    if not gasto:
+        return Response({'message':'No se encontró el gasto'}, status=status.HTTP_400_BAD_REQUEST)
+    if not usuario_puede_acceder_tienda(request.user, gasto.tienda_id):
         return respuesta_sin_permiso()
     gasto_valor = gasto.valor
     if gasto:
@@ -139,8 +143,9 @@ def put_gasto(request, pk, tienda_id=None):
                 tienda.caja_inicial = tienda.caja_inicial - (gasto_serializer.validated_data['valor']-gasto_valor)
             elif gasto_valor > gasto_serializer.validated_data['valor']:
                 tienda.caja_inicial = tienda.caja_inicial + (gasto_valor - gasto_serializer.validated_data['valor'])
-            gasto_serializer.save()
-            tienda.save()
+            with transaction.atomic():
+                gasto_serializer.save()
+                tienda.save()
             return Response(gasto_serializer.data,status=status.HTTP_200_OK)
         return Response(gasto_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     return Response({'message':'No se encontró el gasto'}, status=status.HTTP_400_BAD_REQUEST)
@@ -161,9 +166,10 @@ def post_gasto(request, tienda_id=None):
         new_data['trabajador']=request.user.perfil.id
         gasto_serializer = GastoSerializer(data = new_data)
         if gasto_serializer.is_valid():
-            gasto_serializer.save()
-            tienda.caja_inicial = tienda.caja_inicial - gasto_serializer.validated_data['valor']
-            tienda.save()
+            with transaction.atomic():
+                gasto_serializer.save()
+                tienda.caja_inicial = tienda.caja_inicial - gasto_serializer.validated_data['valor']
+                tienda.save()
             return Response(gasto_serializer.data, status=status.HTTP_200_OK)
         return Response(gasto_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
@@ -178,8 +184,9 @@ def delete_gasto(request, pk, tienda_id=None):
     if gasto and not usuario_puede_acceder_tienda(request.user, gasto.tienda_id):
         return respuesta_sin_permiso()
     if gasto:
-        gasto.delete()
-        tienda.caja_inicial = tienda.caja_inicial + gasto.valor
-        tienda.save()
+        with transaction.atomic():
+            gasto.delete()
+            tienda.caja_inicial = tienda.caja_inicial + gasto.valor
+            tienda.save()
         return Response({'message':'gasto eliminado correctamente'},status=status.HTTP_200_OK)
     return Response({'message':'No se encontró el gasto'}, status=status.HTTP_400_BAD_REQUEST)
