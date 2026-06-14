@@ -157,8 +157,9 @@ def put_venta(request, pk, tienda_id=None):
 
         if venta_serializer.is_valid():
 
-            venta_serializer.validated_data['saldo_actual'] = venta_serializer.validated_data['valor_venta'] + (
-                Decimal(venta_serializer.validated_data['interes'] / 100) * venta_serializer.validated_data['valor_venta'])
+            vv = venta_serializer.validated_data['valor_venta']
+            interes = venta_serializer.validated_data['interes']
+            venta_serializer.validated_data['saldo_actual'] = vv + (Decimal(interes) / Decimal(100)) * vv
             if venta_serializer.validated_data['valor_venta'] != venta.valor_venta:
                 with transaction.atomic():
                     tienda.caja_inicial = tienda.caja_inicial + venta.valor_venta
@@ -185,9 +186,9 @@ def post_venta(request, tienda_id=None):
                 id=request.user.perfil.tienda.id).first()
         new_data = request.data
         new_data['tienda'] = tienda.id
-        valor_venta = int(new_data['valor_venta'])
-        new_data['saldo_actual'] = int(
-            valor_venta + ((int(new_data['interes'])/100) * valor_venta))
+        valor_venta = Decimal(str(new_data['valor_venta']))
+        interes = Decimal(str(new_data['interes']))
+        new_data['saldo_actual'] = valor_venta + (interes / Decimal(100)) * valor_venta
         fecha_venta = datetime.strptime(new_data['fecha_venta'], '%Y-%m-%d')
         fecha_venta = datetime.date(fecha_venta)
         new_data['fecha_vencimiento'] = str(
@@ -294,7 +295,7 @@ def renovar_venta(request, pk, tienda_id=None):
         venta_vieja.save()
 
         # 2. Nueva venta vinculada al original
-        nuevo_total = int(saldo + (Decimal(interes) / 100) * saldo)
+        nuevo_total = saldo + (Decimal(interes) / Decimal(100)) * saldo
         fecha_vencimiento = fecha_venta + timedelta(days=cuotas + 4)
         nueva_venta = Venta.objects.create(
             fecha_venta=fecha_venta,

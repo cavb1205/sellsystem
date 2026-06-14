@@ -48,40 +48,36 @@ class Venta(models.Model):
         return self.cliente.nombres
 
     def total_a_pagar(self):
-        valor_venta = int(self.valor_venta)
-        total_a_pagar = valor_venta + ((self.interes/100) * valor_venta)
-        return total_a_pagar
-    
+        # Todo en Decimal: no truncar centavos ni caer en aritmética flotante.
+        return self.valor_venta + (Decimal(self.interes) / Decimal(100)) * self.valor_venta
+
     def valor_cuota(self):
         if not self.cuotas:
             return 0
-        total_a_pagar = self.total_a_pagar()
-        valor_cuota = total_a_pagar / self.cuotas
-        return valor_cuota
+        return self.total_a_pagar() / self.cuotas
 
     def pagos_realizados(self):
         if not self.valor_cuota():
             return 0
-        pagos_realizados = round((self.total_a_pagar() - int(self.saldo_actual)) / self.valor_cuota(),2)
-        return pagos_realizados
+        saldo = self.saldo_actual or Decimal(0)
+        return round((self.total_a_pagar() - saldo) / self.valor_cuota(), 2)
 
     def pagos_pendientes(self):
         if not self.valor_cuota():
             return 0
-        pagos_pendientes = round(int(self.saldo_actual) / self.valor_cuota(),2)
-        return pagos_pendientes
+        saldo = self.saldo_actual or Decimal(0)
+        return round(saldo / self.valor_cuota(), 2)
 
     def total_abonado(self):
-        total_abonado = self.total_a_pagar() - int(self.saldo_actual)
-        return total_abonado
+        saldo = self.saldo_actual or Decimal(0)
+        return self.total_a_pagar() - saldo
 
-  
+
     def promedio_pago(self):
         venta = Venta.objects.get(id=self.id)
         recaudos = venta.recaudo_set.filter(venta=venta.id)
         if recaudos:
-            promedio = round(self.total_abonado() / recaudos.count(),0)
-            return promedio
+            return round(self.total_abonado() / recaudos.count(), 0)
         else:
             return 0
 
@@ -90,9 +86,8 @@ class Venta(models.Model):
             return 0
         venta = Venta.objects.get(id=self.id)
         recaudos = venta.recaudo_set.filter(venta=venta.id)
-        dias_atrasados = round(((self.valor_cuota() * recaudos.count()) - self.total_abonado()) / self.valor_cuota(),2)
+        dias_atrasados = round(((self.valor_cuota() * recaudos.count()) - self.total_abonado()) / self.valor_cuota(), 2)
         return dias_atrasados
 
     def perdida(self):
-        valor_perdida = int(self.saldo_actual) 
-        return valor_perdida
+        return self.saldo_actual or Decimal(0)
