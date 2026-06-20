@@ -1,6 +1,33 @@
-db.sqlite3  
+# Local config / secretos
+db.sqlite3
 .vscode/
 .DS_Store
 sell_system/variables.py
 sell_system/settings.py
 
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Entornos virtuales
+venv/
+.venv/
+env/
+ENV/
+
+# Django
+*.log
+local_settings.py
+media/
+
+# Empaquetado / herramientas
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
