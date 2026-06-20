@@ -237,6 +237,11 @@ def post_tienda(request):
             Tienda_Administrador.objects.create(
                 tienda=tienda, administrador=request.user)
 
+            if not es_primera_tienda:
+                # Aviso al admin: usuario existente creó una ruta adicional
+                total_rutas = Tienda.objects.filter(administrador=request.user).count()
+                telegram_bot.notificar_nueva_ruta(tienda, request.user, total_rutas)
+
             return Response(serialize.data, status=status.HTTP_200_OK)
         return Response(serialize.errors, status=status.HTTP_400_BAD_REQUEST)
 

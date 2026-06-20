@@ -17,6 +17,7 @@ from Trabajadores.serializers import UserTokenLoginObtainSerializer,UserLoginSer
 from Tiendas.models import Tienda, Cierre_Caja, Tienda_Membresia, Membresia, Tienda_Administrador
 from Tiendas.serializers import TiendaCreateSerializer
 from Tiendas.views import comprobar_estado_membresia
+from Tiendas import telegram_bot
 from Tiendas.permissions import requiere_acceso_tienda, usuario_puede_acceder_tienda, respuesta_sin_permiso
 from Trabajadores.throttles import LoginRateThrottle, RegisterRateThrottle
 ##### LOGIN #####
@@ -222,6 +223,9 @@ def register_user(request):
                 perfil = serializer_perfil.save()
                 perfil.telefono = request.data.get('telefono', '')
                 perfil.save()
+
+                # Aviso al admin: nuevo registro en la app (no rompe el flujo)
+                telegram_bot.notificar_nuevo_usuario(user, tienda, perfil.telefono)
 
                 # Auto-login: generate JWT and return same structure as Login view
                 refresh = RefreshToken.for_user(user)
