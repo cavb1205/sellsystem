@@ -34,7 +34,12 @@ class Login(TokenObtainPairView):
             password=password
         )
         if user:
-            perfil = Perfil.objects.get(trabajador=user.id)
+            # Perfil ausente: error controlado en vez de 500 (Perfil.objects.get)
+            perfil = Perfil.objects.filter(trabajador=user.id).first()
+            if perfil is None:
+                return Response(
+                    {'error': 'Tu usuario no tiene un perfil de ruta asociado. Contacta al soporte.'},
+                    status=status.HTTP_400_BAD_REQUEST)
             login_serializer = self.serializer_class(data=request.data)
             if login_serializer.is_valid():
                 user_serializer = UserLoginSerializer(user)
@@ -48,6 +53,14 @@ class Login(TokenObtainPairView):
                     'membresia': membresia,
                 }, status=status.HTTP_200_OK)
             return Response({'error':'Usuario o contraseña incorrectos.'},status=status.HTTP_400_BAD_REQUEST)
+        # authenticate() también rechaza cuentas desactivadas con la clave
+        # correcta — avisar la causa real evita que el trabajador crea que
+        # olvidó su contraseña y reintente en vano.
+        existente = User.objects.filter(username=username).first()
+        if existente and not existente.is_active and existente.check_password(password):
+            return Response(
+                {'error': 'Tu cuenta está desactivada. Contacta al administrador de tu ruta.'},
+                status=status.HTTP_403_FORBIDDEN)
         return Response({'error':'Usuario o contraseña incorrectos.'},status=status.HTTP_400_BAD_REQUEST)
 
    
