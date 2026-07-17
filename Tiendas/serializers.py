@@ -82,9 +82,18 @@ class MembresiaSerializer(serializers.ModelSerializer):
 class TiendaMembresiaSerializer(serializers.ModelSerializer):
     tienda = TiendaSerializer()
     membresia = MembresiaSerializer()
+    # Última señal de uso real de la ruta (recaudo o cierre de caja).
+    # Se llena solo cuando la vista anota _ult_recaudo/_ult_cierre (panel root).
+    ultima_actividad = serializers.SerializerMethodField()
+
     class Meta:
         model = Tienda_Membresia
         fields = '__all__'
+
+    def get_ultima_actividad(self, obj):
+        fechas = [f for f in (getattr(obj, '_ult_recaudo', None),
+                              getattr(obj, '_ult_cierre', None)) if f]
+        return max(fechas) if fechas else None
 
 class SolicitudPagoSerializer(serializers.ModelSerializer):
     plan = serializers.CharField(source='membresia.nombre', read_only=True)

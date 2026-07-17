@@ -11,7 +11,7 @@ from django.utils import timezone
 
 from django.core.files.base import ContentFile
 
-from django.db.models import Sum, Count
+from django.db.models import Sum, Count, Max
 from django.db import transaction
 
 from Tiendas.models import Tienda, Cierre_Caja, Tienda_Membresia, Membresia, Tienda_Administrador, SolicitudPago, CuentaDestino, PagoMembresia, _generar_codigo_solicitud
@@ -126,6 +126,11 @@ def list_all_tiendas(request):
         # Por defecto se ocultan las archivadas; ?archivadas=1 las incluye
         if request.GET.get('archivadas') not in ('1', 'true'):
             tiendas = tiendas.filter(archivada=False)
+        # Última actividad real de cada ruta (Max ignora los duplicados del join)
+        tiendas = tiendas.annotate(
+            _ult_recaudo=Max('tienda__recaudo__fecha_recaudo'),
+            _ult_cierre=Max('tienda__cierre_caja__fecha_cierre'),
+        )
         if tiendas:
             serializer = TiendaMembresiaSerializer(tiendas, many=True)
             return Response(serializer.data, status=status.HTTP_200_OK)
@@ -934,6 +939,29 @@ def admin_resumen(request):
     # Conciliación pendiente
     conciliacion_pendiente = SolicitudPago.objects.filter(estado='pendiente_confirmacion').count()
 
+    # ── Retención y conversión ──────────────────────────────────────
+    # Churn: rutas que se bloquearon este mes (el bloqueo ocurre en vencimiento+2d)
+    bloqueadas_mes = qs.filter(
+        estado='Vencida',
+        fecha_vencimiento__gte=inicio_mes - datetime.timedelta(days=2),
+        fecha_vencimiento__lte=hoy - datetime.timedelta(days=2),
+    ).count()
+
+    # Conversión trial→pago (histórica, incluye archivadas):
+    # toda ruta nace en Prueba, así que convertida = tiene al menos un pago;
+    # trial perdido = sigue en Prueba, vencida y sin pagos.
+    todas = Tienda_Membresia.objects.all()
+    convertidas = todas.filter(tienda__pagos_membresia__isnull=False).distinct().count()
+    trials_perdidos = todas.filter(
+        membresia__nombre='Prueba', estado='Vencida',
+        tienda__pagos_membresia__isnull=True,
+    ).count()
+    base_conv = convertidas + trials_perdidos
+    conversion_trial = round(convertidas * 100.0 / base_conv) if base_conv else None
+
+    # Trials en curso: en Prueba y aún no bloqueados
+    trials_en_curso = qs.filter(membresia__nombre='Prueba').exclude(estado='Vencida').count()
+
     return Response({
         'rutas': rutas,
         'por_vencer': por_vencer,
@@ -946,6 +974,12 @@ def admin_resumen(request):
         'ingresos_6m': ingresos_6m,
         'distribucion_plan': distribucion_plan,
         'nuevas_rutas_mes': nuevas_rutas_mes,
+        'retencion': {
+            'bloqueadas_mes': bloqueadas_mes,
+            'conversion_trial': conversion_trial,   # % histórico o null sin datos
+            'trials_en_curso': trials_en_curso,
+            'trials_perdidos': trials_perdidos,
+        },
     }, status=status.HTTP_200_OK)
 
 
