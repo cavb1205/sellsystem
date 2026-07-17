@@ -4,7 +4,7 @@ from rest_framework import status
 from rest_framework.generics import ListAPIView
 from rest_framework.pagination import LimitOffsetPagination
 from django.db.models import Avg, Max
-from datetime import date
+from datetime import date, timedelta
 
 from Clientes.models import Cliente
 from Tiendas.models import Tienda
@@ -15,8 +15,21 @@ from Clientes.serializers import ClienteSerializer, ClienteCreateSerializer
 from Tiendas.permissions import requiere_acceso_tienda, usuario_puede_acceder_tienda, respuesta_sin_permiso
 
 
+# Umbrales de días sin abono por plazo del crédito: (sano, leve, grave).
+# Más allá de "grave" el crédito se considera en deterioro crítico y aplica
+# tope duro al score. Escalados a la frecuencia esperada de pago.
+UMBRALES_DSA = {
+    'Diario':  (3, 7, 14),
+    'Semanal': (9, 16, 30),
+    'Mensual': (35, 45, 75),
+}
+
+
 def _calcular_score(cliente_id, tienda_id):
-    """Calcula el score crediticio (0-100) y el cupo recomendado para un cliente.
+    """Score v2 (0-100) y cupo recomendado, estilo behavioral scoring:
+    el comportamiento RECIENTE domina sobre el histórico, y las señales de
+    deterioro (días sin abono, rachas de fallas, renovación reciente) aplican
+    topes duros al score aunque el historial antiguo sea bueno.
 
     Renovaciones: cuando un crédito vencido se renueva, se genera un Recaudo
     con es_renovacion=True (excluido del conteo de pagos reales) y la venta
@@ -32,37 +45,94 @@ def _calcular_score(cliente_id, tienda_id):
     no_pagos = recaudos.filter(visita_blanco__isnull=False).count()
     total_visitas = pagos + no_pagos
 
-    # Componente 1 — tasa de pago (40 pts)
-    tasa_pago = pagos / total_visitas if total_visitas > 0 else None
-    comp_pago = round(tasa_pago * 40, 1) if tasa_pago is not None else 20.0
+    # Ventana reciente: últimas 20 visitas reales (pago o falla) + racha de
+    # fallas consecutivas contadas desde la visita más reciente hacia atrás.
+    visitas_recientes = list(
+        recaudos.order_by('-fecha_recaudo', '-id')
+        .values_list('visita_blanco_id', flat=True)[:20]
+    )
+    pagos_recientes = sum(1 for v in visitas_recientes if v is None)
+    tasa_reciente = pagos_recientes / len(visitas_recientes) if visitas_recientes else None
+    racha_fallas = 0
+    for v in visitas_recientes:
+        if v is not None:
+            racha_fallas += 1
+        else:
+            break
 
-    # Componente 2 — salud de créditos activos (25 pts)
-    # Las ventas renovadas (cerradas con un Recaudo de renovación) cuentan
-    # como vencidos: el cliente no pagó, le rolaron la deuda.
+    tasa_historica = pagos / total_visitas if total_visitas > 0 else None
+
+    # Componente 1 — tasa de pago RECIENTE (30 pts): lo reciente domina
+    comp_reciente = round(tasa_reciente * 30, 1) if tasa_reciente is not None else 15.0
+
+    # Componente 2 — tasa de pago histórica (15 pts)
+    comp_historico = round(tasa_historica * 15, 1) if tasa_historica is not None else 7.5
+
+    # Componente 3 — salud de créditos activos (25 pts), graduada por días
+    # sin abono según el plazo. Las ventas renovadas cuentan como vencidos:
+    # el cliente no pagó, le rolaron la deuda.
     vencidos = ventas.filter(estado_venta='Vencido').count()
     atrasados = ventas.filter(estado_venta='Atrasado').count()
     renovaciones = ventas.filter(renovacion__isnull=False).distinct().count()
-    if (vencidos + renovaciones) > 0:
+    activas = list(ventas.filter(estado_venta__in=['Vigente', 'Atrasado']))
+
+    dias_sin_abono_max = 0
+    peor_bucket = 0   # 0 sano · 1 leve · 2 grave · 3 crítico
+    for v in activas:
+        dsa = v.dias_sin_abono()
+        sano, leve, grave = UMBRALES_DSA.get(v.plazo, UMBRALES_DSA['Diario'])
+        bucket = 0 if dsa <= sano else 1 if dsa <= leve else 2 if dsa <= grave else 3
+        dias_sin_abono_max = max(dias_sin_abono_max, dsa)
+        peor_bucket = max(peor_bucket, bucket)
+
+    if (vencidos + renovaciones) > 0 or peor_bucket == 3:
         comp_activos = 0
-    elif atrasados > 0:
-        comp_activos = 12
+    elif peor_bucket == 2:
+        comp_activos = 10
+    elif peor_bucket == 1 or atrasados > 0:
+        comp_activos = 18
     else:
         comp_activos = 25
 
-    # Componente 3 — sin créditos perdidos (20 pts)
+    # Componente 4 — sin créditos perdidos (20 pts)
     total_creditos = ventas.count()
     perdidos = ventas.filter(estado_venta='Perdida').count()
     tasa_perdidos = perdidos / total_creditos if total_creditos > 0 else 0
     comp_perdidos = round((1 - tasa_perdidos) * 20, 1)
 
-    # Componente 4 — historial positivo (15 pts)
+    # Componente 5 — trayectoria (10 pts)
     # Excluye créditos cerrados-por-renovación: no son una liquidación real.
     liquidados = ventas.filter(estado_venta='Pagado', renovacion__isnull=True).count()
-    comp_historial = round(min(liquidados / 5, 1) * 15, 1)
+    comp_historial = round(min(liquidados / 5, 1) * 10, 1)
 
-    score = max(0, min(100, round(comp_pago + comp_activos + comp_perdidos + comp_historial)))
+    score = max(0, min(100, round(
+        comp_reciente + comp_historico + comp_activos + comp_perdidos + comp_historial)))
+
+    # ── Señales duras de deterioro: topes al score aunque el historial sea bueno ──
+    senales = []
     if perdidos > 0:
         score = min(score, 30)
+        senales.append(f'{perdidos} crédito(s) perdido(s)')
+    if peor_bucket == 3 and activas:
+        score = min(score, 40)
+        senales.append(f'{dias_sin_abono_max} días sin abono en crédito vigente')
+    if racha_fallas >= 5:
+        score = min(score, 50)
+        senales.append(f'{racha_fallas} fallas consecutivas')
+    renovacion_reciente = Recaudo.objects.filter(
+        venta__in=ventas, es_renovacion=True,
+        fecha_recaudo__gte=date.today() - timedelta(days=90),
+    ).exists()
+    if renovacion_reciente:
+        score = min(score, 55)
+        senales.append('Renovación de deuda en los últimos 90 días')
+    # Tendencia: pagando notablemente peor que su propio historial
+    deterioro_tendencia = (
+        tasa_reciente is not None and tasa_historica is not None
+        and (tasa_historica - tasa_reciente) >= 0.15
+    )
+    if deterioro_tendencia:
+        senales.append('Tasa de pago reciente muy por debajo de su historial')
 
     if score >= 80:
         nivel = 'Excelente'
@@ -93,7 +163,9 @@ def _calcular_score(cliente_id, tienda_id):
         cupo_recomendado = int(cupo_minimo)
         justificacion = {'razon': 'Cliente nuevo — cupo inicial configurado por la tienda', 'bloqueado': False}
     else:
-        creditos_pagados = ventas.filter(estado_venta='Pagado')
+        # Solo liquidaciones REALES demuestran capacidad: excluye créditos
+        # cerrados por renovación (estado 'Pagado' pero la deuda fue rolada).
+        creditos_pagados = ventas.filter(estado_venta='Pagado', renovacion__isnull=True)
 
         # Capacidad de pago: promedio de los últimos 90 recaudos reales
         # (excluye renovaciones — su monto es el saldo total, no un pago real)
@@ -116,29 +188,30 @@ def _calcular_score(cliente_id, tienda_id):
         )
         capacidad_cuota = promedio_pago_real * float(cuotas_avg)
 
-        # Base histórica: todos los créditos (no solo pagados)
-        monto_max_todos = ventas.aggregate(Max('valor_venta'))['valor_venta__max'] or 0
+        # Progressive lending: la base SOLO crece sobre montos demostrados
+        # (créditos completados). Un crédito grande aún en curso no demuestra nada.
         monto_max_pagados = creditos_pagados.aggregate(Max('valor_venta'))['valor_venta__max'] or 0
-        # Para el techo usamos pagados si existen, sino todos
-        monto_max = monto_max_pagados if monto_max_pagados else monto_max_todos
+        monto_max = monto_max_pagados
 
         ultimo_pagado = creditos_pagados.order_by('-fecha_venta').first()
-        ultimo_monto = float(ultimo_pagado.valor_venta) if ultimo_pagado else float(monto_max_todos)
+        ultimo_monto = float(ultimo_pagado.valor_venta) if ultimo_pagado else 0.0
 
-        base_historica = max(float(monto_max_todos), ultimo_monto * 1.25)
-
-        # Solo limitar por capacidad_cuota si el cliente tiene créditos pagados
-        # (suficiente historial real). Sin pagados, usar base histórica directamente.
-        if capacidad_cuota > 0 and creditos_pagados.exists():
-            base = min(base_historica, capacidad_cuota) if base_historica > 0 else capacidad_cuota
+        if ultimo_pagado:
+            base_historica = max(float(monto_max_pagados), ultimo_monto * 1.2)
+            base = min(base_historica, capacidad_cuota) if capacidad_cuota > 0 else base_historica
         else:
-            base = base_historica if base_historica > 0 else cupo_minimo
+            # Primer crédito aún en curso: nada demostrado, no crecer sobre promesas
+            base_historica = cupo_minimo
+            base = cupo_minimo
 
         # Factor por score
         if score >= 80:   factor_score = 1.25
         elif score >= 60: factor_score = 1.00
         elif score >= 40: factor_score = 0.70
         else:             factor_score = 0.40
+
+        # Factor por tendencia: deterioro reciente frente a su propio historial
+        factor_tendencia = 0.60 if deterioro_tendencia else 1.00
 
         # Factor por recencia (excluye renovaciones)
         ultima_fecha = (
@@ -165,12 +238,17 @@ def _calcular_score(cliente_id, tienda_id):
         # Factor por crédito vigente atrasado
         factor_vigente = 0.60 if atrasados > 0 else 1.00
 
-        cupo_calculado = base * factor_score * factor_recencia * factor_vigente
+        cupo_calculado = base * factor_score * factor_recencia * factor_vigente * factor_tendencia
 
-        # Piso: último crédito pagado (trayectoria reciente), no el máximo histórico
-        piso = float(ultimo_monto) * 0.5 if ultimo_monto > 0 else 0
-        techo_ref = monto_max if monto_max else monto_max_todos
-        techo = float(techo_ref) * 2 if techo_ref else cupo_minimo * 3
+        # Piso: 50% del último pagado, pero SOLO con score sano (≥60) —
+        # el piso nunca debe proteger a un cliente que muestra riesgo.
+        piso = ultimo_monto * 0.5 if (ultimo_monto > 0 and score >= 60) else 0
+        # Techo por ciclo (progressive lending): máx 1.5× el último pagado,
+        # con techo absoluto de 2× el máximo demostrado.
+        if ultimo_monto > 0:
+            techo = min(ultimo_monto * 1.5, float(monto_max_pagados) * 2)
+        else:
+            techo = cupo_minimo * 1.5
 
         cupo_bruto = max(piso, min(techo, cupo_calculado))
 
@@ -194,22 +272,36 @@ def _calcular_score(cliente_id, tienda_id):
             'factor_score': factor_score,
             'factor_recencia': factor_recencia,
             'factor_vigente': factor_vigente,
+            'factor_tendencia': factor_tendencia,
             'dias_desde_ultima_actividad': dias,
             'bloqueado': False,
             'razon': f'Basado en {liquidados} crédito(s) pagado(s). Score {nivel} ({score}/100).',
         }
+
+    # Límite de exposición: el cupo disponible descuenta lo que el cliente
+    # ya debe en créditos activos — la deuda total nunca supera el cupo.
+    saldo_vigente = sum(float(v.saldo_actual or 0) for v in activas)
+    cupo_disponible = max(0, cupo_recomendado - int(round(saldo_vigente)))
 
     return {
         'score': score,
         'nivel': nivel,
         'sin_historial': total_visitas == 0 and total_creditos == 0,
         'cupo_recomendado': cupo_recomendado,
+        'cupo_disponible': cupo_disponible,
+        'saldo_vigente': int(round(saldo_vigente)),
+        'senales': senales,
         'justificacion': justificacion,
         'detalle': {
-            'comp_pago': comp_pago,
+            'comp_reciente': comp_reciente,
+            'comp_historico': comp_historico,
             'comp_activos': comp_activos,
             'comp_perdidos': comp_perdidos,
             'comp_historial': comp_historial,
+            'tasa_reciente': round(tasa_reciente * 100) if tasa_reciente is not None else None,
+            'tasa_historica': round(tasa_historica * 100) if tasa_historica is not None else None,
+            'racha_fallas': racha_fallas,
+            'dias_sin_abono_max': dias_sin_abono_max,
             'pagos': pagos,
             'no_pagos': no_pagos,
             'total_creditos': total_creditos,
