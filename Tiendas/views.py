@@ -965,3 +965,78 @@ def archivar_ruta(request, pk):
     tm.save(update_fields=['archivada', 'fecha_archivado'])
     return Response({'archivada': tm.archivada, 'fecha_archivado': str(tm.fecha_archivado) if tm.fecha_archivado else None}, status=status.HTTP_200_OK)
 
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def admin_detalle_ruta(request, pk):
+    """Drill-down de una ruta para el panel root: contacto del administrador,
+    membresía, señales de actividad e historial de pagos del ledger.
+    Solo superusuarios."""
+    if not request.user.is_superuser:
+        return Response({'error': 'forbidden'}, status=403)
+
+    tienda = Tienda.objects.select_related('administrador').filter(id=pk).first()
+    if not tienda:
+        return Response({'error': 'Ruta no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+
+    admin_user = tienda.administrador
+    perfil = getattr(admin_user, 'perfil', None)
+    tm = Tienda_Membresia.objects.select_related('membresia').filter(tienda=tienda).first()
+
+    # Señales de actividad (import local para no acoplar módulos a nivel de import)
+    from Recaudos.models import Recaudo
+    ultimo_recaudo = (Recaudo.objects.filter(tienda=tienda)
+                      .order_by('-fecha_recaudo')
+                      .values_list('fecha_recaudo', flat=True).first())
+    ultimo_cierre = (Cierre_Caja.objects.filter(tienda=tienda)
+                     .order_by('-fecha_cierre')
+                     .values_list('fecha_cierre', flat=True).first())
+    ventas_activas = tienda.venta_set.filter(
+        estado_venta__in=['Vigente', 'Vencido', 'Atrasado']).count()
+
+    # Historial de pagos (ledger PagoMembresia)
+    pagos_qs = (PagoMembresia.objects.filter(tienda=tienda)
+                .select_related('membresia', 'registrado_por', 'solicitud')
+                .order_by('-fecha', '-creado'))
+    pagos = [{
+        'fecha': p.fecha,
+        'monto': float(p.monto),
+        'plan': p.membresia.nombre,
+        'origen': p.origen,
+        'registrado_por': p.registrado_por.username if p.registrado_por else None,
+        'codigo': p.solicitud.codigo if p.solicitud_id else None,
+    } for p in pagos_qs]
+
+    return Response({
+        'tienda': {
+            'id': tienda.id,
+            'nombre': tienda.nombre,
+            'telefono': tienda.telefono,
+            'prefijo_telefono': tienda.prefijo_telefono,
+            'fecha_registro': tienda.fecha_registro,
+            'cantidad_clientes': tienda.cliente_set.count(),
+            'cantidad_ventas': tienda.venta_set.count(),
+        },
+        'admin': {
+            'username': admin_user.username,
+            'nombre': (f'{admin_user.first_name} {admin_user.last_name}').strip() or admin_user.username,
+            'email': admin_user.email,
+            'telefono': (perfil.telefono if perfil and perfil.telefono else tienda.telefono) or '',
+            'ultimo_login': admin_user.last_login,
+        },
+        'membresia': {
+            'plan': tm.membresia.nombre if tm else None,
+            'estado': tm.estado if tm else None,
+            'fecha_activacion': tm.fecha_activacion if tm else None,
+            'fecha_vencimiento': tm.fecha_vencimiento if tm else None,
+            'archivada': tm.archivada if tm else False,
+        },
+        'actividad': {
+            'ultimo_recaudo': ultimo_recaudo,
+            'ultimo_cierre': ultimo_cierre,
+            'ventas_activas': ventas_activas,
+        },
+        'pagos': pagos,
+        'total_pagado': sum(p['monto'] for p in pagos),
+    })
