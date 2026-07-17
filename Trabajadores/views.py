@@ -211,6 +211,11 @@ def post_trabajador(request, tienda_id = None):
 @throttle_classes([RegisterRateThrottle])
 def register_user(request):
     username = request.data.get('username', '')
+    # Última vía sin validar: el front exige 8, pero la API directa aceptaba
+    # cualquier largo (mismo criterio que update_password/post_trabajador).
+    if len(request.data.get('password') or '') < 8:
+        return Response({'error': 'La contraseña debe tener al menos 8 caracteres.'},
+                        status=status.HTTP_400_BAD_REQUEST)
     user_data = {
         "username": username,
         "first_name": request.data.get('first_name', ''),
