@@ -56,9 +56,18 @@ class Login(TokenObtainPairView):
 
 #### CRUD TRABAJADORES #####
 
+def _es_admin(user):
+    """Solo el admin de la ruta (is_staff) o root gestionan la nómina.
+    Los cobradores pertenecen a la tienda pero NO pueden crear/editar/eliminar
+    trabajadores ni cambiar contraseñas ajenas (fix escalación de privilegios)."""
+    return bool(user and (user.is_staff or user.is_superuser))
+
+
 @api_view(['GET'])
 @requiere_acceso_tienda
 def list_trabajadores(request, tienda_id = None):
+    if not _es_admin(request.user):
+        return respuesta_sin_permiso()
     if tienda_id:
         tienda = Tienda.objects.filter(id=tienda_id).first()    
     else:    
@@ -72,6 +81,8 @@ def list_trabajadores(request, tienda_id = None):
 
 @api_view(['GET'])
 def get_trabajador(request, pk):
+    if not _es_admin(request.user):
+        return respuesta_sin_permiso()
     trabajador = Perfil.objects.filter(id=pk).first()
     if trabajador:
         if not usuario_puede_acceder_tienda(request.user, trabajador.tienda_id):
@@ -103,7 +114,8 @@ def get_trabajador(request, pk):
 
 @api_view(['PUT'])
 def put_trabajador(request, pk):
-    
+    if not _es_admin(request.user):
+        return respuesta_sin_permiso()
     trabajador = Perfil.objects.filter(id=pk).first()
     if trabajador:
         if not usuario_puede_acceder_tienda(request.user, trabajador.tienda_id):
@@ -137,6 +149,11 @@ def put_trabajador(request, pk):
 @api_view(['POST'])
 @requiere_acceso_tienda
 def post_trabajador(request, tienda_id = None):
+    if not _es_admin(request.user):
+        return respuesta_sin_permiso()
+    if len(request.data.get('password') or '') < 8:
+        return Response({'error': 'La contraseña debe tener al menos 8 caracteres.'},
+                        status=status.HTTP_400_BAD_REQUEST)
     user_data = {
         "username":request.data['username'],
         "first_name":request.data['first_name'],
@@ -246,11 +263,21 @@ def register_user(request):
 
 @api_view(['DELETE'])
 def delete_trabajador(request, pk):
+    if not _es_admin(request.user):
+        return respuesta_sin_permiso()
     trabajador = Perfil.objects.filter(id=pk).first()
     if trabajador:
         if not usuario_puede_acceder_tienda(request.user, trabajador.tienda_id):
             return respuesta_sin_permiso()
         user = User.objects.filter(id=trabajador.trabajador.id).first()
+        # Blindaje anti-cascada: Tienda.administrador es FK CASCADE — borrar al
+        # usuario que administra una ruta destruiría la tienda completa con sus
+        # clientes, ventas y recaudos. Nunca se permite por esta vía.
+        if user and Tienda.objects.filter(administrador=user).exists():
+            return Response(
+                {'error': 'Este usuario es administrador de una ruta y no se puede eliminar. '
+                          'Si necesitas bloquear su acceso, desactívalo desde Editar.'},
+                status=status.HTTP_400_BAD_REQUEST)
         trabajador.delete()
         user.delete()
         return Response({'message':'Trabajador eliminado correctamente'},status=status.HTTP_200_OK)
@@ -262,10 +289,19 @@ def delete_trabajador(request, pk):
 def update_password(request, pk):
     trabajador = Perfil.objects.filter(id=pk).first()
     if trabajador:
+        # Un trabajador solo puede cambiar SU propia contraseña (perfil);
+        # cambiar la de otros (incluido el admin) requiere rol admin.
+        es_propia = trabajador.trabajador_id == request.user.id
+        if not es_propia and not _es_admin(request.user):
+            return respuesta_sin_permiso()
         if not usuario_puede_acceder_tienda(request.user, trabajador.tienda_id):
             return respuesta_sin_permiso()
+        password = request.data.get('passwordNuevo') or ''
+        if len(password) < 8:
+            return Response({'error': 'La contraseña debe tener al menos 8 caracteres.'},
+                            status=status.HTTP_400_BAD_REQUEST)
         user = User.objects.filter(id=trabajador.trabajador.id).first()
-        user.set_password(request.data['passwordNuevo'])
+        user.set_password(password)
         user.save()
         return Response({'message':'Contraseña cambiada con éxito'}, status=status.HTTP_200_OK)
     return Response({'message':'No se encontro el trabajador'}, status=status.HTTP_400_BAD_REQUEST)
