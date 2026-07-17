@@ -420,7 +420,7 @@ def _registrar_pago_manual(tienda_membresia, user):
     )
 
 
-@api_view(['GET'])
+@api_view(['POST'])
 def activar_membresia_mensual(request, pk):
     '''get store and activate membershi for a mounth + 30 days'''
     if not request.user.is_superuser:
@@ -440,7 +440,7 @@ def activar_membresia_mensual(request, pk):
     else:
         return Response({'message': 'No se encontró la tienda'}, status=status.HTTP_400_BAD_REQUEST)
     
-@api_view(['GET'])
+@api_view(['POST'])
 def activar_membresia_ano(request, pk):
     '''get store and activate membershi for a year + 365 days'''
     if not request.user.is_superuser:
