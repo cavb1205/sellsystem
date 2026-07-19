@@ -11,7 +11,7 @@ from datetime import date
 import requests
 from django.conf import settings
 from django.contrib.auth.models import User
-from django.db.models import Q, Sum
+from django.db.models import Sum
 
 from Clientes.models import Cliente
 from Clientes.views import _calcular_score
@@ -85,13 +85,19 @@ def _responder_callback(callback_id, texto='Listo'):
 
 
 def _usuario_y_rutas():
-    """Resuelve SIEMPRE cavb1205 y sus rutas; root no interviene aquí."""
+    """Resuelve rutas vigentes asignadas en Tienda_Administrador.
+
+    No se usa Tienda.administrador: ese campo conserva el dueño histórico de
+    una ruta y puede incluir rutas que cavb1205 ya no administra. La tabla
+    Tienda_Administrador es la asignación explícita que define el alcance del
+    asistente.
+    """
     usuario = User.objects.filter(username=settings.TELEGRAM_ASSISTANT_USERNAME).first()
     if not usuario:
         logger.error('Usuario del asistente Telegram no encontrado: %s', settings.TELEGRAM_ASSISTANT_USERNAME)
         return None, Tienda.objects.none()
     rutas = Tienda.objects.filter(
-        Q(administrador=usuario) | Q(tienda_administrador__administrador=usuario)
+        tienda_administrador__administrador=usuario
     ).distinct()
     return usuario, rutas
 
