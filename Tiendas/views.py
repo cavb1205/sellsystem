@@ -17,6 +17,7 @@ from django.db import transaction
 from Tiendas.models import Tienda, Cierre_Caja, Tienda_Membresia, Membresia, Tienda_Administrador, SolicitudPago, CuentaDestino, PagoMembresia, _generar_codigo_solicitud
 from Tiendas.serializers import TiendaSerializer, CajaSerializer, TiendaMembresiaSerializer, TiendaCreateSerializer, TiendaAdminSerializer, SolicitudPagoSerializer, CuentaDestinoSerializer, MembresiaSerializer
 from Tiendas import telegram_bot
+from Tiendas import telegram_assistant
 from Tiendas.permissions import requiere_acceso_tienda, usuario_puede_acceder_tienda, respuesta_sin_permiso
 
 
@@ -629,9 +630,19 @@ def telegram_webhook(request):
     if secret != settings.TELEGRAM_WEBHOOK_SECRET:
         return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
 
+    # Las consultas privadas se manejan antes de los callbacks de pagos y
+    # aplican su propio chat_id autorizado. El flujo de pagos existente queda
+    # restringido al TELEGRAM_ADMIN_CHAT_ID como siempre.
+    message = request.data.get('message')
+    if message and telegram_assistant.procesar_mensaje(message):
+        return Response({'ok': True})
+
     callback = request.data.get('callback_query')
     if not callback:
         return Response({'ok': True})  # ignorar updates que no sean botones
+
+    if telegram_assistant.procesar_callback(callback):
+        return Response({'ok': True})
 
     chat_id = str(callback.get('message', {}).get('chat', {}).get('id', ''))
     if chat_id != str(settings.TELEGRAM_ADMIN_CHAT_ID):

@@ -251,3 +251,9 @@ CUENTA_DESTINO_TIPO = globals().get('CUENTA_DESTINO_TIPO', '')
 TELEGRAM_BOT_TOKEN = globals().get('TELEGRAM_BOT_TOKEN', '')
 TELEGRAM_ADMIN_CHAT_ID = globals().get('TELEGRAM_ADMIN_CHAT_ID', '')
 TELEGRAM_WEBHOOK_SECRET = globals().get('TELEGRAM_WEBHOOK_SECRET', '')
+
+# Asistente privado de cartera. Estos valores viven en variables.py del VPS.
+# No reutiliza los permisos de root: toda consulta se limita al usuario Django
+# configurado y solo se acepta desde su chat personal de Telegram.
+TELEGRAM_ASSISTANT_CHAT_ID = globals().get('TELEGRAM_ASSISTANT_CHAT_ID', '')
+TELEGRAM_ASSISTANT_USERNAME = globals().get('TELEGRAM_ASSISTANT_USERNAME', 'cavb1205')
