@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from rest_framework import status
 
 import datetime
+import logging
 from itertools import chain
 
 from django.conf import settings
@@ -19,6 +20,8 @@ from Tiendas.serializers import TiendaSerializer, CajaSerializer, TiendaMembresi
 from Tiendas import telegram_bot
 from Tiendas import telegram_assistant
 from Tiendas.permissions import requiere_acceso_tienda, usuario_puede_acceder_tienda, respuesta_sin_permiso
+
+logger = logging.getLogger(__name__)
 
 
 def _actualizar_estados_membresias():
@@ -634,15 +637,31 @@ def telegram_webhook(request):
     # aplican su propio chat_id autorizado. El flujo de pagos existente queda
     # restringido al TELEGRAM_ADMIN_CHAT_ID como siempre.
     message = request.data.get('message')
-    if message and telegram_assistant.procesar_mensaje(message):
-        return Response({'ok': True})
+    if message:
+        try:
+            if telegram_assistant.procesar_mensaje(message):
+                return Response({'ok': True})
+        except Exception:
+            # Una consulta del asistente nunca debe dejar updates atascados ni
+            # afectar el webhook de pagos. El detalle queda en el log para
+            # diagnóstico; Telegram recibe 200 y puede procesar lo siguiente.
+            logger.exception('Error procesando mensaje del asistente Telegram')
+            return Response({'ok': True})
 
     callback = request.data.get('callback_query')
     if not callback:
         return Response({'ok': True})  # ignorar updates que no sean botones
 
-    if telegram_assistant.procesar_callback(callback):
-        return Response({'ok': True})
+    try:
+        if telegram_assistant.procesar_callback(callback):
+            return Response({'ok': True})
+    except Exception:
+        # Mismo aislamiento para botones asst:*; los callbacks de pagos se
+        # procesan abajo y permanecen fuera de esta protección.
+        if callback.get('data', '').startswith('asst:'):
+            logger.exception('Error procesando botón del asistente Telegram')
+            return Response({'ok': True})
+        raise
 
     chat_id = str(callback.get('message', {}).get('chat', {}).get('id', ''))
     if chat_id != str(settings.TELEGRAM_ADMIN_CHAT_ID):
