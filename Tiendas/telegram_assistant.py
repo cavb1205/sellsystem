@@ -290,7 +290,7 @@ def _buscar_ruta(argumento, rutas):
 
 
 def _buscar_cliente(argumento, rutas):
-    palabras = [p for p in argument.strip().split() if p]
+    palabras = [p for p in argumento.strip().split() if p]
     if not palabras:
         return []
     consulta = Q()
