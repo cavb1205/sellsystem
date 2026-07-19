@@ -11,7 +11,7 @@ from datetime import date
 import requests
 from django.conf import settings
 from django.contrib.auth.models import User
-from django.db.models import Sum
+from django.db.models import Q, Sum
 
 from Clientes.models import Cliente
 from Clientes.views import _calcular_score
