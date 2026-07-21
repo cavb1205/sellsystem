@@ -146,14 +146,28 @@ def _texto_resumen(rutas):
 def _texto_rutas(rutas):
     if not rutas.exists():
         return '🏪 No hay rutas asociadas a este administrador.'
-    lineas = ['🏪 <b>Tus rutas administradas</b>']
+    cartera_total = _ventas_activas(rutas).aggregate(total=Sum('saldo_actual'))['total'] or 0
+    caja_total = rutas.aggregate(total=Sum('caja_inicial'))['total'] or 0
+    total_disponible = caja_total + cartera_total
+    lineas = [
+        '🏪 <b>Tus rutas administradas</b>\n'
+        f'💵 Caja actual disponible: <b>{_dinero(caja_total)}</b>\n'
+        f'💰 Dinero por cobrar: <b>{_dinero(cartera_total)}</b>\n'
+        f'📊 Total (caja + por cobrar): <b>{_dinero(total_disponible)}</b>'
+    ]
     teclado = []
     for ruta in rutas.order_by('nombre')[:MAX_RESULTADOS]:
         ventas = _ventas_activas(rutas.filter(id=ruta.id))
-        saldo = ventas.aggregate(total=Sum('saldo_actual'))['total'] or 0
+        por_cobrar = ventas.aggregate(total=Sum('saldo_actual'))['total'] or 0
+        caja = ruta.caja_inicial or 0
+        total_ruta = caja + por_cobrar
         vencidos = ventas.filter(estado_venta='Vencido').count()
         aviso = f' · 🔴 {vencidos}' if vencidos else ''
-        lineas.append(f'\n• <b>{_escape(ruta.nombre)}</b>\n  {_dinero(saldo)} por cobrar{aviso}')
+        lineas.append(
+            f'\n• <b>{_escape(ruta.nombre)}</b>{aviso}\n'
+            f'  Caja {_dinero(caja)} · Por cobrar {_dinero(por_cobrar)}\n'
+            f'  Total <b>{_dinero(total_ruta)}</b>'
+        )
         teclado.append([{'text': f'📍 {_escape(ruta.nombre)[:30]}', 'callback_data': f'asst:ruta:{ruta.id}'}])
     if rutas.count() > MAX_RESULTADOS:
         lineas.append(f'\n<i>Mostrando las primeras {MAX_RESULTADOS} rutas.</i>')
