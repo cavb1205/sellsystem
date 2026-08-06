@@ -7,6 +7,7 @@ urlpatterns = [
     
     ### RECAUDOS ####
     path('', views.list_recaudos, name='list_recaudos'),
+    path('list/<int:venta_id>/paginado/', views.list_recaudos_venta_paginados, name='list_recaudos_venta_paginados'),
     path('list/<int:venta_id>/', views.list_recaudos_venta, name='list_recaudos_venta'),
     path('list/<str:date>/', views.list_recaudos_fecha, name='list_recaudos_fecha'),
     path('list/<str:date>/t/<str:tienda_id>/', views.list_recaudos_fecha, name='list_recaudos_fecha_admin'),

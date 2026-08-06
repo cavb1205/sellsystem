@@ -1,5 +1,13 @@
 from django.contrib import admin
-from .models import Tienda, Cierre_Caja, Membresia, Tienda_Membresia, Tienda_Administrador, PagoMembresia
+from .models import (
+    AlertaOperativa,
+    Tienda,
+    Cierre_Caja,
+    Membresia,
+    Tienda_Membresia,
+    Tienda_Administrador,
+    PagoMembresia,
+)
 
 
 
@@ -10,3 +18,4 @@ admin.site.register(Cierre_Caja)
 admin.site.register(Membresia)
 admin.site.register(Tienda_Membresia)
 admin.site.register(PagoMembresia)
+admin.site.register(AlertaOperativa)

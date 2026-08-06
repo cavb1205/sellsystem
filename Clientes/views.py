@@ -3,84 +3,78 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.generics import ListAPIView
 from rest_framework.pagination import LimitOffsetPagination
-from django.db.models import Avg, Max
+from collections import defaultdict
 from datetime import date, timedelta
 
 from Clientes.models import Cliente
 from Tiendas.models import Tienda
 from Ventas.models import Venta
+from Ventas.riesgo import UMBRALES_DSA
 from Recaudos.models import Recaudo
 
 from Clientes.serializers import ClienteSerializer, ClienteCreateSerializer
 from Tiendas.permissions import requiere_acceso_tienda, usuario_puede_acceder_tienda, respuesta_sin_permiso
 
 
-# Umbrales de días sin abono por plazo del crédito: (sano, leve, grave).
-# Más allá de "grave" el crédito se considera en deterioro crítico y aplica
-# tope duro al score. Escalados a la frecuencia esperada de pago.
-UMBRALES_DSA = {
-    'Diario':  (3, 7, 14),
-    'Semanal': (9, 16, 30),
-    'Mensual': (35, 45, 75),
-}
+def _calcular_score_desde_datos(cliente_id, tienda, ventas, recaudos,
+                                ids_ventas_renovadas, hoy=None,
+                                recaudos_exitosos_override=None):
+    """Calcula el score con datos ya cargados, sin consultas por cliente.
 
-
-def _calcular_score(cliente_id, tienda_id):
-    """Score v2 (0-100) y cupo recomendado, estilo behavioral scoring:
-    el comportamiento RECIENTE domina sobre el histórico, y las señales de
-    deterioro (días sin abono, rachas de fallas, renovación reciente) aplican
-    topes duros al score aunque el historial antiguo sea bueno.
-
-    Renovaciones: cuando un crédito vencido se renueva, se genera un Recaudo
-    con es_renovacion=True (excluido del conteo de pagos reales) y la venta
-    nueva queda vinculada a la vieja via origen_renovacion. La venta vieja
-    cierra como 'Pagado' pero NO cuenta como liquidada; se trata como un
-    vencido para el componente de salud de créditos activos.
+    Esta función conserva las reglas del score individual. La separación entre
+    carga de datos y cálculo permite que el endpoint bulk lea la ruta completa
+    en pocas consultas y luego procese los clientes en memoria.
     """
-    ventas = Venta.objects.filter(cliente_id=cliente_id, tienda_id=tienda_id)
-    # Solo recaudos reales — excluye los generados al renovar
-    recaudos = Recaudo.objects.filter(venta__in=ventas, es_renovacion=False)
+    hoy = hoy or date.today()
+    recaudos_por_venta = defaultdict(list)
+    for recaudo in recaudos:
+        recaudos_por_venta[recaudo['venta_id']].append(recaudo)
 
-    pagos = recaudos.filter(visita_blanco__isnull=True).count()
-    no_pagos = recaudos.filter(visita_blanco__isnull=False).count()
-    total_visitas = pagos + no_pagos
-
-    # Ventana reciente: últimas 20 visitas reales (pago o falla) + racha de
-    # fallas consecutivas contadas desde la visita más reciente hacia atrás.
-    visitas_recientes = list(
-        recaudos.order_by('-fecha_recaudo', '-id')
-        .values_list('visita_blanco_id', flat=True)[:20]
-    )
-    pagos_recientes = sum(1 for v in visitas_recientes if v is None)
+    # Solo recaudos reales — excluye los generados al renovar.
+    recaudos_reales = [r for r in recaudos if not r['es_renovacion']]
+    visitas_recientes = sorted(
+        recaudos_reales,
+        key=lambda r: (r['fecha_recaudo'], r['id']),
+        reverse=True,
+    )[:20]
+    pagos = sum(1 for r in recaudos_reales if r['visita_blanco_id'] is None)
+    no_pagos = len(recaudos_reales) - pagos
+    total_visitas = len(recaudos_reales)
+    pagos_recientes = sum(1 for r in visitas_recientes if r['visita_blanco_id'] is None)
     tasa_reciente = pagos_recientes / len(visitas_recientes) if visitas_recientes else None
     racha_fallas = 0
-    for v in visitas_recientes:
-        if v is not None:
+    for recaudo in visitas_recientes:
+        if recaudo['visita_blanco_id'] is not None:
             racha_fallas += 1
         else:
             break
-
     tasa_historica = pagos / total_visitas if total_visitas > 0 else None
 
-    # Componente 1 — tasa de pago RECIENTE (30 pts): lo reciente domina
     comp_reciente = round(tasa_reciente * 30, 1) if tasa_reciente is not None else 15.0
-
-    # Componente 2 — tasa de pago histórica (15 pts)
     comp_historico = round(tasa_historica * 15, 1) if tasa_historica is not None else 7.5
 
-    # Componente 3 — salud de créditos activos (25 pts), graduada por días
-    # sin abono según el plazo. Las ventas renovadas cuentan como vencidos:
-    # el cliente no pagó, le rolaron la deuda.
-    vencidos = ventas.filter(estado_venta='Vencido').count()
-    atrasados = ventas.filter(estado_venta='Atrasado').count()
-    renovaciones = ventas.filter(renovacion__isnull=False).distinct().count()
-    activas = list(ventas.filter(estado_venta__in=['Vigente', 'Atrasado']))
+    vencidos = sum(1 for v in ventas if v['estado_venta'] == 'Vencido')
+    atrasados = sum(1 for v in ventas if v['estado_venta'] == 'Atrasado')
+    renovaciones = sum(1 for v in ventas if v['id'] in ids_ventas_renovadas)
+    activas = [
+        v for v in ventas
+        if v['estado_venta'] in ['Vigente', 'Atrasado', 'Vencido']
+    ]
 
     dias_sin_abono_max = 0
-    peor_bucket = 0   # 0 sano · 1 leve · 2 grave · 3 crítico
-    for v in activas:
-        dsa = v.dias_sin_abono()
-        sano, leve, grave = UMBRALES_DSA.get(v.plazo, UMBRALES_DSA['Diario'])
+    peor_bucket = 0
+    for venta in activas:
+        pagos_reales = [
+            r for r in recaudos_por_venta.get(venta['id'], [])
+            if r['valor_recaudo'] > 0 and not r['es_renovacion']
+        ]
+        ultimo_abono = max(
+            (r['fecha_recaudo'] for r in pagos_reales),
+            default=None,
+        )
+        referencia = ultimo_abono or venta['fecha_venta']
+        dsa = (hoy - referencia).days
+        sano, leve, grave = UMBRALES_DSA.get(venta['plazo'], UMBRALES_DSA['Diario'])
         bucket = 0 if dsa <= sano else 1 if dsa <= leve else 2 if dsa <= grave else 3
         dias_sin_abono_max = max(dias_sin_abono_max, dsa)
         peor_bucket = max(peor_bucket, bucket)
@@ -94,21 +88,19 @@ def _calcular_score(cliente_id, tienda_id):
     else:
         comp_activos = 25
 
-    # Componente 4 — sin créditos perdidos (20 pts)
-    total_creditos = ventas.count()
-    perdidos = ventas.filter(estado_venta='Perdida').count()
+    total_creditos = len(ventas)
+    perdidos = sum(1 for v in ventas if v['estado_venta'] == 'Perdida')
     tasa_perdidos = perdidos / total_creditos if total_creditos > 0 else 0
     comp_perdidos = round((1 - tasa_perdidos) * 20, 1)
-
-    # Componente 5 — trayectoria (10 pts)
-    # Excluye créditos cerrados-por-renovación: no son una liquidación real.
-    liquidados = ventas.filter(estado_venta='Pagado', renovacion__isnull=True).count()
+    liquidados = sum(
+        1 for v in ventas
+        if v['estado_venta'] == 'Pagado' and v['id'] not in ids_ventas_renovadas
+    )
     comp_historial = round(min(liquidados / 5, 1) * 10, 1)
 
     score = max(0, min(100, round(
         comp_reciente + comp_historico + comp_activos + comp_perdidos + comp_historial)))
 
-    # ── Señales duras de deterioro: topes al score aunque el historial sea bueno ──
     senales = []
     if perdidos > 0:
         score = min(score, 30)
@@ -119,14 +111,13 @@ def _calcular_score(cliente_id, tienda_id):
     if racha_fallas >= 5:
         score = min(score, 50)
         senales.append(f'{racha_fallas} fallas consecutivas')
-    renovacion_reciente = Recaudo.objects.filter(
-        venta__in=ventas, es_renovacion=True,
-        fecha_recaudo__gte=date.today() - timedelta(days=90),
-    ).exists()
+    renovacion_reciente = any(
+        r['es_renovacion'] and r['fecha_recaudo'] >= hoy - timedelta(days=90)
+        for r in recaudos
+    )
     if renovacion_reciente:
         score = min(score, 55)
         senales.append('Renovación de deuda en los últimos 90 días')
-    # Tendencia: pagando notablemente peor que su propio historial
     deterioro_tendencia = (
         tasa_reciente is not None and tasa_historica is not None
         and (tasa_historica - tasa_reciente) >= 0.15
@@ -143,16 +134,13 @@ def _calcular_score(cliente_id, tienda_id):
     else:
         nivel = 'Riesgo'
 
-    # ── Cupo recomendado ──────────────────────────────────────────────────────
     try:
-        tienda = Tienda.objects.get(id=tienda_id)
         cupo_minimo = float(tienda.cupo_minimo_nuevo)
     except Exception:
         cupo_minimo = 100000.0
 
     cupo_recomendado = 0
     justificacion = {}
-
     if perdidos > 0:
         cupo_recomendado = 0
         justificacion = {'razon': 'Cliente con créditos perdidos — cupo bloqueado', 'bloqueado': True}
@@ -163,96 +151,88 @@ def _calcular_score(cliente_id, tienda_id):
         cupo_recomendado = int(cupo_minimo)
         justificacion = {'razon': 'Cliente nuevo — cupo inicial configurado por la tienda', 'bloqueado': False}
     else:
-        # Solo liquidaciones REALES demuestran capacidad: excluye créditos
-        # cerrados por renovación (estado 'Pagado' pero la deuda fue rolada).
-        creditos_pagados = ventas.filter(estado_venta='Pagado', renovacion__isnull=True)
-
-        # Capacidad de pago: promedio de los últimos 90 recaudos reales
-        # (excluye renovaciones — su monto es el saldo total, no un pago real)
-        recaudos_exitosos = list(
-            Recaudo.objects.filter(
-                venta__in=ventas, visita_blanco__isnull=True, es_renovacion=False
-            )
-            .order_by('-fecha_recaudo')[:90]
-        )
+        creditos_pagados = [
+            v for v in ventas
+            if v['estado_venta'] == 'Pagado' and v['id'] not in ids_ventas_renovadas
+        ]
+        recaudos_exitosos = recaudos_exitosos_override or sorted(
+            [r for r in recaudos_reales if r['visita_blanco_id'] is None],
+            key=lambda r: r['fecha_recaudo'],
+            reverse=True,
+        )[:90]
         promedio_pago_real = (
-            sum(float(r.valor_recaudo) for r in recaudos_exitosos) / len(recaudos_exitosos)
+            sum(float(r['valor_recaudo']) for r in recaudos_exitosos) / len(recaudos_exitosos)
             if recaudos_exitosos else 0
         )
 
-        # Cuotas típicas: preferir créditos pagados, sino todos
+        cuotas_pagadas = [v['cuotas'] for v in creditos_pagados]
+        cuotas_todas = [v['cuotas'] for v in ventas]
         cuotas_avg = (
-            creditos_pagados.aggregate(Avg('cuotas'))['cuotas__avg']
-            or ventas.aggregate(Avg('cuotas'))['cuotas__avg']
-            or 30
+            sum(cuotas_pagadas) / len(cuotas_pagadas) if cuotas_pagadas
+            else sum(cuotas_todas) / len(cuotas_todas) if cuotas_todas
+            else 30
         )
         capacidad_cuota = promedio_pago_real * float(cuotas_avg)
 
-        # Progressive lending: la base SOLO crece sobre montos demostrados
-        # (créditos completados). Un crédito grande aún en curso no demuestra nada.
-        monto_max_pagados = creditos_pagados.aggregate(Max('valor_venta'))['valor_venta__max'] or 0
-        monto_max = monto_max_pagados
-
-        ultimo_pagado = creditos_pagados.order_by('-fecha_venta').first()
-        ultimo_monto = float(ultimo_pagado.valor_venta) if ultimo_pagado else 0.0
+        monto_max_pagado_valor = max(
+            (v['valor_venta'] for v in creditos_pagados),
+            default=0,
+        )
+        monto_max_pagados = float(monto_max_pagado_valor)
+        ultimo_pagado = max(
+            creditos_pagados,
+            key=lambda v: v['fecha_venta'],
+            default=None,
+        )
+        ultimo_monto = float(ultimo_pagado['valor_venta']) if ultimo_pagado else 0.0
 
         if ultimo_pagado:
-            base_historica = max(float(monto_max_pagados), ultimo_monto * 1.2)
+            base_historica = max(monto_max_pagados, ultimo_monto * 1.2)
             base = min(base_historica, capacidad_cuota) if capacidad_cuota > 0 else base_historica
         else:
-            # Primer crédito aún en curso: nada demostrado, no crecer sobre promesas
             base_historica = cupo_minimo
             base = cupo_minimo
 
-        # Factor por score
-        if score >= 80:   factor_score = 1.25
-        elif score >= 60: factor_score = 1.00
-        elif score >= 40: factor_score = 0.70
-        else:             factor_score = 0.40
+        if score >= 80:
+            factor_score = 1.25
+        elif score >= 60:
+            factor_score = 1.00
+        elif score >= 40:
+            factor_score = 0.70
+        else:
+            factor_score = 0.40
 
-        # Factor por tendencia: deterioro reciente frente a su propio historial
         factor_tendencia = 0.60 if deterioro_tendencia else 1.00
-
-        # Factor por recencia (excluye renovaciones)
-        ultima_fecha = (
-            Recaudo.objects.filter(
-                venta__in=ventas, visita_blanco__isnull=True, es_renovacion=False
-            )
-            .order_by('-fecha_recaudo')
-            .values_list('fecha_recaudo', flat=True)
-            .first()
+        ultima_fecha = max(
+            (r['fecha_recaudo'] for r in recaudos_exitosos),
+            default=None,
         )
         if ultima_fecha is None and ultimo_pagado:
-            ultima_fecha = ultimo_pagado.fecha_venta
+            ultima_fecha = ultimo_pagado['fecha_venta']
 
         if ultima_fecha:
-            dias = (date.today() - ultima_fecha).days
-            if dias < 90:    factor_recencia = 1.00
-            elif dias < 180: factor_recencia = 0.85
-            elif dias < 365: factor_recencia = 0.70
-            else:            factor_recencia = 0.50
+            dias = (hoy - ultima_fecha).days
+            if dias < 90:
+                factor_recencia = 1.00
+            elif dias < 180:
+                factor_recencia = 0.85
+            elif dias < 365:
+                factor_recencia = 0.70
+            else:
+                factor_recencia = 0.50
         else:
             dias = 0
             factor_recencia = 1.00
 
-        # Factor por crédito vigente atrasado
         factor_vigente = 0.60 if atrasados > 0 else 1.00
-
         cupo_calculado = base * factor_score * factor_recencia * factor_vigente * factor_tendencia
-
-        # Piso: 50% del último pagado, pero SOLO con score sano (≥60) —
-        # el piso nunca debe proteger a un cliente que muestra riesgo.
         piso = ultimo_monto * 0.5 if (ultimo_monto > 0 and score >= 60) else 0
-        # Techo por ciclo (progressive lending): máx 1.5× el último pagado,
-        # con techo absoluto de 2× el máximo demostrado.
         if ultimo_monto > 0:
-            techo = min(ultimo_monto * 1.5, float(monto_max_pagados) * 2)
+            techo = min(ultimo_monto * 1.5, monto_max_pagados * 2)
         else:
             techo = cupo_minimo * 1.5
-
         cupo_bruto = max(piso, min(techo, cupo_calculado))
 
-        # Redondeo proporcional a la escala del crédito
         if cupo_bruto >= 100000:
             unidad = 1000
         elif cupo_bruto >= 10000:
@@ -262,10 +242,9 @@ def _calcular_score(cliente_id, tienda_id):
         else:
             unidad = 1
         cupo_recomendado = int(round(cupo_bruto / unidad) * unidad)
-
         justificacion = {
             'base_historica': int(base_historica),
-            'monto_maximo_pagado': int(float(monto_max)),
+            'monto_maximo_pagado': int(monto_max_pagados),
             'capacidad_cuota': int(capacidad_cuota),
             'promedio_pago_real': int(promedio_pago_real),
             'cuotas_tipicas': int(cuotas_avg),
@@ -278,9 +257,19 @@ def _calcular_score(cliente_id, tienda_id):
             'razon': f'Basado en {liquidados} crédito(s) pagado(s). Score {nivel} ({score}/100).',
         }
 
-    # Límite de exposición: el cupo disponible descuenta lo que el cliente
-    # ya debe en créditos activos — la deuda total nunca supera el cupo.
-    saldo_vigente = sum(float(v.saldo_actual or 0) for v in activas)
+    saldo_vigente = sum(float(v['saldo_actual'] or 0) for v in activas)
+    saldo_vencido = sum(
+        float(v['saldo_actual'] or 0) for v in activas
+        if v['estado_venta'] == 'Vencido'
+    )
+    saldo_atrasado = sum(
+        float(v['saldo_actual'] or 0) for v in activas
+        if v['estado_venta'] == 'Atrasado'
+    )
+    capital_perdido = sum(
+        float(v['saldo_actual'] or 0) for v in ventas
+        if v['estado_venta'] == 'Perdida'
+    )
     cupo_disponible = max(0, cupo_recomendado - int(round(saldo_vigente)))
 
     return {
@@ -290,6 +279,9 @@ def _calcular_score(cliente_id, tienda_id):
         'cupo_recomendado': cupo_recomendado,
         'cupo_disponible': cupo_disponible,
         'saldo_vigente': int(round(saldo_vigente)),
+        'saldo_vencido': int(round(saldo_vencido)),
+        'saldo_atrasado': int(round(saldo_atrasado)),
+        'capital_perdido': int(round(capital_perdido)),
         'senales': senales,
         'justificacion': justificacion,
         'detalle': {
@@ -309,6 +301,45 @@ def _calcular_score(cliente_id, tienda_id):
             'liquidados': liquidados,
         },
     }
+
+
+def _score_data_queryset(cliente_id, tienda_id):
+    """Carga los datos de un cliente para el endpoint individual."""
+    ventas = list(Venta.objects.filter(
+        cliente_id=cliente_id,
+        tienda_id=tienda_id,
+    ).values(
+        'id', 'cliente_id', 'fecha_venta', 'valor_venta', 'cuotas', 'plazo',
+        'estado_venta', 'saldo_actual', 'origen_renovacion_id',
+    ))
+    venta_ids = [v['id'] for v in ventas]
+    recaudos = list(Recaudo.objects.filter(venta_id__in=venta_ids).values(
+        'id', 'venta_id', 'fecha_recaudo', 'valor_recaudo',
+        'visita_blanco_id', 'es_renovacion',
+    )) if venta_ids else []
+    renovadas = set(Venta.objects.filter(
+        origen_renovacion_id__in=venta_ids,
+    ).values_list('origen_renovacion_id', flat=True)) if venta_ids else set()
+    tienda = Tienda.objects.filter(id=tienda_id).first()
+    return tienda, ventas, recaudos, renovadas
+
+
+def _calcular_score(cliente_id, tienda_id):
+    """Score v2 (0-100) y cupo recomendado, estilo behavioral scoring:
+    el comportamiento RECIENTE domina sobre el histórico, y las señales de
+    deterioro (días sin abono, rachas de fallas, renovación reciente) aplican
+    topes duros al score aunque el historial antiguo sea bueno.
+
+    Renovaciones: cuando un crédito vencido se renueva, se genera un Recaudo
+    con es_renovacion=True (excluido del conteo de pagos reales) y la venta
+    nueva queda vinculada a la vieja via origen_renovacion. La venta vieja
+    cierra como 'Pagado' pero NO cuenta como liquidada; se trata como un
+    vencido para el componente de salud de créditos activos.
+    """
+    tienda, ventas, recaudos, renovadas = _score_data_queryset(cliente_id, tienda_id)
+    return _calcular_score_desde_datos(
+        cliente_id, tienda, ventas, recaudos, renovadas,
+    )
 
 
 @api_view(['GET'])
@@ -487,10 +518,86 @@ def score_cliente(request, pk, tienda_id):
 @api_view(['GET'])
 @requiere_acceso_tienda
 def scores_tienda(request, tienda_id):
-    """Score crediticio de todos los clientes de una tienda (bulk)."""
+    """Score crediticio de todos los clientes de una tienda (bulk).
+
+    Se cargan una sola vez las ventas, recaudos y relaciones de renovación de
+    la ruta. El formato de respuesta no cambia para el frontend.
+    """
     tienda = Tienda.objects.filter(id=tienda_id).first()
     if not tienda:
         return Response({'message': 'Tienda no encontrada'}, status=status.HTTP_404_NOT_FOUND)
-    clientes = Cliente.objects.filter(tienda=tienda_id).values_list('id', flat=True)
-    result = {cid: _calcular_score(cid, tienda_id) for cid in clientes}
+
+    cliente_ids = list(
+        Cliente.objects.filter(tienda_id=tienda_id)
+        .order_by('id')
+        .values_list('id', flat=True)
+    )
+    ventas = list(Venta.objects.filter(tienda_id=tienda_id).values(
+        'id', 'cliente_id', 'fecha_venta', 'valor_venta', 'cuotas', 'plazo',
+        'estado_venta', 'saldo_actual', 'origen_renovacion_id',
+    ))
+    venta_ids = [v['id'] for v in ventas]
+    recaudos = list(Recaudo.objects.filter(venta_id__in=venta_ids).values(
+        'id', 'venta_id', 'fecha_recaudo', 'valor_recaudo',
+        'visita_blanco_id', 'es_renovacion',
+    )) if venta_ids else []
+    ids_ventas_renovadas = set(Venta.objects.filter(
+        origen_renovacion_id__in=venta_ids,
+    ).values_list('origen_renovacion_id', flat=True)) if venta_ids else set()
+
+    ventas_por_cliente = defaultdict(list)
+    for venta in ventas:
+        ventas_por_cliente[venta['cliente_id']].append(venta)
+    recaudos_por_venta = defaultdict(list)
+    for recaudo in recaudos:
+        recaudos_por_venta[recaudo['venta_id']].append(recaudo)
+
+    hoy = date.today()
+    result = {}
+    for cliente_id in cliente_ids:
+        ventas_cliente = ventas_por_cliente.get(cliente_id, [])
+        recaudos_cliente = [
+            recaudo
+            for venta in ventas_cliente
+            for recaudo in recaudos_por_venta.get(venta['id'], [])
+        ]
+        exitosos_preordenados = sorted(
+            [r for r in recaudos_cliente
+             if not r['es_renovacion'] and r['visita_blanco_id'] is None],
+            key=lambda r: r['fecha_recaudo'],
+            reverse=True,
+        )
+        recaudos_exitosos_override = None
+        # El endpoint histórico no definía el desempate cuando 90 recaudos
+        # compartían fecha. Solo en ese caso repetimos su consulta exacta para
+        # no alterar el cupo calculado mientras migramos a la carga bulk.
+        if len(exitosos_preordenados) > 90 and (
+            exitosos_preordenados[89]['fecha_recaudo']
+            == exitosos_preordenados[90]['fecha_recaudo']
+        ):
+            ventas_qs_cliente = Venta.objects.filter(
+                cliente_id=cliente_id,
+                tienda_id=tienda_id,
+            )
+            recaudos_exitosos_override = list(
+                Recaudo.objects.filter(
+                    venta__in=ventas_qs_cliente,
+                    visita_blanco__isnull=True,
+                    es_renovacion=False,
+                )
+                .order_by('-fecha_recaudo')[:90]
+                .values(
+                    'id', 'venta_id', 'fecha_recaudo', 'valor_recaudo',
+                    'visita_blanco_id', 'es_renovacion',
+                )
+            )
+        result[cliente_id] = _calcular_score_desde_datos(
+            cliente_id,
+            tienda,
+            ventas_cliente,
+            recaudos_cliente,
+            ids_ventas_renovadas,
+            hoy=hoy,
+            recaudos_exitosos_override=recaudos_exitosos_override,
+        )
     return Response(result, status=status.HTTP_200_OK)

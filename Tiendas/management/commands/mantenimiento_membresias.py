@@ -24,6 +24,13 @@ from django.db.models import Sum
 from django.utils import timezone
 
 from Tiendas import telegram_bot
+from Tiendas.alertas_operativas import (
+    revisar_cierres_ausentes,
+    revisar_riesgo_cartera,
+    resumen_operativo,
+    rutas_del_usuario,
+    usuario_alertas_configurado,
+)
 from Tiendas.models import (
     Membresia, PagoMembresia, SolicitudPago, Tienda, Tienda_Membresia,
 )
@@ -50,6 +57,16 @@ class Command(BaseCommand):
         hoy = datetime.date.today()
         ayer = hoy - datetime.timedelta(days=1)
 
+        # El bot operativo está asociado al usuario configurado para alertas.
+        # Todo el contenido que llegue a este chat debe respetar este alcance;
+        # nunca debe caer por defecto a todas las rutas de la plataforma.
+        usuario_alertas = usuario_alertas_configurado()
+        rutas_alertas = (
+            rutas_del_usuario(usuario_alertas).filter(estado=True)
+            if usuario_alertas else Tienda.objects.none()
+        )
+        ids_rutas_alertas = rutas_alertas.values_list('id', flat=True)
+
         # --- Snapshot ANTES de recalcular para detectar transiciones ---
         ids_vencidas_antes = set(
             Tienda_Membresia.objects.filter(estado='Vencida').values_list('id', flat=True)
@@ -67,7 +84,11 @@ class Command(BaseCommand):
         # 2a. Rutas recién bloqueadas por impago (Activa/Pendiente → Vencida)
         recien_bloqueadas = (
             Tienda_Membresia.objects
-            .filter(estado='Vencida', archivada=False)
+            .filter(
+                estado='Vencida',
+                archivada=False,
+                tienda_id__in=ids_rutas_alertas,
+            )
             .exclude(id__in=ids_vencidas_antes)
             .select_related('tienda', 'tienda__administrador')
         )
@@ -85,7 +106,10 @@ class Command(BaseCommand):
         if ids_trial_activo_antes:
             trials_expirados = (
                 Tienda_Membresia.objects
-                .filter(id__in=ids_trial_activo_antes)
+                .filter(
+                    id__in=ids_trial_activo_antes,
+                    tienda_id__in=ids_rutas_alertas,
+                )
                 .exclude(estado='Activa')
                 .select_related('tienda', 'tienda__administrador')
             )
@@ -131,31 +155,68 @@ class Command(BaseCommand):
 
         # 6. Resumen diario del negocio
         nuevos_usuarios = (
-            User.objects.filter(date_joined__date=ayer, tienda__isnull=False)
+            User.objects.filter(date_joined__date=ayer, tienda__in=rutas_alertas)
             .distinct().count()
         )
-        nuevas_rutas = (
-            Tienda.objects.filter(fecha_registro=ayer)
-            .exclude(administrador__date_joined__date=ayer).count()
+        nuevas_rutas = rutas_alertas.filter(fecha_registro=ayer).count()
+        membresias_alertas = Tienda_Membresia.objects.filter(
+            tienda__in=rutas_alertas,
+            archivada=False,
         )
         stats = {
             'nuevos_usuarios': nuevos_usuarios,
             'nuevas_rutas': nuevas_rutas,
-            'rutas_activas': Tienda_Membresia.objects.filter(
-                estado='Activa', archivada=False).count(),
-            'por_vencer': Tienda_Membresia.objects.filter(
-                estado='Activa', archivada=False,
+            'rutas_activas': membresias_alertas.filter(estado='Activa').count(),
+            'por_vencer': membresias_alertas.filter(
+                estado='Activa',
                 fecha_vencimiento__range=(hoy, hoy + datetime.timedelta(days=DIAS_POR_VENCER)),
             ).count(),
             'bloqueadas': n_bloqueadas,
             'trials_perdidos': n_trials,
-            'ingreso_ayer': PagoMembresia.objects.filter(fecha=ayer).aggregate(
+            'ingreso_ayer': PagoMembresia.objects.filter(
+                tienda__in=rutas_alertas,
+                fecha=ayer,
+            ).aggregate(
                 t=Sum('monto'))['t'] or 0,
             'ingreso_semana': PagoMembresia.objects.filter(
+                tienda__in=rutas_alertas,
                 fecha__gte=hoy - datetime.timedelta(days=7)).aggregate(
                 t=Sum('monto'))['t'] or 0,
         }
-        telegram_bot.notificar_resumen_diario(stats)
-        self.stdout.write('Resumen diario enviado a Telegram.')
+        if usuario_alertas:
+            telegram_bot.notificar_resumen_diario(stats)
+            self.stdout.write(
+                f'Resumen de membresías de {usuario_alertas.username} '
+                f'({rutas_alertas.count()} ruta(s)) enviado a Telegram.'
+            )
+        else:
+            self.stdout.write(self.style.WARNING(
+                'No se encontró el usuario configurado para alertas; '
+                'se omitió el resumen de Telegram para evitar datos globales.'
+            ))
+
+        # Alertas de cartera y control operativo. Son idempotentes: cada
+        # crédito avisa al cruzar los umbrales definidos para su frecuencia y
+        # cada cierre ausente solo una vez por ruta y fecha.
+        if usuario_alertas:
+            nuevos_riesgos = revisar_riesgo_cartera(rutas=rutas_alertas)
+            cierres_ausentes = revisar_cierres_ausentes(ayer, rutas=rutas_alertas)
+            self.stdout.write(
+                f'Usuario de alertas: {usuario_alertas.username} · '
+                f'{rutas_alertas.count()} ruta(s).'
+            )
+            self.stdout.write(
+                f'{nuevos_riesgos} alerta(s) nueva(s) de riesgo; '
+                f'{cierres_ausentes} cierre(s) ausente(s).'
+            )
+            telegram_bot.notificar_resumen_operativo(
+                resumen_operativo(ayer, rutas=rutas_alertas), ayer
+            )
+            self.stdout.write('Resumen operativo enviado a Telegram.')
+        else:
+            self.stdout.write(self.style.WARNING(
+                'No se encontró el usuario configurado para alertas; '
+                'se omitió el monitoreo operativo para evitar mezclar rutas.'
+            ))
 
         self.stdout.write(self.style.SUCCESS('Mantenimiento completado.'))

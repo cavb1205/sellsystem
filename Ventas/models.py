@@ -1,4 +1,5 @@
 from django.db import models
+from django.contrib.auth.models import User
 from decimal import Decimal
 
 from Clientes.models import Cliente
@@ -36,6 +37,12 @@ class Venta(models.Model):
     saldo_actual = models.DecimalField(max_digits=10,decimal_places=2, null=True, blank=True)
     fecha_vencimiento = models.DateField(auto_now=False, null=True, blank=True)
     tienda = models.ForeignKey(Tienda,on_delete=models.CASCADE)
+    # Usuario que registró el crédito. Nulo para ventas históricas creadas
+    # antes de activar la auditoría.
+    creado_por = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='ventas_creadas',
+    )
     # Si esta venta fue creada renovando otra (vencida), apunta a la original.
     # La inversa (venta.renovacion) marca a la vieja como "renovada" en el
     # cálculo del score crediticio.
@@ -75,7 +82,10 @@ class Venta(models.Model):
 
     def promedio_pago(self):
         venta = Venta.objects.get(id=self.id)
-        recaudos = venta.recaudo_set.filter(venta=venta.id)
+        recaudos = venta.recaudo_set.filter(
+            venta=venta.id,
+            es_renovacion=False,
+        )
         if recaudos:
             return round(self.total_abonado() / recaudos.count(), 0)
         else:
@@ -85,9 +95,65 @@ class Venta(models.Model):
         if not self.valor_cuota():
             return 0
         venta = Venta.objects.get(id=self.id)
-        recaudos = venta.recaudo_set.filter(venta=venta.id)
+        recaudos = venta.recaudo_set.filter(
+            venta=venta.id,
+            es_renovacion=False,
+        )
         dias_atrasados = round(((self.valor_cuota() * recaudos.count()) - self.total_abonado()) / self.valor_cuota(), 2)
         return dias_atrasados
 
     def perdida(self):
         return self.saldo_actual or Decimal(0)
+
+    def dias_sin_abono(self):
+        """Días calendario desde el último abono real (recaudo con valor > 0).
+
+        Si el crédito nunca ha recibido un abono, se cuenta desde la fecha de
+        venta. Es una señal informativa para clasificar el deterioro de la
+        cartera (créditos abandonados / posible castigo); no afecta saldos."""
+        from datetime import date
+        ultimo = (
+            self.recaudo_set.filter(
+                valor_recaudo__gt=0,
+                es_renovacion=False,
+            )
+            .order_by('-fecha_recaudo')
+            .first()
+        )
+        referencia = ultimo.fecha_recaudo if ultimo else self.fecha_venta
+        return (date.today() - referencia).days
+
+
+class AjusteVentaAdministrativo(models.Model):
+    """Historial inmutable de correcciones administrativas de una venta.
+
+    Estos ajustes solo corrigen la cronología y el número de cuotas. No
+    modifican el capital, la tasa, el saldo ni los recaudos existentes.
+    """
+
+    venta = models.ForeignKey(
+        Venta,
+        on_delete=models.PROTECT,
+        related_name='ajustes_administrativos',
+    )
+    usuario = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name='ajustes_ventas_administrativos',
+    )
+    motivo = models.CharField(max_length=500)
+    fecha_venta_anterior = models.DateField()
+    fecha_venta_nueva = models.DateField()
+    cuotas_anteriores = models.PositiveIntegerField()
+    cuotas_nuevas = models.PositiveIntegerField()
+    fecha_vencimiento_anterior = models.DateField(null=True, blank=True)
+    fecha_vencimiento_nueva = models.DateField(null=True, blank=True)
+    valor_cuota_anterior = models.DecimalField(max_digits=12, decimal_places=2)
+    valor_cuota_nueva = models.DecimalField(max_digits=12, decimal_places=2)
+    creada = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-creada', '-id']
+
+    def __str__(self):
+        return f'Ajuste administrativo venta #{self.venta_id}'

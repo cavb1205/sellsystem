@@ -257,3 +257,9 @@ TELEGRAM_WEBHOOK_SECRET = globals().get('TELEGRAM_WEBHOOK_SECRET', '')
 # configurado y solo se acepta desde su chat personal de Telegram.
 TELEGRAM_ASSISTANT_CHAT_ID = globals().get('TELEGRAM_ASSISTANT_CHAT_ID', '')
 TELEGRAM_ASSISTANT_USERNAME = globals().get('TELEGRAM_ASSISTANT_USERNAME', 'cavb1205')
+# Usuario cuyas rutas alimentan las alertas operativas diarias. Por defecto
+# coincide con el usuario del asistente privado, pero puede separarse si el
+# chat receptor cambia de administrador.
+TELEGRAM_ALERTAS_USERNAME = globals().get(
+    'TELEGRAM_ALERTAS_USERNAME', TELEGRAM_ASSISTANT_USERNAME
+)

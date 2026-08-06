@@ -40,6 +40,30 @@ def usuario_puede_acceder_tienda(user, tienda_id):
         return False
 
 
+def usuario_es_administrador_tienda(user, tienda_id):
+    """True si el usuario es administrador y maneja la tienda indicada.
+
+    Ser trabajador asignado a una ruta da acceso operativo, pero no autoriza
+    correcciones administrativas sobre créditos con recaudos.
+    """
+    if user is None or not user.is_authenticated:
+        return False
+    if user.is_superuser:
+        return True
+    if not user.is_staff:
+        return False
+    try:
+        tid = int(tienda_id)
+    except (TypeError, ValueError):
+        return False
+    return (
+        Tienda.objects.filter(id=tid, administrador=user).exists()
+        or Tienda_Administrador.objects.filter(
+            tienda_id=tid, administrador=user,
+        ).exists()
+    )
+
+
 def respuesta_sin_permiso():
     return Response(
         {'error': 'No tiene permiso para acceder a los datos de esta ruta.'},

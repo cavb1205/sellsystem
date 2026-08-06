@@ -9,6 +9,10 @@ urlpatterns = [
     path('list/admin/', views.list_tiendas_admin, name='list_tiendas_admin'),
     path('detail/', views.get_tienda_membresia, name='detail_tienda'),
     path('detail/admin/<str:pk>/', views.get_tienda_membresia_admin, name='tienda_membresia_admin'),
+    path('dashboard/movimientos/<str:date1>/<str:date2>/t/<str:tienda_id>/', views.dashboard_movimientos, name='dashboard_movimientos'),
+    path('cierre/resumen/<str:fecha>/t/<str:tienda_id>/', views.cierre_resumen_movimientos, name='cierre_resumen_movimientos'),
+    path('reportes/comparativo/<str:inicio_a>/<str:fin_a>/<str:inicio_b>/<str:fin_b>/t/<str:tienda_id>/', views.comparativo_mensual, name='comparativo_mensual'),
+    path('reportes/utilidad/<str:date1>/<str:date2>/t/<str:tienda_id>/', views.reporte_utilidad_diario, name='reporte_utilidad_diario'),
     path('create/', views.post_tienda, name='create_tienda'),
     path('<int:pk>/update/', views.put_tienda, name='update_tienda'),
     path('<int:pk>/settings/', views.patch_tienda_settings, name='patch_tienda_settings'),
@@ -16,6 +20,11 @@ urlpatterns = [
     path('<int:pk>/admin/delete/', views.delete_tienda_root, name='delete_tienda_root'),
     path('<int:pk>/admin/remove/', views.remove_tienda_admin, name='remove_tienda_admin'),
     path('list/tiendas/admin/', views.get_tiendas_admin, name='get_tiendas_admin'),
+
+    # Alertas operativas — alcance del usuario autenticado
+    path('alertas/', views.listar_alertas_operativas, name='listar_alertas_operativas'),
+    path('alertas/<int:pk>/estado/', views.cambiar_estado_alerta_operativa, name='cambiar_estado_alerta_operativa'),
+    path('controles/inconsistencias/t/<str:tienda_id>/', views.auditoria_inconsistencias_tienda, name='auditoria_inconsistencias_tienda'),
 
     path('cierres/', views.get_cierres_caja, name='get_cierres_caja'),
     path('cierres/t/<str:tienda_id>/', views.get_cierres_caja, name='get_cierres_caja_admin'),
@@ -53,5 +62,3 @@ urlpatterns = [
     # Archivar / desarchivar una ruta (solo root)
     path('<int:pk>/archivar/', views.archivar_ruta, name='archivar_ruta'),
 ]
-
-

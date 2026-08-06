@@ -12,16 +12,129 @@ from django.utils import timezone
 
 from django.core.files.base import ContentFile
 
-from django.db.models import Sum, Count, Max
+from django.db.models import Sum, Count, Max, Q, OuterRef, Subquery, F, DecimalField
 from django.db import transaction
+from decimal import Decimal, ROUND_HALF_UP
 
-from Tiendas.models import Tienda, Cierre_Caja, Tienda_Membresia, Membresia, Tienda_Administrador, SolicitudPago, CuentaDestino, PagoMembresia, _generar_codigo_solicitud
-from Tiendas.serializers import TiendaSerializer, CajaSerializer, TiendaMembresiaSerializer, TiendaCreateSerializer, TiendaAdminSerializer, SolicitudPagoSerializer, CuentaDestinoSerializer, MembresiaSerializer
+from Clientes.models import Cliente
+from Ventas.models import Venta
+from Tiendas.models import AlertaOperativa, Tienda, Cierre_Caja, Tienda_Membresia, Membresia, Tienda_Administrador, SolicitudPago, CuentaDestino, PagoMembresia, _generar_codigo_solicitud
+from Tiendas.serializers import TiendaSerializer, CajaSerializer, TiendaMembresiaSerializer, TiendaMembresiaListaSerializer, TiendaCreateSerializer, TiendaAdminSerializer, SolicitudPagoSerializer, CuentaDestinoSerializer, MembresiaSerializer
+from Tiendas.alertas_operativas import rutas_del_usuario, usuario_alertas_configurado
 from Tiendas import telegram_bot
 from Tiendas import telegram_assistant
 from Tiendas.permissions import requiere_acceso_tienda, usuario_puede_acceder_tienda, respuesta_sin_permiso
 
 logger = logging.getLogger(__name__)
+
+
+def _sum_values(values):
+    """Replica el resultado de Sum(...): 0 si no hay valores, Decimal si sí."""
+    values = [value for value in values if value is not None]
+    return sum(values, Decimal('0')) if values else 0
+
+
+def _metricas_dashboard_tienda(tienda_id):
+    """Calcula los indicadores del dashboard con consultas agrupadas.
+
+    TiendaSerializer conserva una ruta histórica que ejecuta una consulta por
+    cada indicador. Este bloque se usa únicamente en los detalles del
+    dashboard y mantiene los mismos nombres y reglas de cálculo.
+    """
+    from Aportes.models import Aporte
+    from Gastos.models import Gasto
+    from Utilidades.models import Utilidad
+    from Recaudos.models import Recaudo
+
+    hoy = datetime.date.today()
+    ventas = list(Venta.objects.filter(tienda_id=tienda_id).values(
+        'fecha_venta', 'valor_venta', 'interes', 'estado_venta', 'saldo_actual',
+    ))
+
+    def ventas_en(predicate):
+        return [venta for venta in ventas if predicate(venta['fecha_venta'])]
+
+    def total_ventas(rows):
+        return _sum_values(venta['valor_venta'] for venta in rows)
+
+    def utilidad_estimada(rows):
+        # Mantiene la aritmética float usada por los métodos históricos.
+        return sum(
+            float(venta['valor_venta']) * (float(venta['interes']) / 100)
+            for venta in rows
+        )
+
+    ventas_dia = ventas_en(lambda fecha: fecha == hoy)
+    ventas_mes = ventas_en(lambda fecha: fecha.year == hoy.year and fecha.month == hoy.month)
+    ventas_ano = ventas_en(lambda fecha: fecha.year == hoy.year)
+
+    pagadas = [venta for venta in ventas if venta['estado_venta'] == 'Pagado']
+    ingresos_finalizadas = sum(
+        int(venta['valor_venta'] + (Decimal(venta['interes']) / Decimal(100)) * venta['valor_venta'])
+        - int(venta['valor_venta'])
+        for venta in pagadas
+    )
+
+    def movimiento_metricas(model):
+        valores = model.objects.filter(tienda_id=tienda_id).aggregate(
+            total=Sum('valor'),
+            dia=Sum('valor', filter=Q(fecha=hoy)),
+            mes=Sum('valor', filter=Q(fecha__year=hoy.year, fecha__month=hoy.month)),
+            ano=Sum('valor', filter=Q(fecha__year=hoy.year)),
+        )
+        return {key: (value or 0) for key, value in valores.items()}
+
+    aportes = movimiento_metricas(Aporte)
+    gastos = movimiento_metricas(Gasto)
+    utilidades = movimiento_metricas(Utilidad)
+    recaudos_dia = Recaudo.objects.filter(
+        tienda_id=tienda_id,
+        fecha_recaudo=hoy,
+    ).aggregate(total=Sum('valor_recaudo'))['total'] or 0
+
+    saldo_cobrable = _sum_values(
+        venta['saldo_actual']
+        for venta in ventas
+        if venta['estado_venta'] not in ('Pagado', 'Perdida')
+    )
+    perdidas = _sum_values(
+        venta['saldo_actual']
+        for venta in ventas
+        if venta['estado_venta'] == 'Perdida'
+    )
+    perdidas_ano = _sum_values(
+        venta['saldo_actual']
+        for venta in ventas_ano
+        if venta['estado_venta'] == 'Perdida'
+    )
+
+    return {
+        'cantidad_clientes': Cliente.objects.filter(tienda_id=tienda_id).count(),
+        'cantidad_ventas': len(ventas),
+        'inversion': aportes['total'],
+        'gastos': gastos['total'],
+        'utilidades': utilidades['total'],
+        'perdidas': perdidas,
+        'ingresos_ventas_finalizadas': ingresos_finalizadas,
+        'dinero_x_cobrar': saldo_cobrable,
+        'aportes_dia': aportes['dia'],
+        'gastos_dia': gastos['dia'],
+        'utilidades_dia': utilidades['dia'],
+        'recaudos_dia': recaudos_dia,
+        'ventas_netas_dia': total_ventas(ventas_dia),
+        'utilidad_estimada_dia': utilidad_estimada(ventas_dia),
+        'aportes_mes': aportes['mes'],
+        'gastos_mes': gastos['mes'],
+        'utilidades_mes': utilidades['mes'],
+        'ventas_netas_mes': total_ventas(ventas_mes),
+        'utilidad_estimada_mes': utilidad_estimada(ventas_mes),
+        'aportes_ano': aportes['ano'],
+        'gastos_ano': gastos['ano'],
+        'utilidades_ano': utilidades['ano'],
+        'ventas_netas_ano': total_ventas(ventas_ano),
+        'perdidas_ano': perdidas_ano,
+        'utilidad_estimada_ano': utilidad_estimada(ventas_ano),
+    }
 
 
 def _actualizar_estados_membresias():
@@ -126,17 +239,45 @@ def list_all_tiendas(request):
     if user.username == 'root':
         # Recalcular estados antes de listar — rutas inactivas pasan a Pendiente/Vencida automáticamente
         _actualizar_estados_membresias()
+        vista_lista = request.GET.get('vista') == 'lista'
         tiendas = Tienda_Membresia.objects.all().order_by('fecha_vencimiento')
         # Por defecto se ocultan las archivadas; ?archivadas=1 las incluye
         if request.GET.get('archivadas') not in ('1', 'true'):
             tiendas = tiendas.filter(archivada=False)
-        # Última actividad real de cada ruta (Max ignora los duplicados del join)
-        tiendas = tiendas.annotate(
-            _ult_recaudo=Max('tienda__recaudo__fecha_recaudo'),
-            _ult_cierre=Max('tienda__cierre_caja__fecha_cierre'),
-        )
+        if vista_lista:
+            from Recaudos.models import Recaudo
+            ultimo_recaudo = Recaudo.objects.filter(
+                tienda_id=OuterRef('tienda_id'),
+            ).order_by('-fecha_recaudo').values('fecha_recaudo')[:1]
+            ultimo_cierre = Cierre_Caja.objects.filter(
+                tienda_id=OuterRef('tienda_id'),
+            ).order_by('-fecha_cierre').values('fecha_cierre')[:1]
+            cantidad_clientes = Cliente.objects.filter(
+                tienda_id=OuterRef('tienda_id'),
+            ).values('tienda_id').annotate(total=Count('id')).values('total')[:1]
+            cantidad_ventas = Venta.objects.filter(
+                tienda_id=OuterRef('tienda_id'),
+            ).values('tienda_id').annotate(total=Count('id')).values('total')[:1]
+            tiendas = tiendas.select_related(
+                'tienda', 'tienda__administrador', 'membresia',
+            ).annotate(
+                _ult_recaudo=Subquery(ultimo_recaudo),
+                _ult_cierre=Subquery(ultimo_cierre),
+                _cantidad_clientes=Subquery(cantidad_clientes),
+                _cantidad_ventas=Subquery(cantidad_ventas),
+            )
+        else:
+            # Compatibilidad del endpoint histórico para consumidores externos.
+            tiendas = tiendas.annotate(
+                _ult_recaudo=Max('tienda__recaudo__fecha_recaudo'),
+                _ult_cierre=Max('tienda__cierre_caja__fecha_cierre'),
+            )
         if tiendas:
-            serializer = TiendaMembresiaSerializer(tiendas, many=True)
+            serializer_class = (
+                TiendaMembresiaListaSerializer
+                if vista_lista else TiendaMembresiaSerializer
+            )
+            serializer = serializer_class(tiendas, many=True)
             return Response(serializer.data, status=status.HTTP_200_OK)
         return Response({'message': 'No se han creado tiendas'}, status=status.HTTP_200_OK)
     else:
@@ -308,6 +449,322 @@ def get_tiendas_admin(request):
         serializer = TiendaAdminSerializer(tiendas, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
     return Response([], status=status.HTTP_200_OK)
+
+
+def _serializar_alerta_operativa(alerta, rutas, clientes):
+    ruta = rutas.get(alerta.tienda_id_ref)
+    cliente = clientes.get(alerta.cliente_id_ref)
+    cliente_nombre = None
+    if cliente:
+        cliente_nombre = f'{cliente.nombres} {cliente.apellidos}'.strip()
+    datos = alerta.datos or {}
+    senales = [
+        {
+            'codigo': señal.get('codigo'),
+            'severidad': señal.get('severidad'),
+            'texto': señal.get('texto'),
+        }
+        for señal in datos.get('senales', [])
+        if isinstance(señal, dict)
+    ]
+    return {
+        'id': alerta.id,
+        'tipo': alerta.tipo,
+        'severidad': alerta.severidad,
+        'estado': alerta.estado,
+        'clave_dedupe': alerta.clave_dedupe,
+        'titulo': alerta.titulo,
+        'detalle': alerta.detalle,
+        'senales': senales,
+        'datos': datos,
+        'tienda': {
+            'id': alerta.tienda_id_ref,
+            'nombre': ruta.nombre if ruta else 'Ruta no disponible',
+        },
+        'cliente': {
+            'id': alerta.cliente_id_ref,
+            'nombre': cliente_nombre,
+        } if alerta.cliente_id_ref else None,
+        'venta_id': alerta.venta_id_ref,
+        'trabajador': (
+            alerta.trabajador.get_full_name() or alerta.trabajador.username
+            if alerta.trabajador else None
+        ),
+        'telegram_message_id': alerta.telegram_message_id,
+        'ocurrencias': alerta.ocurrencias,
+        'creada': alerta.creada.isoformat(),
+        'actualizada': alerta.actualizada.isoformat(),
+        'ultima_notificacion': alerta.ultima_notificacion.isoformat()
+        if alerta.ultima_notificacion else None,
+    }
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def listar_alertas_operativas(request):
+    """Lista alertas solo de las rutas administradas por el usuario actual."""
+    usuario_alertas = usuario_alertas_configurado()
+    if not usuario_alertas or request.user.id != usuario_alertas.id:
+        return Response({'error': 'No tiene acceso a este centro de alertas'}, status=status.HTTP_403_FORBIDDEN)
+    rutas = rutas_del_usuario(request.user)
+    ruta_ids = list(rutas.values_list('id', flat=True))
+    base = AlertaOperativa.objects.filter(
+        tienda_id_ref__in=ruta_ids,
+    ).select_related('trabajador')
+
+    estado = request.query_params.get('estado', 'activas')
+    if estado in ('activas', 'abiertas'):
+        base = base.filter(estado__in=('nueva', 'revisada'))
+    elif estado not in ('todas', 'todos', ''):
+        base = base.filter(estado=estado)
+    tipo = request.query_params.get('tipo')
+    if tipo:
+        base = base.filter(tipo=tipo)
+    severidad = request.query_params.get('severidad')
+    if severidad:
+        base = base.filter(severidad=severidad)
+    tienda_id = request.query_params.get('tienda')
+    if tienda_id and tienda_id.isdigit() and int(tienda_id) in ruta_ids:
+        base = base.filter(tienda_id_ref=int(tienda_id))
+
+    try:
+        limite = min(max(int(request.query_params.get('limit', 100)), 1), 200)
+    except (TypeError, ValueError):
+        limite = 100
+
+    alertas = list(base.order_by('-id')[:limite])
+    ruta_map = {ruta.id: ruta for ruta in rutas}
+    cliente_ids = {a.cliente_id_ref for a in alertas if a.cliente_id_ref}
+    clientes = {
+        cliente.id: cliente
+        for cliente in Cliente.objects.filter(id__in=cliente_ids)
+    }
+    return Response({
+        'alertas': [
+            _serializar_alerta_operativa(a, ruta_map, clientes)
+            for a in alertas
+        ],
+        'rutas': [
+            {'id': ruta.id, 'nombre': ruta.nombre}
+            for ruta in rutas.order_by('nombre')
+        ],
+        'resumen': {
+            'total': base.count(),
+            'nuevas': base.filter(estado='nueva').count(),
+            'criticas': base.filter(severidad='critica', estado='nueva').count(),
+            'altas': base.filter(severidad='alta', estado='nueva').count(),
+            'medias': base.filter(severidad='media', estado='nueva').count(),
+        },
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['PATCH'])
+@permission_classes([IsAuthenticated])
+def cambiar_estado_alerta_operativa(request, pk):
+    """Marca una alerta como nueva, revisada o resuelta dentro del alcance."""
+    usuario_alertas = usuario_alertas_configurado()
+    if not usuario_alertas or request.user.id != usuario_alertas.id:
+        return Response({'error': 'No tiene acceso a este centro de alertas'}, status=status.HTTP_403_FORBIDDEN)
+    estado = request.data.get('estado')
+    if estado not in ('nueva', 'revisada', 'resuelta'):
+        return Response(
+            {'error': 'Estado inválido. Usa nueva, revisada o resuelta.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    ruta_ids = rutas_del_usuario(request.user).values_list('id', flat=True)
+    alerta = AlertaOperativa.objects.filter(
+        pk=pk,
+        tienda_id_ref__in=ruta_ids,
+    ).first()
+    if not alerta:
+        return Response({'error': 'Alerta no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+    alerta.estado = estado
+    alerta.save(update_fields=['estado', 'actualizada'])
+    return Response({
+        'id': alerta.id,
+        'estado': alerta.estado,
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@requiere_acceso_tienda
+def auditoria_inconsistencias_tienda(request, tienda_id=None):
+    """Detecta inconsistencias financieras actuales sin generar alertas.
+
+    Este informe es deliberadamente de lectura: no cambia estados de ventas,
+    no crea registros en AlertaOperativa y no envía Telegram. Compara el
+    saldo guardado con el saldo que resulta del total del crédito menos todos
+    los recaudos positivos registrados, incluyendo los cierres por renovación.
+    Así el administrador puede revisar errores de datos, recaudos cruzados o
+    saldos que no coinciden sin llenar el centro de alertas de duplicados.
+    """
+    from django.db.models.functions import Coalesce
+
+    if tienda_id:
+        tienda = Tienda.objects.filter(id=tienda_id).first()
+    else:
+        tienda = getattr(getattr(request.user, 'perfil', None), 'tienda', None)
+
+    if not tienda:
+        return Response({'error': 'Ruta no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+
+    dinero_field = DecimalField(max_digits=14, decimal_places=2)
+    fuera_de_ruta = ~Q(recaudo__tienda_id=F('tienda_id'))
+    ventas = Venta.objects.filter(tienda_id=tienda.id).select_related('cliente').annotate(
+        _abonos_registrados=Coalesce(
+            Sum(
+                'recaudo__valor_recaudo',
+                filter=Q(recaudo__valor_recaudo__gt=0),
+            ),
+            Decimal('0'),
+            output_field=dinero_field,
+        ),
+        _recaudos_fuera_ruta=Count('recaudo', filter=fuera_de_ruta),
+        _recaudos_fuera_ruta_monto=Coalesce(
+            Sum(
+                'recaudo__valor_recaudo',
+                filter=Q(recaudo__valor_recaudo__gt=0) & fuera_de_ruta,
+            ),
+            Decimal('0'),
+            output_field=dinero_field,
+        ),
+        _recaudos_sin_motivo=Count(
+            'recaudo',
+            filter=Q(
+                recaudo__valor_recaudo=0,
+                recaudo__visita_blanco__isnull=True,
+            ),
+        ),
+    ).order_by('id')
+
+    severidad_orden = {'media': 1, 'alta': 2, 'critica': 3}
+    casos = []
+    por_tipo = {}
+    monto_total = Decimal('0')
+
+    for venta in ventas:
+        saldo = venta.saldo_actual
+        total = venta.total_a_pagar()
+        abonos = venta._abonos_registrados or Decimal('0')
+        esperado = total - abonos if saldo is not None else None
+        señales = []
+
+        def agregar_señal(codigo, titulo, detalle, monto=Decimal('0'), severidad='alta'):
+            monto_decimal = monto if isinstance(monto, Decimal) else Decimal(str(monto or 0))
+            señales.append({
+                'codigo': codigo,
+                'titulo': titulo,
+                'detalle': detalle,
+                'monto': float(max(Decimal('0'), monto_decimal)),
+                'severidad': severidad,
+            })
+
+        if saldo is None:
+            agregar_señal(
+                'saldo_nulo',
+                'Saldo no definido',
+                'La venta no tiene saldo actual guardado; no se puede confirmar cuánto queda por cobrar.',
+                total,
+                'critica',
+            )
+        else:
+            diferencia = saldo - esperado
+            if saldo < Decimal('-1'):
+                agregar_señal(
+                    'sobreabono',
+                    'Saldo negativo',
+                    f'El crédito registra un saldo de ${abs(saldo):,.0f} por debajo de cero.',
+                    abs(saldo),
+                    'critica',
+                )
+            if abs(diferencia) > Decimal('1'):
+                agregar_señal(
+                    'saldo_desacoplado',
+                    'Saldo no coincide con sus recaudos',
+                    f'Saldo guardado ${saldo:,.0f}; saldo esperado ${esperado:,.0f} según total y recaudos.',
+                    abs(diferencia),
+                    'critica',
+                )
+            if venta.estado_venta == 'Pagado' and saldo > Decimal('1'):
+                agregar_señal(
+                    'estado_pagado_con_saldo',
+                    'Pagado con saldo pendiente',
+                    f'La venta aparece pagada, pero todavía registra ${saldo:,.0f} por cobrar.',
+                    saldo,
+                    'critica',
+                )
+            elif venta.estado_venta not in ('Pagado', 'Perdida') and saldo <= Decimal('1'):
+                agregar_señal(
+                    'estado_no_pagado_sin_saldo',
+                    'Sin saldo, pero no aparece pagado',
+                    f'La venta aparece como {venta.estado_venta}, aunque el saldo actual es ${max(saldo, Decimal("0")):,.0f}.',
+                    Decimal('0'),
+                    'alta',
+                )
+
+        if venta._recaudos_fuera_ruta:
+            agregar_señal(
+                'recaudo_fuera_de_ruta',
+                'Recaudo registrado en otra ruta',
+                f'{venta._recaudos_fuera_ruta} recaudo(s) de esta venta fueron registrados fuera de {tienda.nombre}.',
+                venta._recaudos_fuera_ruta_monto or Decimal('0'),
+                'critica',
+            )
+
+        if venta._recaudos_sin_motivo:
+            agregar_señal(
+                'recaudo_cero_sin_visita',
+                'Visita sin recaudo y sin motivo',
+                f'{venta._recaudos_sin_motivo} registro(s) tienen valor cero sin una visita fallida asociada.',
+                Decimal('0'),
+                'media',
+            )
+
+        if not señales:
+            continue
+
+        cliente_nombre = f'{venta.cliente.nombres} {venta.cliente.apellidos}'.strip()
+        severidad = max(
+            (señal['severidad'] for señal in señales),
+            key=lambda valor: severidad_orden[valor],
+        )
+        monto_caso = max((Decimal(str(señal['monto'])) for señal in señales), default=Decimal('0'))
+        principal = next(
+            señal for señal in señales
+            if severidad_orden[señal['severidad']] == severidad_orden[severidad]
+        )
+        casos.append({
+            'codigo': principal['codigo'],
+            'severidad': severidad,
+            'titulo': principal['titulo'],
+            'detalle': ' '.join(señal['detalle'] for señal in señales),
+            'señales': señales,
+            'venta_id': venta.id,
+            'cliente': {
+                'id': venta.cliente_id,
+                'nombre': cliente_nombre,
+            },
+            'estado_venta': venta.estado_venta,
+            'saldo_actual': float(saldo) if saldo is not None else None,
+            'saldo_esperado': float(esperado) if esperado is not None else None,
+            'monto_a_revisar': float(monto_caso),
+        })
+        monto_total += monto_caso
+        for señal in señales:
+            por_tipo[señal['codigo']] = por_tipo.get(señal['codigo'], 0) + 1
+
+    casos.sort(key=lambda caso: (-severidad_orden[caso['severidad']], -caso['monto_a_revisar'], caso['venta_id']))
+    return Response({
+        'ruta': {'id': tienda.id, 'nombre': tienda.nombre},
+        'resumen': {
+            'casos': len(casos),
+            'monto_a_revisar': float(monto_total),
+            'por_tipo': por_tipo,
+        },
+        'casos': casos[:100],
+        'actualizado': timezone.now().isoformat(),
+    }, status=status.HTTP_200_OK)
+
 ### END VIEWS FOR TIENDA  ####
 
 #### CIERRES DE CAJA#######
@@ -387,8 +844,15 @@ def get_tienda_membresia(request):
     '''get info of store and info the acount store'''
 
     tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
-    tienda_membresia = Tienda_Membresia.objects.filter(tienda=tienda).first() if tienda else None
+    tienda_membresia = (
+        Tienda_Membresia.objects
+        .select_related('tienda', 'membresia')
+        .filter(tienda=tienda)
+        .first()
+        if tienda else None
+    )
     if tienda_membresia:
+        tienda_membresia.tienda._dashboard_metricas = _metricas_dashboard_tienda(tienda.id)
         serialize = TiendaMembresiaSerializer(tienda_membresia, many=False)
         return Response(serialize.data)
     else:
@@ -405,12 +869,406 @@ def get_tienda_membresia_admin(request, pk):
         return Response({'message': 'No se encontró la tienda'}, status=status.HTTP_400_BAD_REQUEST)
     if not usuario_puede_acceder_tienda(request.user, pk):
         return respuesta_sin_permiso()
-    tienda_membresia = Tienda_Membresia.objects.filter(tienda=tienda).first()
+    tienda_membresia = (
+        Tienda_Membresia.objects
+        .select_related('tienda', 'membresia')
+        .filter(tienda=tienda)
+        .first()
+    )
     if tienda_membresia:
+        tienda_membresia.tienda._dashboard_metricas = _metricas_dashboard_tienda(tienda.id)
         serialize = TiendaMembresiaSerializer(tienda_membresia, many=False)
         return Response(serialize.data)
     else:
         return Response({'message': 'No se encontró la tienda'}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+@requiere_acceso_tienda
+def dashboard_movimientos(request, date1, date2, tienda_id=None):
+    """Entrega en una sola respuesta los movimientos del dashboard.
+
+    La tarjeta "Stream de Actividad" solo necesita un subconjunto pequeño de
+    cada modelo. Se evita serializar relaciones y metadatos que no se
+    muestran, manteniendo la misma ventana de fechas que usaban las cuatro
+    solicitudes originales.
+    """
+    from Aportes.models import Aporte
+    from Gastos.models import Gasto
+    from Utilidades.models import Utilidad
+
+    if tienda_id:
+        tienda = Tienda.objects.filter(id=tienda_id).first()
+    else:
+        tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
+
+    if not tienda:
+        return Response(
+            {'message': 'No se encontró la tienda'},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    aportes = Aporte.objects.filter(
+        tienda_id=tienda.id,
+        fecha__range=[date1, date2],
+    ).values('id', 'comentario', 'valor', 'fecha')
+
+    gastos = Gasto.objects.filter(
+        tienda_id=tienda.id,
+        fecha__range=[date1, date2],
+    ).select_related('tipo_gasto').values(
+        'id', 'tipo_gasto__tipo_gasto', 'valor', 'fecha',
+    )
+
+    # Se conserva la semántica histórica: el widget consultaba utilidades
+    # únicamente para la fecha final, no para todo el rango.
+    utilidades = Utilidad.objects.filter(
+        tienda_id=tienda.id,
+        fecha=date2,
+    ).values('id', 'valor', 'fecha')
+
+    ventas = Venta.objects.filter(
+        tienda_id=tienda.id,
+        fecha_venta__range=[date1, date2],
+    ).select_related('cliente').values(
+        'id',
+        'cliente__nombres',
+        'cliente__apellidos',
+        'valor_venta',
+        'fecha_venta',
+    )
+
+    return Response({
+        'aportes': list(aportes),
+        'gastos': [
+            {
+                'id': gasto['id'],
+                'tipo_gasto': {'tipo_gasto': gasto['tipo_gasto__tipo_gasto']},
+                'valor': gasto['valor'],
+                'fecha': gasto['fecha'],
+            }
+            for gasto in gastos
+        ],
+        'utilidades': list(utilidades),
+        'ventas': [
+            {
+                'id': venta['id'],
+                'cliente': {
+                    'nombres': venta['cliente__nombres'],
+                    'apellidos': venta['cliente__apellidos'],
+                },
+                'valor_venta': venta['valor_venta'],
+                'fecha_venta': venta['fecha_venta'],
+            }
+            for venta in ventas
+        ],
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@requiere_acceso_tienda
+def cierre_resumen_movimientos(request, fecha, tienda_id=None):
+    """Resume los movimientos de una fecha y de hoy para Cierre de Caja.
+
+    La pantalla solo necesita totales y cantidades. Las consultas históricas
+    serializaban cinco listados completos por fecha y repetían el proceso para
+    hoy; aquí cada modelo se agrega en una sola consulta, sin cargar filas.
+    """
+    from Aportes.models import Aporte
+    from Gastos.models import Gasto
+    from Recaudos.models import Recaudo
+    from Utilidades.models import Utilidad
+
+    try:
+        fecha_obj = datetime.datetime.strptime(fecha, '%Y-%m-%d').date()
+    except (TypeError, ValueError):
+        return Response(
+            {'message': 'Fecha inválida. Use el formato YYYY-MM-DD.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if tienda_id:
+        tienda = Tienda.objects.filter(id=tienda_id).first()
+    else:
+        tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
+    if not tienda:
+        return Response(
+            {'message': 'No se encontró la tienda'},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    hoy = datetime.date.today()
+
+    def agregar(model, valor_field, fecha_field):
+        fechas = {
+            'fecha': fecha_obj,
+            'hoy': hoy,
+        }
+        agregados = model.objects.filter(tienda_id=tienda.id).aggregate(
+            fecha_total=Sum(
+                valor_field,
+                filter=Q(**{fecha_field: fechas['fecha']}),
+            ),
+            fecha_cantidad=Count(
+                'id',
+                filter=Q(**{fecha_field: fechas['fecha']}),
+            ),
+            hoy_total=Sum(
+                valor_field,
+                filter=Q(**{fecha_field: fechas['hoy']}),
+            ),
+            hoy_cantidad=Count(
+                'id',
+                filter=Q(**{fecha_field: fechas['hoy']}),
+            ),
+        )
+        return {
+            'total': agregados['fecha_total'] or 0,
+            'cantidad': agregados['fecha_cantidad'] or 0,
+            'hoy_total': agregados['hoy_total'] or 0,
+            'hoy_cantidad': agregados['hoy_cantidad'] or 0,
+        }
+
+    aportes = agregar(Aporte, 'valor', 'fecha')
+    gastos = agregar(Gasto, 'valor', 'fecha')
+    utilidades = agregar(Utilidad, 'valor', 'fecha')
+    recaudos = agregar(Recaudo, 'valor_recaudo', 'fecha_recaudo')
+    ventas = agregar(Venta, 'valor_venta', 'fecha_venta')
+
+    fecha_data = {
+        'aportes': aportes['total'],
+        'gastos': gastos['total'],
+        'utilidades': utilidades['total'],
+        'recaudos': recaudos['total'],
+        'count_recaudos': recaudos['cantidad'],
+        'ventas': ventas['total'],
+        'count_ventas': ventas['cantidad'],
+        'tiene_movimientos': any(
+            item['cantidad'] > 0
+            for item in (aportes, gastos, utilidades, recaudos, ventas)
+        ),
+    }
+    hoy_data = {
+        'tiene_movimientos': any(
+            item['hoy_cantidad'] > 0
+            for item in (aportes, gastos, utilidades, recaudos, ventas)
+        ),
+    }
+    return Response({
+        'fecha': fecha_data,
+        'hoy': hoy_data,
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@requiere_acceso_tienda
+def comparativo_mensual(request, inicio_a, fin_a, inicio_b, fin_b, tienda_id=None):
+    """Calcula dos períodos del comparativo mensual en una sola respuesta.
+
+    El reporte solo requiere agregados de ventas, gastos y aportes. Se cargan
+    filas mínimas de los dos períodos y se calculan los mismos indicadores
+    que el frontend histórico, sin serializar cada venta ni sus relaciones.
+    """
+    from Aportes.models import Aporte
+    from Gastos.models import Gasto
+
+    try:
+        periodos = [
+            (
+                'mes_a',
+                datetime.datetime.strptime(inicio_a, '%Y-%m-%d').date(),
+                datetime.datetime.strptime(fin_a, '%Y-%m-%d').date(),
+            ),
+            (
+                'mes_b',
+                datetime.datetime.strptime(inicio_b, '%Y-%m-%d').date(),
+                datetime.datetime.strptime(fin_b, '%Y-%m-%d').date(),
+            ),
+        ]
+    except (TypeError, ValueError):
+        return Response(
+            {'message': 'Fechas inválidas. Use el formato YYYY-MM-DD.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if any(inicio > fin for _, inicio, fin in periodos):
+        return Response(
+            {'message': 'El inicio de cada período no puede ser mayor que su fin.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if tienda_id:
+        tienda = Tienda.objects.filter(id=tienda_id).first()
+    else:
+        tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
+    if not tienda:
+        return Response(
+            {'message': 'No se encontró la tienda'},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    ventas_q = Q(fecha_venta__range=[periodos[0][1], periodos[0][2]]) | Q(
+        fecha_venta__range=[periodos[1][1], periodos[1][2]],
+    )
+    gastos_q = Q(fecha__range=[periodos[0][1], periodos[0][2]]) | Q(
+        fecha__range=[periodos[1][1], periodos[1][2]],
+    )
+    aportes_q = Q(fecha__range=[periodos[0][1], periodos[0][2]]) | Q(
+        fecha__range=[periodos[1][1], periodos[1][2]],
+    )
+
+    ventas = list(Venta.objects.filter(tienda_id=tienda.id).filter(ventas_q).values(
+        'fecha_venta', 'valor_venta', 'interes', 'estado_venta', 'saldo_actual',
+    ))
+    gastos = list(Gasto.objects.filter(tienda_id=tienda.id).filter(gastos_q).values(
+        'fecha', 'valor',
+    ))
+    aportes = list(Aporte.objects.filter(tienda_id=tienda.id).filter(aportes_q).values(
+        'fecha', 'valor',
+    ))
+
+    def en_periodo(rows, field, inicio, fin):
+        return [row for row in rows if inicio <= row[field] <= fin]
+
+    def resumir(inicio, fin):
+        ventas_periodo = en_periodo(ventas, 'fecha_venta', inicio, fin)
+        gastos_periodo = en_periodo(gastos, 'fecha', inicio, fin)
+        aportes_periodo = en_periodo(aportes, 'fecha', inicio, fin)
+
+        cantidad_ventas = len(ventas_periodo)
+        total_vendido = _sum_values(row['valor_venta'] for row in ventas_periodo)
+        intereses = sum(
+            (
+                row['valor_venta'] * Decimal(row['interes']) / Decimal('100')
+                for row in ventas_periodo
+            ),
+            Decimal('0'),
+        )
+        perdidas = _sum_values(
+            row['saldo_actual']
+            for row in ventas_periodo
+            if row['estado_venta'] == 'Perdida'
+        )
+        total_gastos = _sum_values(row['valor'] for row in gastos_periodo)
+        total_aportes = _sum_values(row['valor'] for row in aportes_periodo)
+        utilidad = intereses - total_gastos - perdidas
+
+        return {
+            'cantidadVentas': cantidad_ventas,
+            'totalVendido': total_vendido,
+            'intereses': intereses,
+            'totalGastos': total_gastos,
+            'perdidas': perdidas,
+            'totalAportes': total_aportes,
+            'utilidad': utilidad,
+            # Se conserva la respuesta histórica: el frontend recibía
+            # g.categoria, campo inexistente en el serializer actual, y por
+            # eso agrupaba todos los gastos bajo "Sin categoría".
+            'categorias': {'Sin categoría': total_gastos} if gastos_periodo else {},
+            'margen': float((utilidad / intereses) * Decimal('100')) if intereses > 0 else 0,
+        }
+
+    return Response({
+        'mes_a': resumir(periodos[0][1], periodos[0][2]),
+        'mes_b': resumir(periodos[1][1], periodos[1][2]),
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@requiere_acceso_tienda
+def reporte_utilidad_diario(request, date1, date2, tienda_id=None):
+    """Devuelve el reporte diario de utilidad ya procesado en el backend.
+
+    La pantalla solo necesita una fila por fecha. Se cargan campos mínimos de
+    ventas y gastos, se conserva el redondeo monetario histórico del frontend
+    y se evita enviar listados completos para que el navegador los agrupe.
+    """
+    from Gastos.models import Gasto
+
+    try:
+        inicio = datetime.datetime.strptime(date1, '%Y-%m-%d').date()
+        fin = datetime.datetime.strptime(date2, '%Y-%m-%d').date()
+    except (TypeError, ValueError):
+        return Response(
+            {'message': 'Fechas inválidas. Use el formato YYYY-MM-DD.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if inicio > fin:
+        return Response(
+            {'message': 'La fecha de inicio no puede ser mayor que la fecha de fin.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if tienda_id:
+        tienda = Tienda.objects.filter(id=tienda_id).first()
+    else:
+        tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
+    if not tienda:
+        return Response(
+            {'message': 'No se encontró la tienda'},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    ventas = Venta.objects.filter(
+        tienda_id=tienda.id,
+        fecha_venta__range=[inicio, fin],
+    ).values(
+        'fecha_venta', 'valor_venta', 'interes', 'estado_venta', 'saldo_actual',
+    )
+    gastos = Gasto.objects.filter(
+        tienda_id=tienda.id,
+        fecha__range=[inicio, fin],
+    ).values('fecha', 'valor')
+
+    def redondear_monto(value):
+        if value is None:
+            return 0
+        return int(Decimal(value).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
+
+    datos_por_fecha = {}
+
+    def fila(fecha):
+        clave = fecha.isoformat()
+        if clave not in datos_por_fecha:
+            datos_por_fecha[clave] = {
+                'fecha': clave,
+                'cantidadVentas': 0,
+                'totalVendido': 0,
+                'interesesGenerados': 0,
+                'gastos': 0,
+                'perdidas': 0,
+                'utilidad': 0,
+            }
+        return datos_por_fecha[clave]
+
+    for venta in ventas:
+        datos = fila(venta['fecha_venta'])
+        valor_venta = redondear_monto(venta['valor_venta'])
+        total_a_pagar = redondear_monto(
+            venta['valor_venta']
+            + (Decimal(venta['interes']) / Decimal('100')) * venta['valor_venta']
+        )
+        datos['cantidadVentas'] += 1
+        datos['totalVendido'] += valor_venta
+        datos['interesesGenerados'] += total_a_pagar - valor_venta
+        if venta['estado_venta'] == 'Perdida':
+            datos['perdidas'] += redondear_monto(venta['saldo_actual'])
+
+    for gasto in gastos:
+        datos = fila(gasto['fecha'])
+        datos['gastos'] += redondear_monto(gasto['valor'])
+
+    for datos in datos_por_fecha.values():
+        datos['utilidad'] = (
+            datos['interesesGenerados']
+            - datos['gastos']
+            - datos['perdidas']
+        )
+
+    return Response(
+        sorted(datos_por_fecha.values(), key=lambda item: item['fecha'], reverse=True),
+        status=status.HTTP_200_OK,
+    )
 
 def _registrar_pago_manual(tienda_membresia, user):
     """Registra en el libro de pagos una activación manual hecha por el root.
@@ -660,6 +1518,15 @@ def telegram_webhook(request):
         # procesan abajo y permanecen fuera de esta protección.
         if callback.get('data', '').startswith('asst:'):
             logger.exception('Error procesando botón del asistente Telegram')
+            return Response({'ok': True})
+        raise
+
+    try:
+        if telegram_bot.procesar_callback_alerta(callback):
+            return Response({'ok': True})
+    except Exception:
+        if callback.get('data', '').startswith('alerta:'):
+            logger.exception('Error procesando botón de alerta Telegram')
             return Response({'ok': True})
         raise
 

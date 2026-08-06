@@ -16,8 +16,10 @@ from django.db.models import Q, Sum
 from Clientes.models import Cliente
 from Clientes.views import _calcular_score
 from Recaudos.models import Recaudo
-from Tiendas.models import Tienda
+from Tiendas.models import AlertaOperativa, Tienda
+from Tiendas.alertas_operativas import rutas_del_usuario
 from Ventas.models import Venta
+from Ventas.riesgo import calcular_riesgo_venta
 
 logger = logging.getLogger(__name__)
 API_BASE = 'https://api.telegram.org/bot{token}/{method}'
@@ -85,21 +87,12 @@ def _responder_callback(callback_id, texto='Listo'):
 
 
 def _usuario_y_rutas():
-    """Resuelve rutas vigentes asignadas en Tienda_Administrador.
-
-    No se usa Tienda.administrador: ese campo conserva el dueño histórico de
-    una ruta y puede incluir rutas que cavb1205 ya no administra. La tabla
-    Tienda_Administrador es la asignación explícita que define el alcance del
-    asistente.
-    """
+    """Resuelve las rutas administradas por el usuario configurado."""
     usuario = User.objects.filter(username=settings.TELEGRAM_ASSISTANT_USERNAME).first()
     if not usuario:
         logger.error('Usuario del asistente Telegram no encontrado: %s', settings.TELEGRAM_ASSISTANT_USERNAME)
         return None, Tienda.objects.none()
-    rutas = Tienda.objects.filter(
-        tienda_administrador__administrador=usuario
-    ).distinct()
-    return usuario, rutas
+    return usuario, rutas_del_usuario(usuario)
 
 
 def _botones_principales():
@@ -111,6 +104,10 @@ def _botones_principales():
         [
             {'text': '🔴 Vencidos', 'callback_data': 'asst:vencidos'},
             {'text': '⚠️ Riesgo', 'callback_data': 'asst:riesgo'},
+        ],
+        [
+            {'text': '🚨 Alertas', 'callback_data': 'asst:alertas'},
+            {'text': '🧭 Gestión', 'callback_data': 'asst:gestion'},
         ],
     ]
 
@@ -195,6 +192,7 @@ def _texto_ruta(ruta, rutas):
             {'text': '🔴 Ver vencidos', 'callback_data': f'asst:vencidos:{ruta.id}'},
             {'text': '⚠️ Riesgo', 'callback_data': f'asst:riesgo:{ruta.id}'},
         ],
+        [{'text': '🧭 Gestión de cobro', 'callback_data': f'asst:gestion:{ruta.id}'}],
         [{'text': '⬅️ Tus rutas', 'callback_data': 'asst:rutas'}],
     ]
     return texto, teclado
@@ -280,6 +278,104 @@ def _texto_riesgo(rutas):
     return '\n'.join(lineas), teclado
 
 
+def _texto_alertas(rutas):
+    """Muestra alertas operativas recientes dentro del alcance autorizado."""
+    ruta_ids = list(rutas.values_list('id', flat=True))
+    alertas = list(
+        AlertaOperativa.objects.filter(
+            tienda_id_ref__in=ruta_ids,
+            estado='nueva',
+        ).order_by('-id')[:MAX_RESULTADOS]
+    )
+    if not alertas:
+        return '✅ <b>No hay alertas operativas nuevas</b>.', _botones_principales()
+
+    nombres_ruta = dict(Tienda.objects.filter(id__in=ruta_ids).values_list('id', 'nombre'))
+    lineas = [f'🚨 <b>Alertas operativas nuevas</b> · {len(alertas)}']
+    for alerta in alertas:
+        icono = '🔴' if alerta.severidad == 'critica' else '🟠' if alerta.severidad == 'alta' else '🟡'
+        ruta = nombres_ruta.get(alerta.tienda_id_ref, 'Ruta no disponible')
+        lineas.append(
+            f'\n{icono} <b>{_escape(alerta.titulo)}</b>\n'
+            f'  {_escape(ruta)} · {_fecha(alerta.creada.date())}'
+        )
+    if len(alertas) == MAX_RESULTADOS:
+        lineas.append(f'\n<i>Mostrando las últimas {MAX_RESULTADOS}.</i>')
+    return '\n'.join(lineas), _botones_principales()
+
+
+def _texto_gestion(rutas):
+    """Clasifica cartera morosa sin confundir renovaciones con recaudo real."""
+    grupos = {
+        'recuperable': {'titulo': '✅ Recuperables', 'ventas': []},
+        'sin_primer_abono': {'titulo': '🟠 Sin primer abono', 'ventas': []},
+        'seguimiento': {'titulo': '🟡 Seguimiento intensivo', 'ventas': []},
+        'castigo': {'titulo': '🔴 Candidato a castigo', 'ventas': []},
+    }
+    ventas = Venta.objects.filter(
+        tienda__in=rutas,
+        estado_venta__in=['Vigente', 'Atrasado', 'Vencido'],
+    ).select_related('cliente', 'tienda').order_by('-saldo_actual')
+
+    for venta in ventas:
+        tiene_abono_real = Recaudo.objects.filter(
+            venta=venta,
+            valor_recaudo__gt=0,
+            es_renovacion=False,
+        ).exists()
+        dias = venta.dias_sin_abono()
+        perfil = calcular_riesgo_venta(
+            plazo=venta.plazo,
+            estado_venta=venta.estado_venta,
+            dias_sin_abono=dias,
+            dias_atrasados=venta.dias_atrasados(),
+            total_abonado=venta.total_abonado(),
+        )
+        if perfil['candidato_castigo']:
+            categoria = 'castigo'
+        elif not tiene_abono_real and perfil['nivel_cobranza'] >= 1:
+            categoria = 'sin_primer_abono'
+        elif perfil['nivel_cobranza'] >= 2:
+            categoria = 'seguimiento'
+        else:
+            categoria = 'recuperable'
+        grupos[categoria]['ventas'].append((venta, dias))
+
+    lineas = [
+        '🧭 <b>Gestión de cobro</b>\n',
+        'Criterio: solo se considera pago un recaudo real; las renovaciones no cuentan como abono.',
+    ]
+    teclado = []
+    for clave in ('recuperable', 'sin_primer_abono', 'seguimiento', 'castigo'):
+        grupo = grupos[clave]
+        ventas_grupo = grupo['ventas']
+        saldo = sum(venta.saldo_actual or 0 for venta, _ in ventas_grupo)
+        lineas.append(
+            f'\n{grupo["titulo"]}: <b>{len(ventas_grupo)}</b> · {_dinero(saldo)}'
+        )
+        if clave == 'recuperable' or not ventas_grupo:
+            continue
+        for venta, dias in ventas_grupo[:3]:
+            cliente = f'{venta.cliente.nombres} {venta.cliente.apellidos}'.strip()
+            detalle_dias = (
+                f'{dias} días sin abono' if clave != 'sin_primer_abono'
+                else f'{dias} días desde la venta'
+            )
+            lineas.append(
+                f'  • <b>{_escape(cliente)}</b> — {_escape(venta.tienda.nombre)}\n'
+                f'    {_dinero(venta.saldo_actual)} · {detalle_dias}'
+            )
+            teclado.append([{
+                'text': f'👤 {_escape(cliente)[:26]}',
+                'callback_data': f'asst:cliente:{venta.cliente_id}',
+            }])
+
+    if not ventas:
+        lineas.append('\n✅ No hay créditos que requieran gestión en este alcance.')
+    teclado.extend(_botones_principales())
+    return '\n'.join(lineas), teclado
+
+
 def _ayuda():
     return (
         '🤖 <b>Asistente privado de cartera</b>\n\n'
@@ -291,6 +387,8 @@ def _ayuda():
         '/vencidos [Ruta] — créditos vencidos\n'
         '/cliente Nombre — estado, score y cupo\n'
         '/riesgo [Ruta] — clientes con señales de deterioro\n'
+        '/alertas [Ruta] — alertas operativas nuevas\n'
+        '/gestion [Ruta] — clasificación para gestionar cobro\n'
         '/ayuda — este menú'
     )
 
@@ -333,7 +431,7 @@ def _procesar_comando(chat_id, texto):
     elif comando == '/rutas':
         texto_rutas, teclado = _texto_rutas(rutas)
         _enviar(chat_id, texto_rutas, teclado)
-    elif comando in ('/ruta', '/vencidos', '/riesgo'):
+    elif comando in ('/ruta', '/vencidos', '/riesgo', '/alertas', '/gestion'):
         ruta, encontradas = _buscar_ruta(argumento, rutas)
         if argumento and not encontradas:
             _enviar(chat_id, '🔎 No encontré una ruta con ese nombre. Usa /rutas para ver las disponibles.'); return
@@ -346,8 +444,12 @@ def _procesar_comando(chat_id, texto):
             respuesta, teclado = _texto_ruta(ruta, rutas)
         elif comando == '/vencidos':
             respuesta, teclado = _texto_vencidos(alcance)
-        else:
+        elif comando == '/riesgo':
             respuesta, teclado = _texto_riesgo(alcance)
+        elif comando == '/gestion':
+            respuesta, teclado = _texto_gestion(alcance)
+        else:
+            respuesta, teclado = _texto_alertas(alcance)
         _enviar(chat_id, respuesta, teclado)
     elif comando == '/cliente':
         encontrados = _buscar_cliente(argumento, rutas)
@@ -403,6 +505,12 @@ def procesar_callback(callback):
     elif accion == 'riesgo':
         alcance = rutas.filter(id=ruta_id) if ruta_id else rutas
         respuesta, teclado = _texto_riesgo(alcance)
+    elif accion == 'alertas':
+        alcance = rutas.filter(id=ruta_id) if ruta_id else rutas
+        respuesta, teclado = _texto_alertas(alcance)
+    elif accion == 'gestion':
+        alcance = rutas.filter(id=ruta_id) if ruta_id else rutas
+        respuesta, teclado = _texto_gestion(alcance)
     elif accion == 'cliente' and ruta_id:
         cliente = Cliente.objects.select_related('tienda').filter(id=ruta_id, tienda__in=rutas).first()
         if not cliente:
@@ -424,6 +532,8 @@ def configurar_comandos():
         {'command': 'rutas', 'description': 'Tus rutas administradas'},
         {'command': 'vencidos', 'description': 'Créditos vencidos'},
         {'command': 'riesgo', 'description': 'Clientes con señales de riesgo'},
+        {'command': 'alertas', 'description': 'Alertas operativas nuevas'},
+        {'command': 'gestion', 'description': 'Clasificación para gestionar cobro'},
         {'command': 'cliente', 'description': 'Consultar cliente por nombre'},
         {'command': 'ayuda', 'description': 'Ayuda del asistente'},
     ]

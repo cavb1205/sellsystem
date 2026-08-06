@@ -4,6 +4,7 @@ Reemplaza el pipeline n8n + Gemini + WhatsApp Business API por un bot simple:
 el admin recibe la foto del comprobante + datos y aprueba/rechaza con un toque.
 """
 import io
+import html
 import logging
 
 import requests
@@ -138,7 +139,7 @@ def marcar_procesada(solicitud, accion, admin_nombre):
         logger.warning('No se pudo editar el mensaje de Telegram: %s', exc)
 
 
-def _enviar_alerta(texto):
+def _enviar_alerta(texto, teclado=None):
     """Envía un mensaje de texto simple (sin botones) al chat del admin.
     Nunca lanza excepción: las alertas son informativas y no deben romper el
     flujo que las dispara (registro, creación de ruta, etc.)."""
@@ -146,14 +147,17 @@ def _enviar_alerta(texto):
         logger.info('Telegram no configurado — se omite alerta')
         return ''
     try:
+        payload = {
+            'chat_id': settings.TELEGRAM_ADMIN_CHAT_ID,
+            'text': texto,
+            'parse_mode': 'HTML',
+            'disable_web_page_preview': True,
+        }
+        if teclado:
+            payload['reply_markup'] = teclado
         resp = requests.post(
             _api('sendMessage'),
-            json={
-                'chat_id': settings.TELEGRAM_ADMIN_CHAT_ID,
-                'text': texto,
-                'parse_mode': 'HTML',
-                'disable_web_page_preview': True,
-            },
+            json=payload,
             timeout=TIMEOUT,
         )
         data = resp.json()
@@ -163,6 +167,150 @@ def _enviar_alerta(texto):
     except Exception as exc:
         logger.error('Error enviando alerta a Telegram: %s', exc)
     return ''
+
+
+def _teclado_alerta(alerta_id):
+    return {
+        'inline_keyboard': [[
+            {
+                'text': '✅ Marcar revisada',
+                'callback_data': f'alerta:revisar:{alerta_id}',
+            },
+            {
+                'text': '✔ Resolver',
+                'callback_data': f'alerta:resolver:{alerta_id}',
+            },
+        ]]
+    }
+
+
+def notificar_alerta_operativa(texto, alerta_id=None):
+    """Publica una alerta operativa con acciones rápidas en Telegram."""
+    return _enviar_alerta(
+        texto,
+        teclado=_teclado_alerta(alerta_id) if alerta_id else None,
+    )
+
+
+def notificar_correccion_venta(venta, usuario, ajuste):
+    """Avisa al chat administrativo cuando se corrige un crédito con pagos."""
+    nombre_usuario = usuario.get_full_name() or usuario.username
+    cliente = venta.cliente.nombres
+    if getattr(venta.cliente, 'apellidos', ''):
+        cliente = f'{cliente} {venta.cliente.apellidos}'
+    texto = (
+        '🛠️ <b>Corrección administrativa de crédito</b>\n\n'
+        f'🏪 Ruta: <b>{html.escape(str(venta.tienda.nombre))}</b> (#{venta.tienda_id})\n'
+        f'👤 Cliente: <b>{html.escape(str(cliente))}</b>\n'
+        f'📋 Venta: <b>#{venta.id}</b>\n'
+        f'📅 Fecha: {ajuste.fecha_venta_anterior:%d/%m/%Y} → '
+        f'{ajuste.fecha_venta_nueva:%d/%m/%Y}\n'
+        f'🔢 Cuotas: {ajuste.cuotas_anteriores} → {ajuste.cuotas_nuevas}\n'
+        f'📝 Motivo: {html.escape(ajuste.motivo)}\n'
+        f'👮 Administrador: {html.escape(nombre_usuario)}'
+    )
+    return _enviar_alerta(texto)
+
+
+def _editar_alerta_operativa(alerta, callback, nuevo_estado, admin_nombre):
+    """Actualiza el mensaje original y elimina sus botones."""
+    if not _configurado():
+        return
+    etiqueta = 'revisada' if nuevo_estado == 'revisada' else 'resuelta'
+    texto = (
+        f'{alerta.detalle}\n\n'
+        f'✅ <b>Alerta {etiqueta}</b> por {html.escape(admin_nombre)}'
+    )
+    mensaje = callback.get('message', {})
+    payload = {
+        'chat_id': settings.TELEGRAM_ADMIN_CHAT_ID,
+        'message_id': mensaje.get('message_id'),
+        'text': texto,
+        'parse_mode': 'HTML',
+        'reply_markup': {'inline_keyboard': []},
+    }
+    try:
+        requests.post(_api('editMessageText'), json=payload, timeout=TIMEOUT)
+    except Exception as exc:
+        logger.warning('No se pudo actualizar la alerta en Telegram: %s', exc)
+
+
+def procesar_callback_alerta(callback):
+    """Procesa botones de alertas desde el chat administrativo autorizado."""
+    data = callback.get('data', '')
+    if not data.startswith('alerta:'):
+        return False
+    chat_id = str(callback.get('message', {}).get('chat', {}).get('id', ''))
+    if chat_id != str(settings.TELEGRAM_ADMIN_CHAT_ID):
+        return False
+    try:
+        _, accion, alerta_id = data.split(':', 2)
+        alerta_id = int(alerta_id)
+    except (TypeError, ValueError):
+        responder_callback(callback.get('id'), 'Acción inválida')
+        return True
+
+    from Tiendas.models import AlertaOperativa
+
+    alerta = AlertaOperativa.objects.filter(pk=alerta_id).first()
+    if not alerta:
+        responder_callback(callback.get('id'), 'Alerta no encontrada')
+        return True
+    if accion not in ('revisar', 'resolver'):
+        responder_callback(callback.get('id'), 'Acción inválida')
+        return True
+
+    nuevo_estado = 'revisada' if accion == 'revisar' else 'resuelta'
+    if alerta.estado == 'resuelta' and nuevo_estado == 'revisada':
+        responder_callback(callback.get('id'), 'La alerta ya está resuelta')
+        return True
+    alerta.estado = nuevo_estado
+    alerta.save(update_fields=['estado', 'actualizada'])
+    admin_tg = callback.get('from', {})
+    admin_nombre = (
+        f"{admin_tg.get('first_name', '')} {admin_tg.get('last_name', '')}".strip()
+        or admin_tg.get('username', 'admin')
+    )
+    _editar_alerta_operativa(alerta, callback, nuevo_estado, admin_nombre)
+    responder_callback(callback.get('id'), f'✅ Alerta {nuevo_estado}')
+    return True
+
+
+def notificar_resumen_operativo(rutas, fecha):
+    """Envía el resumen diario de cartera y actividad de las rutas."""
+    if not rutas:
+        return _enviar_alerta(
+            f'📊 <b>Resumen operativo</b> · {fecha:%d/%m/%Y}\n\n'
+            'No hubo actividad operativa para resumir.'
+        )
+
+    lineas = [
+        f'📊 <b>Resumen operativo</b> · {fecha:%d/%m/%Y}\n',
+        'Las ventas siguen permitidas; estas son las señales que requieren revisión.\n',
+    ]
+    for ruta in rutas[:35]:
+        cierre = '✅' if ruta['cierre'] else '⚠️'
+        riesgo = (
+            f' · Riesgo {ruta["riesgo"]} ({_dinero(ruta["saldo_riesgo"])})'
+            if ruta['riesgo'] else ''
+        )
+        mora = ruta['saldo_atrasado'] + ruta['saldo_vencido']
+        sin_primer_abono = (
+            f'\n  🟠 Sin primer abono {ruta["sin_primer_abono"]} '
+            f'({_dinero(ruta["saldo_sin_primer_abono"])})'
+            if ruta['sin_primer_abono'] else ''
+        )
+        lineas.append(
+            f'{cierre} <b>{html.escape(str(ruta["nombre"]))}</b>\n'
+            f'  Caja {_dinero(ruta["caja"])} · Cartera {_dinero(ruta["cartera"])}\n'
+            f'  🟡 Mora {ruta["atrasados"] + ruta["vencidos"]} ({_dinero(mora)}) · '
+            f'{ruta["nuevas"]} nuevos{sin_primer_abono}\n'
+            f'  Recaudo {_dinero(ruta["recaudo"])} · '
+            f'Visitas en blanco {ruta["blancos"]}{riesgo}'
+        )
+    if len(rutas) > 35:
+        lineas.append(f'\n<i>Se muestran 35 de {len(rutas)} rutas con actividad.</i>')
+    return _enviar_alerta('\n\n'.join(lineas))
 
 
 def notificar_nuevo_usuario(user, tienda, telefono=''):

@@ -200,6 +200,67 @@ class Tienda_Administrador(models.Model):
 
 
 
+# Alertas operativas
+class AlertaOperativa(models.Model):
+    """Registro durable de señales operativas enviadas al administrador.
+
+    Los ids de cliente y venta se guardan como enteros deliberadamente para
+    evitar dependencias de migración circulares entre apps históricas.
+    """
+
+    TIPOS = [
+        ('VENTA_CON_ALERTAS', 'Venta con señales operativas'),
+        ('RIESGO_CARTERA', 'Riesgo de cartera'),
+        ('SEGUIMIENTO_PREVENTIVO', 'Seguimiento preventivo'),
+        ('SIN_PRIMER_ABONO', 'Crédito sin primer abono'),
+        ('CIERRE_AUSENTE', 'Cierre de caja ausente'),
+        ('RESUMEN_OPERATIVO', 'Resumen operativo'),
+    ]
+    SEVERIDADES = [
+        ('media', 'Media'),
+        ('alta', 'Alta'),
+        ('critica', 'Crítica'),
+    ]
+    ESTADOS = [
+        ('nueva', 'Nueva'),
+        ('revisada', 'Revisada'),
+        ('resuelta', 'Resuelta'),
+    ]
+
+    tipo = models.CharField(max_length=40, choices=TIPOS, db_index=True)
+    severidad = models.CharField(max_length=10, choices=SEVERIDADES, default='media')
+    estado = models.CharField(max_length=10, choices=ESTADOS, default='nueva', db_index=True)
+    clave_dedupe = models.CharField(max_length=255, db_index=True, unique=True)
+    titulo = models.CharField(max_length=200)
+    detalle = models.TextField()
+    tienda_id_ref = models.PositiveIntegerField(null=True, blank=True, db_index=True)
+    cliente_id_ref = models.PositiveIntegerField(null=True, blank=True, db_index=True)
+    venta_id_ref = models.PositiveIntegerField(null=True, blank=True, db_index=True)
+    trabajador = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='alertas_operativas_generadas',
+    )
+    datos = models.JSONField(default=dict, blank=True)
+    telegram_message_id = models.CharField(max_length=50, blank=True)
+    ocurrencias = models.PositiveIntegerField(default=1)
+    creada = models.DateTimeField(auto_now_add=True)
+    actualizada = models.DateTimeField(auto_now=True)
+    ultima_notificacion = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-creada', '-id']
+        indexes = [
+            models.Index(fields=['tipo', 'estado']),
+            models.Index(fields=['tienda_id_ref', 'creada']),
+        ]
+
+    def __str__(self):
+        return f'{self.tipo} · {self.titulo}'
+
+
 #suscripcion
 
 class Membresia(models.Model):
