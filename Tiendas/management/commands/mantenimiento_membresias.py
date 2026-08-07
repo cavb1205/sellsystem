@@ -1,6 +1,6 @@
 """Mantenimiento diario de membresías y solicitudes de pago.
 
-Correr vía cron en el VPS:
+Correr vía cron en el VPS a las 08:00 de America/Santiago:
     python manage.py mantenimiento_membresias
 
 Hace lo siguiente:
@@ -54,7 +54,8 @@ class Command(BaseCommand):
     help = 'Mantenimiento diario de membresías, solicitudes y comprobantes'
 
     def handle(self, *args, **options):
-        hoy = datetime.date.today()
+        # La fecha operativa debe seguir a Chile, no al reloj UTC del VPS.
+        hoy = timezone.localdate()
         ayer = hoy - datetime.timedelta(days=1)
 
         # El bot operativo está asociado al usuario configurado para alertas.
@@ -184,7 +185,7 @@ class Command(BaseCommand):
                 t=Sum('monto'))['t'] or 0,
         }
         if usuario_alertas:
-            telegram_bot.notificar_resumen_diario(stats)
+            telegram_bot.notificar_resumen_diario(stats, fecha=ayer)
             self.stdout.write(
                 f'Resumen de membresías de {usuario_alertas.username} '
                 f'({rutas_alertas.count()} ruta(s)) enviado a Telegram.'

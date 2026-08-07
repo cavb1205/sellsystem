@@ -281,7 +281,7 @@ def procesar_callback_alerta(callback):
 
 
 def notificar_resumen_operativo(rutas, fecha):
-    """Envía un único resumen nocturno, compacto y agrupado por ruta."""
+    """Envía el resumen separado de cartera de la jornada cerrada."""
     if not rutas:
         return _enviar_alerta(
             f'📊 <b>Resumen operativo</b> · {fecha:%d/%m/%Y}\n\n'
@@ -289,8 +289,8 @@ def notificar_resumen_operativo(rutas, fecha):
         )
 
     lineas = [
-        f'📊 <b>Resumen nocturno de cartera</b> · {fecha:%d/%m/%Y}\n',
-        'Un solo reporte con las excepciones que requieren revisión.\n',
+        f'📊 <b>Resumen de cartera</b> · {fecha:%d/%m/%Y}\n',
+        'Jornada cerrada · excepciones que requieren revisión.\n',
     ]
     for ruta in rutas[:35]:
         excepciones = (
@@ -408,21 +408,21 @@ def notificar_trial_sin_convertir(tienda, admin, fecha_vencimiento, telefono='')
     return _enviar_alerta(texto)
 
 
-def notificar_resumen_diario(s):
-    """Envía el resumen diario del negocio. Recibe un dict con los KPIs ya calculados."""
-    ahora = timezone.localtime(timezone.now())
+def notificar_resumen_diario(s, fecha=None):
+    """Envía el resumen separado de membresías con fecha explícita."""
+    fecha = fecha or timezone.localdate()
     texto = (
-        f'📊 <b>Resumen diario</b> · {ahora:%d/%m/%Y}\n\n'
-        '🆕 <b>Ayer</b>\n'
+        f'📊 <b>Resumen de membresías</b> · corte {timezone.localdate():%d/%m/%Y}\n\n'
+        f'🆕 <b>Actividad del {fecha:%d/%m/%Y}</b>\n'
         f'  • Usuarios nuevos: <b>{s["nuevos_usuarios"]}</b>\n'
         f'  • Rutas nuevas: <b>{s["nuevas_rutas"]}</b>\n\n'
-        '📈 <b>Estado de la cartera</b>\n'
+        '📈 <b>Estado actual de membresías</b>\n'
         f'  • Rutas activas: <b>{s["rutas_activas"]}</b>\n'
         f'  • Por vencer (≤3 días): <b>{s["por_vencer"]}</b>\n'
-        f'  • Bloqueadas ayer: <b>{s["bloqueadas"]}</b>\n'
-        f'  • Trials sin convertir ayer: <b>{s["trials_perdidos"]}</b>\n\n'
-        '💰 <b>Ingresos por membresías</b>\n'
-        f'  • Ayer: <b>${s["ingreso_ayer"]:,.0f}</b>\n'
+        f'  • Bloqueadas en esta revisión: <b>{s["bloqueadas"]}</b>\n'
+        f'  • Trials sin convertir: <b>{s["trials_perdidos"]}</b>\n\n'
+        f'💰 <b>Ingresos del {fecha:%d/%m/%Y}</b>\n'
+        f'  • Día: <b>${s["ingreso_ayer"]:,.0f}</b>\n'
         f'  • Últimos 7 días: <b>${s["ingreso_semana"]:,.0f}</b>'
     )
     return _enviar_alerta(texto)
