@@ -343,7 +343,9 @@ def put_recaudo(request, pk, tienda_id=None):
             tienda.save(update_fields=['caja_inicial'])
             venta.save(update_fields=['saldo_actual', 'estado_venta'])
 
-        revisar_riesgo_venta(venta)
+        # El panel se mantiene actualizado, pero una falla o corrección de
+        # recaudo no debe interrumpir al administrador por Telegram.
+        revisar_riesgo_venta(venta, notificar=False)
         return Response(
             RecaudoUpdateSerializer(recaudo).data,
             status=status.HTTP_200_OK,
@@ -428,7 +430,8 @@ def post_recaudo(request, tienda_id=None):
                     venta.estado_venta = 'Pagado'
                 tienda.save()
                 venta.save()
-                revisar_riesgo_venta(venta)
+                # Las fallas y abonos se consolidan en el reporte nocturno.
+                revisar_riesgo_venta(venta, notificar=False)
             return Response(recaudo_serializer.data, status=status.HTTP_200_OK)
         return Response(recaudo_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -493,7 +496,7 @@ def post_recaudo_no_pay(request, tienda_id=None):
                 venta.estado_venta = 'Pagado'
             tienda.save()
             venta.save()
-            revisar_riesgo_venta(venta)
+            revisar_riesgo_venta(venta, notificar=False)
         return Response(recaudo_serializer.data, status=status.HTTP_200_OK)
 
 @api_view(['DELETE'])
@@ -534,6 +537,6 @@ def delete_recaudo(request, pk):
                 venta.estado_venta = 'Pagado'
             tienda.save()
             venta.save()
-            revisar_riesgo_venta(venta)
+            revisar_riesgo_venta(venta, notificar=False)
         return Response({'message':'Recaudo eliminado correctamente'},status=status.HTTP_200_OK)
     return Response({'message':'No se encontró el recaudo'}, status=status.HTTP_400_BAD_REQUEST)

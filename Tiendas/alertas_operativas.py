@@ -26,7 +26,7 @@ from Tiendas.models import (
     Tienda_Administrador,
 )
 from Ventas.models import Venta
-from Ventas.riesgo import calcular_riesgo_venta
+from Ventas.riesgo import calcular_riesgo_venta, intervalo_cobro
 
 
 ESTADOS_ACTIVOS = ('Vigente', 'Atrasado', 'Vencido')
@@ -445,7 +445,13 @@ def _resolver_alerta_cartera(alerta, motivo, perfil=None, consolidada_en=None):
 
 
 def revisar_riesgo_venta(venta, notificar=True):
-    """Sincroniza una única alerta activa de cartera para una venta."""
+    """Sincroniza una única alerta activa de cartera para una venta.
+
+    ``notificar`` controla Telegram, no el panel. Las alertas de nivel
+    preventivo/hoy se guardan y se actualizan sin interrumpir al administrador;
+    solo los niveles urgente y crítico pueden generar una notificación
+    inmediata cuando el llamador lo permite.
+    """
     if not venta_en_alcance_alertas(venta):
         return {'creada': False, 'resueltas': 0, 'nivel': None, 'omitida': True}
 
@@ -498,6 +504,7 @@ def revisar_riesgo_venta(venta, notificar=True):
 
     debe_notificar = bool(
         notificar
+        and perfil['nivel_cobranza'] >= 2
         and (
             not estaba_abierta
             or perfil['nivel_cobranza'] > nivel_anterior
@@ -570,7 +577,7 @@ def revisar_riesgo_cartera(rutas=None, notificar=True):
     return creadas
 
 
-def revisar_cierres_ausentes(fecha, rutas=None):
+def revisar_cierres_ausentes(fecha, rutas=None, notificar=False):
     """Avisa si una ruta tuvo actividad en una fecha y no cerró caja."""
     creadas = 0
     alcance = rutas if rutas is not None else _rutas_activas_del_monitoreo()
@@ -595,9 +602,94 @@ def revisar_cierres_ausentes(fecha, rutas=None):
             detalle=detalle,
             tienda_id=tienda.id,
             datos={'fecha': fecha.isoformat()},
+            notificar=notificar,
         )
         creadas += int(creada)
     return creadas
+
+
+def _resumen_cumplimiento_dia(tienda, fecha):
+    """Calcula cumplimiento de cobro por crédito para el reporte nocturno.
+
+    El pendiente se suma crédito por crédito. Así un abono extraordinario de
+    un cliente no oculta a otro cliente que no fue visitado.
+    """
+    ventas = Venta.objects.filter(
+        tienda=tienda,
+        estado_venta__in=ESTADOS_ACTIVOS,
+    ).only(
+        'id', 'fecha_venta', 'plazo', 'saldo_actual', 'cuotas',
+        'valor_venta', 'interes',
+    )
+    recaudos_dia = Recaudo.objects.filter(
+        tienda=tienda,
+        fecha_recaudo=fecha,
+        es_renovacion=False,
+    ).values('venta_id', 'valor_recaudo', 'visita_blanco_id')
+
+    por_venta = {}
+    recaudo_total = Decimal('0')
+    fallas = 0
+    for recaudo in recaudos_dia:
+        venta_id = recaudo['venta_id']
+        valor = recaudo['valor_recaudo'] or Decimal('0')
+        info = por_venta.setdefault(
+            venta_id,
+            {'registro': False, 'abono': Decimal('0'), 'fallas': 0},
+        )
+        info['registro'] = True
+        if valor > 0:
+            info['abono'] += valor
+            recaudo_total += valor
+        else:
+            info['fallas'] += 1
+            fallas += 1
+
+    esperado = Decimal('0')
+    pendiente = Decimal('0')
+    cubierto = Decimal('0')
+    programadas = 0
+    con_gestion = 0
+    con_abono = 0
+    sin_gestion = 0
+    fallas_programadas = 0
+
+    for venta in ventas:
+        saldo = venta.saldo_actual or Decimal('0')
+        cuota = Decimal(str(venta.valor_cuota() or 0))
+        dias = (fecha - venta.fecha_venta).days
+        intervalo = intervalo_cobro(venta.plazo)
+        if dias < intervalo or dias % intervalo != 0 or saldo <= 0 or cuota <= 0:
+            continue
+
+        programadas += 1
+        esperado_venta = min(cuota, saldo)
+        esperado += esperado_venta
+        registro = por_venta.get(venta.id)
+        if not registro or not registro['registro']:
+            sin_gestion += 1
+        else:
+            con_gestion += 1
+        abono_venta = registro['abono'] if registro else Decimal('0')
+        if abono_venta > 0:
+            con_abono += 1
+        if registro and registro['fallas'] and abono_venta <= 0:
+            fallas_programadas += registro['fallas']
+        cubierto += min(esperado_venta, abono_venta)
+        pendiente += max(Decimal('0'), esperado_venta - abono_venta)
+
+    return {
+        'esperado': esperado,
+        'recaudo': recaudo_total,
+        'pendiente_recaudo': pendiente,
+        'cobertura_recaudo': cubierto,
+        'programadas': programadas,
+        'con_gestion': con_gestion,
+        'con_abono': con_abono,
+        'sin_gestion': sin_gestion,
+        'fallas': fallas,
+        'fallas_programadas': fallas_programadas,
+    }
 
 
 def resumen_operativo(fecha, rutas=None):
@@ -634,6 +726,34 @@ def resumen_operativo(fecha, rutas=None):
                 riesgo += 1
                 saldo_riesgo += venta.saldo_actual or Decimal('0')
         cierre = Cierre_Caja.objects.filter(tienda=tienda, fecha_cierre=fecha).exists()
+        cumplimiento = _resumen_cumplimiento_dia(tienda, fecha)
+        alertas_riesgo = AlertaOperativa.objects.filter(
+            tienda_id_ref=tienda.id,
+            tipo__in=TIPOS_ALERTA_CARTERA,
+            estado__in=ESTADOS_ALERTA_ABIERTA,
+        )
+        alertas_prioritarias = alertas_riesgo.filter(
+            severidad__in=('alta', 'critica'),
+        ).order_by('-severidad', '-actualizada', '-id')
+        venta_ids = [a.venta_id_ref for a in alertas_prioritarias[:3] if a.venta_id_ref]
+        ventas_alerta = {
+            venta.id: venta
+            for venta in Venta.objects.filter(id__in=venta_ids).select_related('cliente')
+        }
+        riesgos_detalle = []
+        for alerta in alertas_prioritarias[:3]:
+            venta_alerta = ventas_alerta.get(alerta.venta_id_ref)
+            cliente_alerta = (
+                f'{venta_alerta.cliente.nombres} {venta_alerta.cliente.apellidos}'.strip()
+                if venta_alerta else f'venta #{alerta.venta_id_ref}'
+            )
+            riesgos_detalle.append({
+                'severidad': alerta.severidad,
+                'cliente': cliente_alerta,
+                'venta_id': alerta.venta_id_ref,
+                'saldo': venta_alerta.saldo_actual if venta_alerta else Decimal('0'),
+                'titulo': alerta.titulo,
+            })
         if activas.exists() or nuevas or recaudo or blancos:
             resumen.append({
                 'nombre': tienda.nombre,
@@ -653,5 +773,18 @@ def resumen_operativo(fecha, rutas=None):
                 'riesgo': riesgo,
                 'saldo_riesgo': saldo_riesgo,
                 'cierre': cierre,
+                'esperado': cumplimiento['esperado'],
+                'pendiente_recaudo': cumplimiento['pendiente_recaudo'],
+                'programadas': cumplimiento['programadas'],
+                'con_gestion': cumplimiento['con_gestion'],
+                'con_abono': cumplimiento['con_abono'],
+                'sin_gestion': cumplimiento['sin_gestion'],
+                'fallas': cumplimiento['fallas'],
+                'fallas_programadas': cumplimiento['fallas_programadas'],
+                'alertas_riesgo': alertas_riesgo.count(),
+                'alertas_urgentes': alertas_riesgo.filter(severidad='alta').count(),
+                'alertas_criticas': alertas_riesgo.filter(severidad='critica').count(),
+                'alertas_nuevas': alertas_riesgo.filter(creada__date=fecha).count(),
+                'riesgos_detalle': riesgos_detalle,
             })
     return resumen

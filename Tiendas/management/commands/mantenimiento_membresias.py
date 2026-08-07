@@ -199,8 +199,18 @@ class Command(BaseCommand):
         # crédito avisa al cruzar los umbrales definidos para su frecuencia y
         # cada cierre ausente solo una vez por ruta y fecha.
         if usuario_alertas:
-            nuevos_riesgos = revisar_riesgo_cartera(rutas=rutas_alertas)
-            cierres_ausentes = revisar_cierres_ausentes(ayer, rutas=rutas_alertas)
+            # El proceso nocturno actualiza el panel, pero no envía una
+            # notificación por cada crédito o falla. Telegram recibe un solo
+            # resumen consolidado más abajo.
+            nuevos_riesgos = revisar_riesgo_cartera(
+                rutas=rutas_alertas,
+                notificar=False,
+            )
+            cierres_ausentes = revisar_cierres_ausentes(
+                ayer,
+                rutas=rutas_alertas,
+                notificar=False,
+            )
             self.stdout.write(
                 f'Usuario de alertas: {usuario_alertas.username} · '
                 f'{rutas_alertas.count()} ruta(s).'

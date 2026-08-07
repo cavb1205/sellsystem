@@ -28,6 +28,10 @@ def _configurado():
     return bool(settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_ADMIN_CHAT_ID)
 
 
+def _dinero(valor):
+    return f'${int(round(float(valor or 0))):,}'.replace(',', '.')
+
+
 def comprimir_imagen(archivo):
     """Redimensiona a máx 1600px y recomprime como JPEG ~80%.
     Recibe un UploadedFile, devuelve (bytes, nombre) o (None, None) si falla."""
@@ -277,7 +281,7 @@ def procesar_callback_alerta(callback):
 
 
 def notificar_resumen_operativo(rutas, fecha):
-    """Envía el resumen diario de cartera y actividad de las rutas."""
+    """Envía un único resumen nocturno, compacto y agrupado por ruta."""
     if not rutas:
         return _enviar_alerta(
             f'📊 <b>Resumen operativo</b> · {fecha:%d/%m/%Y}\n\n'
@@ -285,29 +289,45 @@ def notificar_resumen_operativo(rutas, fecha):
         )
 
     lineas = [
-        f'📊 <b>Resumen operativo</b> · {fecha:%d/%m/%Y}\n',
-        'Las ventas siguen permitidas; estas son las señales que requieren revisión.\n',
+        f'📊 <b>Resumen nocturno de cartera</b> · {fecha:%d/%m/%Y}\n',
+        'Un solo reporte con las excepciones que requieren revisión.\n',
     ]
     for ruta in rutas[:35]:
-        cierre = '✅' if ruta['cierre'] else '⚠️'
-        riesgo = (
-            f' · Riesgo {ruta["riesgo"]} ({_dinero(ruta["saldo_riesgo"])})'
-            if ruta['riesgo'] else ''
+        excepciones = (
+            not ruta['cierre']
+            or ruta['pendiente_recaudo'] > 0
+            or ruta['sin_gestion'] > 0
+            or ruta['fallas'] > 0
+            or ruta['alertas_urgentes'] > 0
+            or ruta['alertas_criticas'] > 0
         )
-        mora = ruta['saldo_atrasado'] + ruta['saldo_vencido']
-        sin_primer_abono = (
-            f'\n  🟠 Sin primer abono {ruta["sin_primer_abono"]} '
-            f'({_dinero(ruta["saldo_sin_primer_abono"])})'
-            if ruta['sin_primer_abono'] else ''
+        estado = '⚠️' if excepciones else '✅'
+        programacion = (
+            f'{_dinero(ruta["recaudo"])} / {_dinero(ruta["esperado"])}'
+            if ruta['programadas'] else 'sin cuotas programadas'
         )
+        riesgos = (
+            f'{ruta["alertas_urgentes"]} urgentes · '
+            f'{ruta["alertas_criticas"]} críticas'
+            if ruta['alertas_urgentes'] or ruta['alertas_criticas']
+            else 'sin riesgos urgentes'
+        )
+        cierre = 'cierre OK' if ruta['cierre'] else '⚠️ cierre ausente'
         lineas.append(
-            f'{cierre} <b>{html.escape(str(ruta["nombre"]))}</b>\n'
-            f'  Caja {_dinero(ruta["caja"])} · Cartera {_dinero(ruta["cartera"])}\n'
-            f'  🟡 Mora {ruta["atrasados"] + ruta["vencidos"]} ({_dinero(mora)}) · '
-            f'{ruta["nuevas"]} nuevos{sin_primer_abono}\n'
-            f'  Recaudo {_dinero(ruta["recaudo"])} · '
-            f'Visitas en blanco {ruta["blancos"]}{riesgo}'
+            f'{estado} <b>{html.escape(str(ruta["nombre"]))}</b>\n'
+            f'  💰 Cobro programado: <b>{programacion}</b> · '
+            f'pendiente {_dinero(ruta["pendiente_recaudo"])}\n'
+            f'  👥 Sin gestión: <b>{ruta["sin_gestion"]}</b> · '
+            f'No pago: <b>{ruta["fallas"]}</b> · {cierre}\n'
+            f'  ⚠️ Riesgo: <b>{riesgos}</b> · '
+            f'Umbrales nuevos: <b>{ruta["alertas_nuevas"]}</b>'
         )
+        for riesgo in ruta.get('riesgos_detalle', []):
+            severidad = '🔴' if riesgo['severidad'] == 'critica' else '🟠'
+            lineas.append(
+                f'  {severidad} {html.escape(str(riesgo["cliente"]))} · '
+                f'venta #{riesgo["venta_id"]} · saldo {_dinero(riesgo["saldo"])}'
+            )
     if len(rutas) > 35:
         lineas.append(f'\n<i>Se muestran 35 de {len(rutas)} rutas con actividad.</i>')
     return _enviar_alerta('\n\n'.join(lineas))
