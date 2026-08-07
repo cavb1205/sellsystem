@@ -1,10 +1,9 @@
 from dataclasses import field, fields
-from datetime import date
 from rest_framework import serializers
 from rest_framework.serializers import ModelSerializer
 
 from Ventas.models import Venta
-from Ventas.riesgo import calcular_riesgo_venta
+from Ventas.riesgo import calcular_riesgo_venta, dias_completos_sin_abono
 from Clientes.serializers import ClienteSerializer
 from Clientes.models import Cliente
 
@@ -111,6 +110,7 @@ class VentaListaSerializer(ModelSerializer):
     dias_atrasados = serializers.SerializerMethodField()
     perdida = serializers.SerializerMethodField()
     dias_sin_abono = serializers.SerializerMethodField()
+    fecha_ultimo_abono = serializers.SerializerMethodField()
     fue_renovada = serializers.SerializerMethodField()
     renovacion_id = serializers.SerializerMethodField()
     origen_renovacion_id = serializers.IntegerField(read_only=True)
@@ -124,6 +124,7 @@ class VentaListaSerializer(ModelSerializer):
             'valor_cuota', 'saldo_actual', 'pagos_pendientes',
             'pagos_realizados', 'fecha_vencimiento', 'total_abonado',
             'promedio_pago', 'dias_atrasados', 'perdida', 'dias_sin_abono',
+            'fecha_ultimo_abono',
             'fue_renovada', 'renovacion_id', 'origen_renovacion_id',
             'creado_por', 'riesgo_cartera',
         )
@@ -184,7 +185,10 @@ class VentaListaSerializer(ModelSerializer):
 
     def get_dias_sin_abono(self, obj):
         referencia = getattr(obj, '_ultimo_abono_real', None) or obj.fecha_venta
-        return (date.today() - referencia).days
+        return dias_completos_sin_abono(referencia)
+
+    def get_fecha_ultimo_abono(self, obj):
+        return getattr(obj, '_ultimo_abono_real', None)
 
     def get_riesgo_cartera(self, obj):
         return calcular_riesgo_venta(

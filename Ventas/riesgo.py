@@ -2,6 +2,8 @@
 
 from datetime import timedelta
 
+from django.utils import timezone
+
 
 INTERVALOS_COBRO = {
     'Diario': 1,
@@ -19,6 +21,19 @@ UMBRALES_DSA = {
 }
 
 DIAS_CANDIDATO_CASTIGO = 90
+
+
+def dias_completos_sin_abono(referencia, hoy=None):
+    """Cuenta jornadas completas cerradas desde una fecha de referencia.
+
+    El día actual sigue abierto y no debe sumarse todavía como un día
+    adicional sin abono. Por ejemplo, si el último pago fue anteayer, hoy
+    existe un solo día completo sin pago: ayer.
+    """
+    if not referencia:
+        return 0
+    hoy = hoy or timezone.localdate()
+    return max(0, (hoy - referencia).days - 1)
 
 
 def normalizar_plazo(plazo):
@@ -55,18 +70,16 @@ def calcular_riesgo_venta(*, plazo, estado_venta, dias_sin_abono,
     abonado = float(total_abonado or 0)
     pagos_adelantados = atraso < 0 and estado_venta != 'Vencido'
     sin_primer_abono = abonado <= 0
-    # El día del vencimiento todavía es el ciclo esperado. Se considera
-    # incumplido después de superar el intervalo; una venta con abono ayer y
-    # cero cuotas atrasadas debe seguir apareciendo al día.
-    ciclo_incumplido = dias > intervalo
-    # El primer abono vence después de completar el primer ciclo. El día
-    # esperado todavía pertenece a la jornada de cobro y no debe alertar.
-    primer_abono_vencido = sin_primer_abono and dias > intervalo
+    # El día actual no se cuenta en `dias`; cuando ya se completó el intervalo
+    # sin pago, el ciclo sí está vencido. Un abono de ayer deja `dias=0` y no
+    # debe marcar atraso durante la jornada de hoy.
+    ciclo_incumplido = dias >= intervalo
+    primer_abono_vencido = sin_primer_abono and dias >= intervalo
     cuotas_atrasadas = max(0, atraso)
     if sin_primer_abono:
         cuotas_atrasadas = max(
             cuotas_atrasadas,
-            max(0, (dias - 1) // intervalo),
+            max(0, dias // intervalo),
         )
     en_mora = (
         not pagos_adelantados

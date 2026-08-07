@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from Clientes.models import Cliente
 from Tiendas.models import Tienda
+from Ventas.riesgo import dias_completos_sin_abono
 
 
 
@@ -106,12 +107,12 @@ class Venta(models.Model):
         return self.saldo_actual or Decimal(0)
 
     def dias_sin_abono(self):
-        """Días calendario desde el último abono real (recaudo con valor > 0).
+        """Jornadas completas cerradas desde el último abono real.
 
         Si el crédito nunca ha recibido un abono, se cuenta desde la fecha de
-        venta. Es una señal informativa para clasificar el deterioro de la
-        cartera (créditos abandonados / posible castigo); no afecta saldos."""
-        from datetime import date
+        venta, sin sumar el día actual mientras la jornada siga abierta. Es
+        una señal informativa para clasificar el deterioro de la cartera
+        (créditos abandonados / posible castigo); no afecta saldos."""
         ultimo = (
             self.recaudo_set.filter(
                 valor_recaudo__gt=0,
@@ -121,7 +122,7 @@ class Venta(models.Model):
             .first()
         )
         referencia = ultimo.fecha_recaudo if ultimo else self.fecha_venta
-        return (date.today() - referencia).days
+        return dias_completos_sin_abono(referencia)
 
 
 class AjusteVentaAdministrativo(models.Model):

@@ -4,13 +4,14 @@ from rest_framework import status
 from rest_framework.generics import ListAPIView
 from rest_framework.pagination import LimitOffsetPagination
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import timedelta
 
 from Clientes.models import Cliente
 from Tiendas.models import Tienda
 from Ventas.models import Venta
-from Ventas.riesgo import UMBRALES_DSA
+from Ventas.riesgo import UMBRALES_DSA, dias_completos_sin_abono
 from Recaudos.models import Recaudo
+from django.utils import timezone
 
 from Clientes.serializers import ClienteSerializer, ClienteCreateSerializer
 from Tiendas.permissions import requiere_acceso_tienda, usuario_puede_acceder_tienda, respuesta_sin_permiso
@@ -25,7 +26,7 @@ def _calcular_score_desde_datos(cliente_id, tienda, ventas, recaudos,
     carga de datos y cálculo permite que el endpoint bulk lea la ruta completa
     en pocas consultas y luego procese los clientes en memoria.
     """
-    hoy = hoy or date.today()
+    hoy = hoy or timezone.localdate()
     recaudos_por_venta = defaultdict(list)
     for recaudo in recaudos:
         recaudos_por_venta[recaudo['venta_id']].append(recaudo)
@@ -73,7 +74,7 @@ def _calcular_score_desde_datos(cliente_id, tienda, ventas, recaudos,
             default=None,
         )
         referencia = ultimo_abono or venta['fecha_venta']
-        dsa = (hoy - referencia).days
+        dsa = dias_completos_sin_abono(referencia, hoy)
         sano, leve, grave = UMBRALES_DSA.get(venta['plazo'], UMBRALES_DSA['Diario'])
         bucket = 0 if dsa <= sano else 1 if dsa <= leve else 2 if dsa <= grave else 3
         dias_sin_abono_max = max(dias_sin_abono_max, dsa)
@@ -552,7 +553,7 @@ def scores_tienda(request, tienda_id):
     for recaudo in recaudos:
         recaudos_por_venta[recaudo['venta_id']].append(recaudo)
 
-    hoy = date.today()
+    hoy = timezone.localdate()
     result = {}
     for cliente_id in cliente_ids:
         ventas_cliente = ventas_por_cliente.get(cliente_id, [])
