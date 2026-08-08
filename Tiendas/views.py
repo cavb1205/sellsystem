@@ -1174,6 +1174,31 @@ def comparativo_mensual(request, inicio_a, fin_a, inicio_b, fin_b, tienda_id=Non
     }, status=status.HTTP_200_OK)
 
 
+def _desglosar_abono_capital_interes(capital, interes_total, acumulado, abono):
+    """Aplica un abono primero al capital y luego al interés.
+
+    Es una función pura: no toca ventas, saldos ni recaudos. Devuelve la
+    porción de capital y de interés que corresponde exclusivamente al abono
+    recibido, limitando ambas partes al monto originalmente pactado.
+    """
+    cero = Decimal('0')
+    capital = max(Decimal(capital or 0), cero)
+    interes_total = max(Decimal(interes_total or 0), cero)
+    acumulado = max(Decimal(acumulado or 0), cero)
+    abono = max(Decimal(abono or 0), cero)
+
+    total_despues = acumulado + abono
+    capital_antes = min(acumulado, capital)
+    capital_despues = min(total_despues, capital)
+    interes_antes = min(max(acumulado - capital, cero), interes_total)
+    interes_despues = min(max(total_despues - capital, cero), interes_total)
+
+    return (
+        capital_despues - capital_antes,
+        interes_despues - interes_antes,
+    )
+
+
 @api_view(['GET'])
 @requiere_acceso_tienda
 def reporte_utilidad_diario(request, date1, date2, tienda_id=None):
@@ -1184,10 +1209,10 @@ def reporte_utilidad_diario(request, date1, date2, tienda_id=None):
     frontend y se evita enviar listados completos para que el navegador los
     agrupe.
 
-    ``utilidad`` conserva la fórmula histórica de utilidad estimada para no
-    cambiar el significado contable existente sin una decisión explícita.
-    Los recaudos, aportes y retiros se entregan por separado como flujo de
-    caja informativo.
+    ``utilidadEstimada`` conserva la fórmula histórica para comparación.
+    ``utilidadCobrada`` reconoce únicamente el interés que efectivamente
+    quedó cobrado después de recuperar el capital de cada venta, menos gastos.
+    Ninguno de estos cálculos modifica saldos ni recaudos.
     """
     from Aportes.models import Aporte
     from Gastos.models import Gasto
@@ -1234,6 +1259,36 @@ def reporte_utilidad_diario(request, date1, date2, tienda_id=None):
         valor_recaudo__gt=0,
         es_renovacion=False,
     ).values('fecha_recaudo', 'valor_recaudo')
+    recaudos_para_desglose = list(
+        Recaudo.objects.filter(
+            tienda_id=tienda.id,
+            venta__tienda_id=tienda.id,
+            fecha_recaudo__range=[inicio, fin],
+            valor_recaudo__gt=0,
+            es_renovacion=False,
+        ).values(
+            'id',
+            'venta_id',
+            'fecha_recaudo',
+            'valor_recaudo',
+            'venta__valor_venta',
+            'venta__interes',
+        ).order_by('fecha_recaudo', 'id')
+    )
+    ventas_con_abonos = {recaudo['venta_id'] for recaudo in recaudos_para_desglose}
+    acumulados_anteriores = {}
+    if ventas_con_abonos:
+        acumulados_anteriores = {
+            fila['venta_id']: fila['total'] or Decimal('0')
+            for fila in Recaudo.objects.filter(
+                tienda_id=tienda.id,
+                venta__tienda_id=tienda.id,
+                venta_id__in=ventas_con_abonos,
+                fecha_recaudo__lt=inicio,
+                valor_recaudo__gt=0,
+                es_renovacion=False,
+            ).values('venta_id').annotate(total=Sum('valor_recaudo'))
+        }
     aportes = Aporte.objects.filter(
         tienda_id=tienda.id,
         fecha__range=[inicio, fin],
@@ -1262,6 +1317,9 @@ def reporte_utilidad_diario(request, date1, date2, tienda_id=None):
                 'perdidas': 0,
                 'utilidad': 0,
                 'utilidadEstimada': 0,
+                'capitalRecuperado': 0,
+                'interesesCobrados': 0,
+                'utilidadCobrada': 0,
                 'recaudos': 0,
                 'aportes': 0,
                 'utilidadesRetiradas': 0,
@@ -1291,6 +1349,26 @@ def reporte_utilidad_diario(request, date1, date2, tienda_id=None):
             datos['categoriasGastos'].get(categoria, 0) + valor_gasto
         )
 
+    acumulados_por_venta = dict(acumulados_anteriores)
+    for recaudo in recaudos_para_desglose:
+        acumulado = acumulados_por_venta.get(recaudo['venta_id'], Decimal('0'))
+        capital = recaudo['venta__valor_venta']
+        interes_total = (
+            Decimal(recaudo['venta__interes']) / Decimal('100')
+        ) * capital
+        capital_recuperado, intereses_cobrados = _desglosar_abono_capital_interes(
+            capital,
+            interes_total,
+            acumulado,
+            recaudo['valor_recaudo'],
+        )
+        datos = fila(recaudo['fecha_recaudo'])
+        datos['capitalRecuperado'] += redondear_monto(capital_recuperado)
+        datos['interesesCobrados'] += redondear_monto(intereses_cobrados)
+        acumulados_por_venta[recaudo['venta_id']] = (
+            acumulado + recaudo['valor_recaudo']
+        )
+
     for recaudo in recaudos:
         datos = fila(recaudo['fecha_recaudo'])
         datos['recaudos'] += redondear_monto(recaudo['valor_recaudo'])
@@ -1310,6 +1388,10 @@ def reporte_utilidad_diario(request, date1, date2, tienda_id=None):
             - datos['perdidas']
         )
         datos['utilidadEstimada'] = datos['utilidad']
+        datos['utilidadCobrada'] = (
+            datos['interesesCobrados']
+            - datos['gastos']
+        )
 
     return Response(
         sorted(datos_por_fecha.values(), key=lambda item: item['fecha'], reverse=True),
