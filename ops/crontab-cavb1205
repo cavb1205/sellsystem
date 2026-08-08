@@ -1,0 +1,1 @@
+0 * * * * /home/cavb1205/sellsystem/ops/mantenimiento_membresias_cron.sh >> /home/cavb1205/mantenimiento_membresias.log 2>&1
