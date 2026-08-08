@@ -1212,6 +1212,9 @@ def reporte_utilidad_diario(request, date1, date2, tienda_id=None):
     ``utilidadEstimada`` conserva la fórmula histórica para comparación.
     ``utilidadCobrada`` reconoce únicamente el interés que efectivamente
     quedó cobrado después de recuperar el capital de cada venta, menos gastos.
+    La conciliación separa los recaudos registrados en la ruta de los pagos
+    aplicados a sus ventas y marca movimientos fuera de ruta, de otras rutas
+    o ajustes negativos para revisión.
     Ninguno de estos cálculos modifica saldos ni recaudos.
     """
     from Aportes.models import Aporte
@@ -1270,7 +1273,6 @@ def reporte_utilidad_diario(request, date1, date2, tienda_id=None):
     ).values('fecha_recaudo', 'valor_recaudo')
     recaudos_para_desglose = list(
         Recaudo.objects.filter(
-            tienda_id=tienda.id,
             venta__tienda_id=tienda.id,
             fecha_recaudo__range=[inicio, fin],
             valor_recaudo__gt=0,
@@ -1290,14 +1292,22 @@ def reporte_utilidad_diario(request, date1, date2, tienda_id=None):
         acumulados_anteriores = {
             fila['venta_id']: fila['total'] or Decimal('0')
             for fila in Recaudo.objects.filter(
-                tienda_id=tienda.id,
                 venta__tienda_id=tienda.id,
                 venta_id__in=ventas_con_abonos,
                 fecha_recaudo__lt=inicio,
                 valor_recaudo__gt=0,
                 es_renovacion=False,
-            ).values('venta_id').annotate(total=Sum('valor_recaudo'))
+        ).values('venta_id').annotate(total=Sum('valor_recaudo'))
         }
+    recaudos_auditoria = Recaudo.objects.filter(
+        Q(tienda_id=tienda.id) | Q(venta__tienda_id=tienda.id),
+        fecha_recaudo__range=[inicio, fin],
+        es_renovacion=False,
+        valor_recaudo__isnull=False,
+    ).values(
+        'fecha_recaudo', 'valor_recaudo', 'tienda_id', 'venta_id',
+        'venta__tienda_id',
+    )
     aportes = Aporte.objects.filter(
         tienda_id=tienda.id,
         fecha__range=[inicio, fin],
@@ -1332,6 +1342,13 @@ def reporte_utilidad_diario(request, date1, date2, tienda_id=None):
                 'interesesCobrados': 0,
                 'utilidadCobrada': 0,
                 'recaudos': 0,
+                'recaudosAplicados': 0,
+                'recaudosConciliados': 0,
+                'recaudosFueraRuta': 0,
+                'recaudosDeOtrasRutas': 0,
+                'recaudosSinVenta': 0,
+                'recaudosNegativos': 0,
+                'recaudosPorRevisar': 0,
                 'aportes': 0,
                 'utilidadesRetiradas': 0,
                 'categoriasGastos': {},
@@ -1397,6 +1414,32 @@ def reporte_utilidad_diario(request, date1, date2, tienda_id=None):
         datos = fila(recaudo['fecha_recaudo'])
         datos['recaudos'] += redondear_monto(recaudo['valor_recaudo'])
 
+    for recaudo in recaudos_auditoria:
+        datos = fila(recaudo['fecha_recaudo'])
+        valor_recaudo = Decimal(recaudo['valor_recaudo'] or 0)
+        registrado_en_ruta = recaudo['tienda_id'] == tienda.id
+        pertenece_a_ruta = recaudo['venta__tienda_id'] == tienda.id
+
+        if valor_recaudo < 0:
+            # Los ajustes negativos no se mezclan con los recaudos efectivos;
+            # se muestran como movimientos que requieren revisión.
+            datos['recaudosNegativos'] += redondear_monto(valor_recaudo)
+            continue
+        if valor_recaudo <= 0:
+            continue
+
+        monto = redondear_monto(valor_recaudo)
+        if pertenece_a_ruta:
+            datos['recaudosAplicados'] += monto
+        if registrado_en_ruta and pertenece_a_ruta:
+            datos['recaudosConciliados'] += monto
+        elif pertenece_a_ruta and not registrado_en_ruta:
+            datos['recaudosFueraRuta'] += monto
+        elif registrado_en_ruta and recaudo['venta__tienda_id'] is None:
+            datos['recaudosSinVenta'] += monto
+        elif registrado_en_ruta:
+            datos['recaudosDeOtrasRutas'] += monto
+
     for aporte in aportes:
         datos = fila(aporte['fecha'])
         datos['aportes'] += redondear_monto(aporte['valor'])
@@ -1406,6 +1449,12 @@ def reporte_utilidad_diario(request, date1, date2, tienda_id=None):
         datos['utilidadesRetiradas'] += redondear_monto(utilidad_retirada['valor'])
 
     for datos in datos_por_fecha.values():
+        datos['recaudosPorRevisar'] = (
+            datos['recaudosFueraRuta']
+            + datos['recaudosDeOtrasRutas']
+            + datos['recaudosSinVenta']
+            + abs(datos['recaudosNegativos'])
+        )
         datos['utilidad'] = (
             datos['interesesGenerados']
             - datos['gastos']
