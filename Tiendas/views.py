@@ -1180,10 +1180,19 @@ def reporte_utilidad_diario(request, date1, date2, tienda_id=None):
     """Devuelve el reporte diario de utilidad ya procesado en el backend.
 
     La pantalla solo necesita una fila por fecha. Se cargan campos mínimos de
-    ventas y gastos, se conserva el redondeo monetario histórico del frontend
-    y se evita enviar listados completos para que el navegador los agrupe.
+    ventas y movimientos, se conserva el redondeo monetario histórico del
+    frontend y se evita enviar listados completos para que el navegador los
+    agrupe.
+
+    ``utilidad`` conserva la fórmula histórica de utilidad estimada para no
+    cambiar el significado contable existente sin una decisión explícita.
+    Los recaudos, aportes y retiros se entregan por separado como flujo de
+    caja informativo.
     """
+    from Aportes.models import Aporte
     from Gastos.models import Gasto
+    from Recaudos.models import Recaudo
+    from Utilidades.models import Utilidad
 
     try:
         inicio = datetime.datetime.strptime(date1, '%Y-%m-%d').date()
@@ -1218,6 +1227,20 @@ def reporte_utilidad_diario(request, date1, date2, tienda_id=None):
     gastos = Gasto.objects.filter(
         tienda_id=tienda.id,
         fecha__range=[inicio, fin],
+    ).values('fecha', 'valor', 'tipo_gasto__tipo_gasto')
+    recaudos = Recaudo.objects.filter(
+        tienda_id=tienda.id,
+        fecha_recaudo__range=[inicio, fin],
+        valor_recaudo__gt=0,
+        es_renovacion=False,
+    ).values('fecha_recaudo', 'valor_recaudo')
+    aportes = Aporte.objects.filter(
+        tienda_id=tienda.id,
+        fecha__range=[inicio, fin],
+    ).values('fecha', 'valor')
+    utilidades = Utilidad.objects.filter(
+        tienda_id=tienda.id,
+        fecha__range=[inicio, fin],
     ).values('fecha', 'valor')
 
     def redondear_monto(value):
@@ -1238,6 +1261,11 @@ def reporte_utilidad_diario(request, date1, date2, tienda_id=None):
                 'gastos': 0,
                 'perdidas': 0,
                 'utilidad': 0,
+                'utilidadEstimada': 0,
+                'recaudos': 0,
+                'aportes': 0,
+                'utilidadesRetiradas': 0,
+                'categoriasGastos': {},
             }
         return datos_por_fecha[clave]
 
@@ -1256,7 +1284,24 @@ def reporte_utilidad_diario(request, date1, date2, tienda_id=None):
 
     for gasto in gastos:
         datos = fila(gasto['fecha'])
-        datos['gastos'] += redondear_monto(gasto['valor'])
+        valor_gasto = redondear_monto(gasto['valor'])
+        datos['gastos'] += valor_gasto
+        categoria = gasto['tipo_gasto__tipo_gasto'] or 'Sin categoría'
+        datos['categoriasGastos'][categoria] = (
+            datos['categoriasGastos'].get(categoria, 0) + valor_gasto
+        )
+
+    for recaudo in recaudos:
+        datos = fila(recaudo['fecha_recaudo'])
+        datos['recaudos'] += redondear_monto(recaudo['valor_recaudo'])
+
+    for aporte in aportes:
+        datos = fila(aporte['fecha'])
+        datos['aportes'] += redondear_monto(aporte['valor'])
+
+    for utilidad_retirada in utilidades:
+        datos = fila(utilidad_retirada['fecha'])
+        datos['utilidadesRetiradas'] += redondear_monto(utilidad_retirada['valor'])
 
     for datos in datos_por_fecha.values():
         datos['utilidad'] = (
@@ -1264,6 +1309,7 @@ def reporte_utilidad_diario(request, date1, date2, tienda_id=None):
             - datos['gastos']
             - datos['perdidas']
         )
+        datos['utilidadEstimada'] = datos['utilidad']
 
     return Response(
         sorted(datos_por_fecha.values(), key=lambda item: item['fecha'], reverse=True),
