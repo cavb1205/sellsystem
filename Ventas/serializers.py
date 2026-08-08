@@ -1,4 +1,5 @@
 from dataclasses import field, fields
+from decimal import Decimal
 from rest_framework import serializers
 from rest_framework.serializers import ModelSerializer
 
@@ -111,6 +112,10 @@ class VentaListaSerializer(ModelSerializer):
     perdida = serializers.SerializerMethodField()
     dias_sin_abono = serializers.SerializerMethodField()
     fecha_ultimo_abono = serializers.SerializerMethodField()
+    capital_recuperado = serializers.SerializerMethodField()
+    capital_expuesto = serializers.SerializerMethodField()
+    interes_cobrado = serializers.SerializerMethodField()
+    interes_no_cobrado = serializers.SerializerMethodField()
     fue_renovada = serializers.SerializerMethodField()
     renovacion_id = serializers.SerializerMethodField()
     origen_renovacion_id = serializers.IntegerField(read_only=True)
@@ -125,6 +130,8 @@ class VentaListaSerializer(ModelSerializer):
             'pagos_realizados', 'fecha_vencimiento', 'total_abonado',
             'promedio_pago', 'dias_atrasados', 'perdida', 'dias_sin_abono',
             'fecha_ultimo_abono',
+            'capital_recuperado', 'capital_expuesto', 'interes_cobrado',
+            'interes_no_cobrado',
             'fue_renovada', 'renovacion_id', 'origen_renovacion_id',
             'creado_por', 'riesgo_cartera',
         )
@@ -182,6 +189,38 @@ class VentaListaSerializer(ModelSerializer):
 
     def get_perdida(self, obj):
         return self._saldo(obj)
+
+    def _abonos_reales(self, obj):
+        return max(Decimal(getattr(obj, '_recaudos_total', 0) or 0), Decimal('0'))
+
+    def _interes_total(self, obj):
+        capital = Decimal(obj.valor_venta or 0)
+        return max(
+            capital * Decimal(obj.interes or 0) / Decimal('100'),
+            Decimal('0'),
+        )
+
+    def get_capital_recuperado(self, obj):
+        return min(self._abonos_reales(obj), Decimal(obj.valor_venta or 0))
+
+    def get_capital_expuesto(self, obj):
+        return max(
+            Decimal(obj.valor_venta or 0) - self.get_capital_recuperado(obj),
+            Decimal('0'),
+        )
+
+    def get_interes_cobrado(self, obj):
+        abonos_despues_del_capital = max(
+            self._abonos_reales(obj) - Decimal(obj.valor_venta or 0),
+            Decimal('0'),
+        )
+        return min(abonos_despues_del_capital, self._interes_total(obj))
+
+    def get_interes_no_cobrado(self, obj):
+        return max(
+            self._interes_total(obj) - self.get_interes_cobrado(obj),
+            Decimal('0'),
+        )
 
     def get_dias_sin_abono(self, obj):
         referencia = getattr(obj, '_ultimo_abono_real', None) or obj.fecha_venta

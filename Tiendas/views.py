@@ -1246,8 +1246,17 @@ def reporte_utilidad_diario(request, date1, date2, tienda_id=None):
     ventas = Venta.objects.filter(
         tienda_id=tienda.id,
         fecha_venta__range=[inicio, fin],
+    ).annotate(
+        _total_abonos=Sum(
+            'recaudo__valor_recaudo',
+            filter=Q(
+                recaudo__valor_recaudo__gt=0,
+                recaudo__es_renovacion=False,
+            ),
+        ),
     ).values(
         'fecha_venta', 'valor_venta', 'interes', 'estado_venta', 'saldo_actual',
+        '_total_abonos',
     )
     gastos = Gasto.objects.filter(
         tienda_id=tienda.id,
@@ -1315,6 +1324,8 @@ def reporte_utilidad_diario(request, date1, date2, tienda_id=None):
                 'interesesGenerados': 0,
                 'gastos': 0,
                 'perdidas': 0,
+                'perdidaCapital': 0,
+                'interesNoCobrado': 0,
                 'utilidad': 0,
                 'utilidadEstimada': 0,
                 'capitalRecuperado': 0,
@@ -1336,9 +1347,22 @@ def reporte_utilidad_diario(request, date1, date2, tienda_id=None):
         )
         datos['cantidadVentas'] += 1
         datos['totalVendido'] += valor_venta
-        datos['interesesGenerados'] += total_a_pagar - valor_venta
+        interes_total = total_a_pagar - valor_venta
+        datos['interesesGenerados'] += interes_total
         if venta['estado_venta'] == 'Perdida':
             datos['perdidas'] += redondear_monto(venta['saldo_actual'])
+            total_abonos = max(Decimal(venta['_total_abonos'] or 0), Decimal('0'))
+            capital_recuperado = min(total_abonos, venta['valor_venta'])
+            interes_cobrado = min(
+                max(total_abonos - venta['valor_venta'], Decimal('0')),
+                interes_total,
+            )
+            datos['perdidaCapital'] += redondear_monto(
+                max(venta['valor_venta'] - capital_recuperado, Decimal('0'))
+            )
+            datos['interesNoCobrado'] += redondear_monto(
+                max(interes_total - interes_cobrado, Decimal('0'))
+            )
 
     for gasto in gastos:
         datos = fila(gasto['fecha'])
@@ -1387,7 +1411,13 @@ def reporte_utilidad_diario(request, date1, date2, tienda_id=None):
             - datos['gastos']
             - datos['perdidas']
         )
-        datos['utilidadEstimada'] = datos['utilidad']
+        # La comparación estimada usa la pérdida económica real: capital no
+        # recuperado. El campo ``utilidad`` conserva la fórmula histórica.
+        datos['utilidadEstimada'] = (
+            datos['interesesGenerados']
+            - datos['gastos']
+            - datos['perdidaCapital']
+        )
         datos['utilidadCobrada'] = (
             datos['interesesCobrados']
             - datos['gastos']

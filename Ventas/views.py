@@ -8,7 +8,7 @@ from rest_framework.response import Response
 from rest_framework import status
 
 from django.db import transaction
-from django.db.models import Count, Max, Q, OuterRef, Subquery
+from django.db.models import Count, Max, Q, OuterRef, Subquery, Sum
 from django.utils import timezone
 
 from Ventas.models import Venta, AjusteVentaAdministrativo
@@ -48,6 +48,16 @@ def _anotar_ventas_lista(queryset):
         ),
         _ultimo_abono_real=Max(
             'recaudo__fecha_recaudo',
+            filter=Q(
+                recaudo__valor_recaudo__gt=0,
+                recaudo__es_renovacion=False,
+            ),
+        ),
+        # La pérdida real de capital debe considerar todos los recaudos
+        # asociados al crédito, aunque alguno haya sido registrado desde otra
+        # ruta. La ruta se toma de la venta, no del recaudo.
+        _recaudos_total=Sum(
+            'recaudo__valor_recaudo',
             filter=Q(
                 recaudo__valor_recaudo__gt=0,
                 recaudo__es_renovacion=False,
