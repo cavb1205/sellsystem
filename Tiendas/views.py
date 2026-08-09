@@ -932,11 +932,9 @@ def dashboard_movimientos(request, date1, date2, tienda_id=None):
         'id', 'tipo_gasto__tipo_gasto', 'valor', 'fecha',
     )
 
-    # Se conserva la semántica histórica: el widget consultaba utilidades
-    # únicamente para la fecha final, no para todo el rango.
     utilidades = Utilidad.objects.filter(
         tienda_id=tienda.id,
-        fecha=date2,
+        fecha__range=[date1, date2],
     ).values('id', 'valor', 'fecha')
 
     ventas = Venta.objects.filter(
