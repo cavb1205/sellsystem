@@ -39,6 +39,8 @@ urlpatterns = [
 
     # Membresías — solicitud de pago + bot de Telegram
     path('solicitar-pago/', views.solicitar_pago, name='solicitar_pago'),
+    path('solicitud-pago/actual/t/<str:tienda_id>/', views.solicitud_pago_actual, name='solicitud_pago_actual'),
+    path('solicitud-pago/<str:codigo>/cancelar/', views.cancelar_solicitud_pago, name='cancelar_solicitud_pago'),
     path('solicitud-pago/<str:codigo>/', views.consultar_solicitud, name='consultar_solicitud'),
     path('solicitud-pago/<str:codigo>/comprobante/', views.adjuntar_comprobante, name='adjuntar_comprobante'),
     path('telegram/webhook/', views.telegram_webhook, name='telegram_webhook'),

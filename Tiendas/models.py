@@ -318,6 +318,7 @@ class SolicitudPago(models.Model):
         ('pre_aprobada', 'Pre-aprobada (revisión manual)'),
         ('rechazada', 'Rechazada'),
         ('expirada', 'Expirada'),
+        ('cancelada', 'Cancelada por el usuario'),
     ]
     tienda = models.ForeignKey(Tienda, on_delete=models.CASCADE, related_name='solicitudes_pago')
     membresia = models.ForeignKey(Membresia, on_delete=models.PROTECT)

@@ -142,7 +142,7 @@ def _actualizar_estados_membresias():
     Activa → Pendiente Pago cuando fecha_vencimiento ya pasó (día +1, único día de gracia).
     Pendiente Pago → Vencida cuando han pasado 2+ días desde el vencimiento (bloqueo en V+2).
     Pre-activada → Pendiente Pago cuando pre_activada_hasta ya pasó."""
-    hoy = datetime.date.today()
+    hoy = timezone.localdate()
 
     Tienda_Membresia.objects.filter(
         estado='Activa',
@@ -165,9 +165,10 @@ def extender_membresia(tienda_id, plan_nombre):
     tm = Tienda_Membresia.objects.get(tienda_id=tienda_id)
     membresia = Membresia.objects.get(nombre=plan_nombre)
     dias = 30 if plan_nombre == 'Mensual' else 365
-    base = max(tm.fecha_vencimiento, datetime.date.today())
+    hoy = timezone.localdate()
+    base = max(tm.fecha_vencimiento, hoy)
     tm.membresia = membresia
-    tm.fecha_activacion = datetime.date.today()
+    tm.fecha_activacion = hoy
     tm.fecha_vencimiento = base + datetime.timedelta(days=dias)
     tm.estado = 'Activa'
     tm.pre_activada_hasta = None
@@ -196,7 +197,7 @@ def _confirmar_solicitud(solicitud, revisor=None):
             tienda_nombre=solicitud.tienda.nombre,
             membresia=solicitud.membresia,
             monto=solicitud.membresia.precio,
-            fecha=datetime.date.today(),
+            fecha=timezone.localdate(),
             origen='panel' if revisor else 'telegram',
             solicitud=solicitud,
             registrado_por=revisor,
@@ -362,16 +363,17 @@ def post_tienda(request):
         serialize = TiendaCreateSerializer(data=request.data)
         if serialize.is_valid():
             tienda = serialize.save()
+            hoy = timezone.localdate()
             Cierre_Caja.objects.create(tienda=tienda, valor=tienda.caja_inicial, fecha_cierre=(
-                datetime.date.today() - datetime.timedelta(days=1)))
+                hoy - datetime.timedelta(days=1)))
 
             if es_primera_tienda:
                 # Solo la primera ruta recibe trial de 7 días
                 Tienda_Membresia.objects.create(
                     tienda=tienda,
                     membresia=Membresia.objects.get(nombre='Prueba'),
-                    fecha_activacion=datetime.date.today(),
-                    fecha_vencimiento=datetime.date.today() + datetime.timedelta(days=7),
+                    fecha_activacion=hoy,
+                    fecha_vencimiento=hoy + datetime.timedelta(days=7),
                     estado='Activa'
                 )
             else:
@@ -379,8 +381,8 @@ def post_tienda(request):
                 Tienda_Membresia.objects.create(
                     tienda=tienda,
                     membresia=Membresia.objects.get(nombre='Prueba'),
-                    fecha_activacion=datetime.date.today(),
-                    fecha_vencimiento=datetime.date.today() - datetime.timedelta(days=1),
+                    fecha_activacion=hoy,
+                    fecha_vencimiento=hoy - datetime.timedelta(days=1),
                     estado='Pendiente Pago'
                 )
 
@@ -852,6 +854,8 @@ def get_tienda_membresia(request):
         if tienda else None
     )
     if tienda_membresia:
+        comprobar_estado_membresia(tienda.id)
+        tienda_membresia.refresh_from_db()
         tienda_membresia.tienda._dashboard_metricas = _metricas_dashboard_tienda(tienda.id)
         serialize = TiendaMembresiaSerializer(tienda_membresia, many=False)
         return Response(serialize.data)
@@ -876,6 +880,8 @@ def get_tienda_membresia_admin(request, pk):
         .first()
     )
     if tienda_membresia:
+        comprobar_estado_membresia(tienda.id)
+        tienda_membresia.refresh_from_db()
         tienda_membresia.tienda._dashboard_metricas = _metricas_dashboard_tienda(tienda.id)
         serialize = TiendaMembresiaSerializer(tienda_membresia, many=False)
         return Response(serialize.data)
@@ -1484,7 +1490,7 @@ def _registrar_pago_manual(tienda_membresia, user):
     PagoMembresia.objects.get_or_create(
         tienda=tienda_membresia.tienda,
         membresia=tienda_membresia.membresia,
-        fecha=datetime.date.today(),
+        fecha=timezone.localdate(),
         origen='manual',
         defaults={
             'tienda_nombre': tienda_membresia.tienda.nombre,
@@ -1502,13 +1508,7 @@ def activar_membresia_mensual(request, pk):
     tienda = Tienda_Membresia.objects.filter(id=pk).first()
     if tienda:
         with transaction.atomic():
-            tienda.estado = 'Activa'
-            tienda.membresia = Membresia.objects.get(nombre='Mensual')
-            tienda.fecha_activacion = datetime.date.today()
-            tienda.fecha_vencimiento = tienda.fecha_activacion + datetime.timedelta(days=30)
-            tienda.archivada = False
-            tienda.fecha_archivado = None
-            tienda.save()
+            tienda = extender_membresia(tienda.tienda_id, 'Mensual')
             _registrar_pago_manual(tienda, request.user)
         return Response({'message':'Suscripción Mensual Activa'}, status=status.HTTP_200_OK)
     else:
@@ -1522,19 +1522,63 @@ def activar_membresia_ano(request, pk):
     tienda = Tienda_Membresia.objects.filter(id=pk).first()
     if tienda:
         with transaction.atomic():
-            tienda.estado = 'Activa'
-            tienda.membresia = Membresia.objects.get(nombre='Anual')
-            tienda.fecha_activacion = datetime.date.today()
-            tienda.fecha_vencimiento = tienda.fecha_activacion + datetime.timedelta(days=365)
-            tienda.archivada = False
-            tienda.fecha_archivado = None
-            tienda.save()
+            tienda = extender_membresia(tienda.tienda_id, 'Anual')
             _registrar_pago_manual(tienda, request.user)
         return Response({'message':'Suscripción Anual Activa'}, status=status.HTTP_200_OK)
     else:
         return Response({'message': 'No se encontró la tienda'}, status=status.HTTP_400_BAD_REQUEST)
 
 ####### SOLICITUDES DE PAGO (membresías automáticas vía WhatsApp) ##########
+
+def _normalizar_solicitud_pago(solicitud):
+    """Expira solicitudes desde cualquier endpoint, no solo desde el cron.
+
+    Esto evita que un código vencido pueda volver a preactivar una ruta si el
+    mantenimiento diario todavía no ha corrido.
+    """
+    ahora = timezone.now()
+
+    if solicitud.estado == 'pendiente' and ahora >= solicitud.expira:
+        solicitud.estado = 'expirada'
+        solicitud.save(update_fields=['estado'])
+        return solicitud
+
+    if solicitud.estado == 'pendiente_confirmacion':
+        limite = solicitud.creada + datetime.timedelta(days=3)
+        tm = Tienda_Membresia.objects.filter(tienda_id=solicitud.tienda_id).first()
+        preactivacion_vencida = (
+            tm and tm.estado == 'Pre-activada'
+            and tm.pre_activada_hasta
+            and timezone.localdate() > tm.pre_activada_hasta
+        )
+        if ahora >= limite or preactivacion_vencida:
+            solicitud.estado = 'expirada'
+            solicitud.save(update_fields=['estado'])
+            if tm and tm.estado == 'Pre-activada':
+                tm.estado = 'Pendiente Pago'
+                tm.pre_activada_hasta = None
+                tm.save(update_fields=['estado', 'pre_activada_hasta'])
+
+    return solicitud
+
+
+def _datos_solicitud_pago(solicitud):
+    """Respuesta común para crear y recuperar una solicitud de pago."""
+    numero_soporte = getattr(settings, 'WHATSAPP_SOPORTE_NUMERO', '')
+    texto_wa = (
+        f"Hola, necesito ayuda con el pago de mi plan, tienda *{solicitud.tienda.nombre}* "
+        f"(código {solicitud.codigo})."
+    )
+    return {
+        'codigo': solicitud.codigo,
+        'expira': solicitud.expira,
+        'monto': str(solicitud.membresia.precio),
+        'plan': solicitud.membresia.nombre,
+        'estado': solicitud.estado,
+        'motivo_rechazo': solicitud.motivo_rechazo,
+        'wa_link': f"https://wa.me/{numero_soporte}?text={texto_wa.replace(' ', '%20')}" if numero_soporte else '',
+        'cuenta': CuentaDestinoSerializer(CuentaDestino.get()).data,
+    }
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
@@ -1555,12 +1599,25 @@ def solicitar_pago(request):
     else:
         return Response({'error': 'membresia_id o plan requerido'}, status=status.HTTP_400_BAD_REQUEST)
 
-    tienda_id = request.data.get('tienda_id') or request.user.perfil.tienda.id
+    perfil = getattr(request.user, 'perfil', None)
+    tienda_id = request.data.get('tienda_id') or getattr(perfil, 'tienda_id', None)
     tienda = Tienda.objects.filter(id=tienda_id).first()
     if not tienda:
         return Response({'error': 'Tienda no encontrada'}, status=status.HTTP_404_NOT_FOUND)
     if not usuario_puede_acceder_tienda(request.user, tienda_id):
         return respuesta_sin_permiso()
+
+    solicitud_existente = (
+        SolicitudPago.objects
+        .filter(tienda=tienda, estado__in=('pendiente', 'pendiente_confirmacion'))
+        .select_related('tienda', 'membresia')
+        .order_by('-creada')
+        .first()
+    )
+    if solicitud_existente:
+        _normalizar_solicitud_pago(solicitud_existente)
+        if solicitud_existente.estado in ('pendiente', 'pendiente_confirmacion'):
+            return Response(_datos_solicitud_pago(solicitud_existente), status=status.HTTP_200_OK)
 
     codigo = _generar_codigo_solicitud(membresia.nombre)
     expira = timezone.now() + datetime.timedelta(hours=24)
@@ -1573,18 +1630,50 @@ def solicitar_pago(request):
         solicitada_por=request.user,
     )
 
-    numero_soporte = getattr(settings, 'WHATSAPP_SOPORTE_NUMERO', '')
-    texto_wa = f"Hola, necesito ayuda con el pago de mi plan, tienda *{tienda.nombre}* (código {codigo})."
-    wa_link = f"https://wa.me/{numero_soporte}?text={texto_wa.replace(' ', '%20')}" if numero_soporte else ''
+    return Response(_datos_solicitud_pago(solicitud), status=status.HTTP_201_CREATED)
 
-    return Response({
-        'codigo': codigo,
-        'expira': expira,
-        'monto': str(membresia.precio),
-        'plan': membresia.nombre,
-        'wa_link': wa_link,
-        'cuenta': CuentaDestinoSerializer(CuentaDestino.get()).data,
-    }, status=status.HTTP_201_CREATED)
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def solicitud_pago_actual(request, tienda_id):
+    """Recupera la solicitud vigente de una ruta para no perderla al recargar."""
+    if not usuario_puede_acceder_tienda(request.user, tienda_id):
+        return respuesta_sin_permiso()
+
+    solicitud = (
+        SolicitudPago.objects
+        .filter(tienda_id=tienda_id, estado__in=('pendiente', 'pendiente_confirmacion'))
+        .select_related('tienda', 'membresia')
+        .order_by('-creada')
+        .first()
+    )
+    if not solicitud:
+        return Response({'solicitud': None}, status=status.HTTP_200_OK)
+
+    _normalizar_solicitud_pago(solicitud)
+    if solicitud.estado not in ('pendiente', 'pendiente_confirmacion'):
+        return Response({'solicitud': None}, status=status.HTTP_200_OK)
+    return Response({'solicitud': _datos_solicitud_pago(solicitud)}, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def cancelar_solicitud_pago(request, codigo):
+    """Cancela una solicitud pendiente para permitir elegir otro plan."""
+    solicitud = SolicitudPago.objects.filter(codigo=codigo).first()
+    if not solicitud:
+        return Response({'error': 'Solicitud no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+    if not usuario_puede_acceder_tienda(request.user, solicitud.tienda_id):
+        return respuesta_sin_permiso()
+
+    _normalizar_solicitud_pago(solicitud)
+    if solicitud.estado != 'pendiente':
+        return Response({'error': 'Solo se puede cancelar una solicitud pendiente de comprobante.'}, status=status.HTTP_409_CONFLICT)
+
+    solicitud.estado = 'cancelada'
+    solicitud.procesada = timezone.now()
+    solicitud.save(update_fields=['estado', 'procesada'])
+    return Response({'estado': solicitud.estado}, status=status.HTTP_200_OK)
 
 
 @api_view(['GET', 'PUT'])
@@ -1609,9 +1698,10 @@ def cuenta_destino(request):
 @permission_classes([IsAuthenticated])
 def planes(request):
     """Planes de membresía y sus precios. GET lista los planes; PUT actualiza
-    precios. Solo para el superusuario (root). El cambio de precio afecta
+    precios. La lectura está disponible para usuarios autenticados y la
+    actualización queda reservada al superusuario. El cambio de precio afecta
     cobros futuros — el ledger PagoMembresia ya congela los precios históricos."""
-    if not request.user.is_superuser:
+    if request.method == 'PUT' and not request.user.is_superuser:
         return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
 
     if request.method == 'GET':
@@ -1649,32 +1739,50 @@ def adjuntar_comprobante(request, codigo):
     if not solicitud:
         return Response({'error': 'Solicitud no encontrada'}, status=status.HTTP_404_NOT_FOUND)
 
-    if solicitud.estado in ('aprobada', 'confirmada', 'rechazada'):
-        return Response({'error': 'Esta solicitud ya fue procesada'}, status=status.HTTP_409_CONFLICT)
+    if not usuario_puede_acceder_tienda(request.user, solicitud.tienda_id):
+        return respuesta_sin_permiso()
+
+    _normalizar_solicitud_pago(solicitud)
+
+    if solicitud.estado != 'pendiente':
+        mensaje = 'El código de pago ya expiró.' if solicitud.estado == 'expirada' else 'Esta solicitud ya fue enviada o procesada.'
+        return Response({'error': mensaje}, status=status.HTTP_409_CONFLICT)
 
     archivo = request.FILES.get('comprobante')
+    if not archivo:
+        return Response({'error': 'Debes adjuntar una imagen del comprobante.'}, status=status.HTTP_400_BAD_REQUEST)
+    if not getattr(archivo, 'content_type', '').startswith('image/'):
+        return Response({'error': 'El comprobante debe ser una imagen.'}, status=status.HTTP_400_BAD_REQUEST)
+    if archivo.size > 5 * 1024 * 1024:
+        return Response({'error': 'La imagen no debe superar 5 MB.'}, status=status.HTTP_400_BAD_REQUEST)
+
     comprobante_bytes = None
-    if archivo:
+    try:
         comprobante_bytes, nombre = telegram_bot.comprimir_imagen(archivo)
-        if comprobante_bytes:
-            solicitud.comprobante.save(nombre, ContentFile(comprobante_bytes), save=False)
+    except Exception:
+        logger.exception('Error procesando comprobante %s', solicitud.codigo)
+        return Response({'error': 'No se pudo procesar la imagen.'}, status=status.HTTP_400_BAD_REQUEST)
+    if not comprobante_bytes:
+        return Response({'error': 'No se pudo procesar la imagen.'}, status=status.HTTP_400_BAD_REQUEST)
 
     referencia = (request.data.get('referencia') or '').strip()
-    if referencia:
-        solicitud.referencia_bancaria = referencia
 
     # Pre-activación: acceso inmediato por 3 días mientras el admin confirma
     tm = Tienda_Membresia.objects.filter(tienda=solicitud.tienda).first()
-    if tm:
+    if not tm:
+        return Response({'error': 'La ruta no tiene una membresía configurada.'}, status=status.HTTP_409_CONFLICT)
+
+    with transaction.atomic():
+        solicitud.comprobante.save(nombre, ContentFile(comprobante_bytes), save=False)
+        solicitud.referencia_bancaria = referencia
         tm.estado = 'Pre-activada'
-        tm.pre_activada_hasta = datetime.date.today() + datetime.timedelta(days=3)
+        tm.pre_activada_hasta = timezone.localdate() + datetime.timedelta(days=3)
         # Si estaba archivada por inactividad, el pago la reactiva (deja de estar oculta)
         tm.archivada = False
         tm.fecha_archivado = None
         tm.save()
-
-    solicitud.estado = 'pendiente_confirmacion'
-    solicitud.save()
+        solicitud.estado = 'pendiente_confirmacion'
+        solicitud.save()
 
     # Notificar al admin por Telegram (no bloquea la respuesta si falla)
     message_id = telegram_bot.notificar_solicitud(solicitud, comprobante_bytes)
@@ -1754,7 +1862,9 @@ def telegram_webhook(request):
         telegram_bot.responder_callback(callback_id, 'Solicitud no encontrada')
         return Response({'ok': True})
 
-    if solicitud.estado in ('aprobada', 'confirmada', 'rechazada'):
+    _normalizar_solicitud_pago(solicitud)
+
+    if solicitud.estado in ('aprobada', 'confirmada', 'rechazada', 'expirada'):
         telegram_bot.responder_callback(callback_id, 'Esta solicitud ya fue procesada')
         return Response({'ok': True})
 
@@ -1765,11 +1875,17 @@ def telegram_webhook(request):
     )
 
     if accion == 'confirmar':
+        if solicitud.estado != 'pendiente_confirmacion':
+            telegram_bot.responder_callback(callback_id, 'Falta comprobante o la solicitud ya expiró')
+            return Response({'ok': True})
         _confirmar_solicitud(solicitud)
         solicitud.refresh_from_db()
         telegram_bot.marcar_procesada(solicitud, 'confirmar', admin_nombre)
         telegram_bot.responder_callback(callback_id, f'✅ {codigo} confirmado')
     elif accion == 'rechazar':
+        if solicitud.estado != 'pendiente_confirmacion':
+            telegram_bot.responder_callback(callback_id, 'La solicitud no está lista para revisión')
+            return Response({'ok': True})
         _revertir_solicitud(solicitud, 'Rechazado en revisión')
         telegram_bot.marcar_procesada(solicitud, 'rechazar', admin_nombre)
         telegram_bot.responder_callback(callback_id, f'❌ {codigo} rechazado')
@@ -1787,10 +1903,10 @@ def consultar_solicitud(request, codigo):
     if not solicitud:
         return Response({'error': 'Solicitud no encontrada'}, status=status.HTTP_404_NOT_FOUND)
 
-    # Marcar como expirada si ya venció y sigue pendiente
-    if solicitud.estado == 'pendiente' and timezone.now() >= solicitud.expira:
-        solicitud.estado = 'expirada'
-        solicitud.save(update_fields=['estado'])
+    if not usuario_puede_acceder_tienda(request.user, solicitud.tienda_id):
+        return respuesta_sin_permiso()
+
+    _normalizar_solicitud_pago(solicitud)
 
     serializer = SolicitudPagoSerializer(solicitud)
     return Response(serializer.data, status=status.HTTP_200_OK)
@@ -1854,10 +1970,14 @@ def revisar_solicitud_admin(request, codigo):
     if resultado == 'confirmar':
         if solicitud.estado == 'confirmada':
             return Response({'estado': 'confirmada', 'message': 'Ya confirmada'}, status=status.HTTP_409_CONFLICT)
+        if solicitud.estado != 'pendiente_confirmacion':
+            return Response({'error': 'Solo se pueden confirmar solicitudes con comprobante enviado.'}, status=status.HTTP_409_CONFLICT)
         tm = _confirmar_solicitud(solicitud, revisor=request.user)
         solicitud.refresh_from_db()
         telegram_bot.marcar_procesada(solicitud, 'confirmar', admin_nombre)
     else:  # rechazar — sirve también para revertir una confirmada en la conciliación
+        if solicitud.estado not in ('pendiente_confirmacion', 'confirmada'):
+            return Response({'error': 'La solicitud no está disponible para revisión.'}, status=status.HTTP_409_CONFLICT)
         motivo = request.data.get('motivo', 'Rechazado en revisión manual')
         tm = _revertir_solicitud(solicitud, motivo, revisor=request.user)
         telegram_bot.marcar_procesada(solicitud, 'rechazar', admin_nombre)
@@ -1871,7 +1991,7 @@ def revisar_solicitud_admin(request, codigo):
 def comprobar_estado_membresia(tienda_id):
     '''verificamos el estado de la membresia'''
     suscripcion_tienda = Tienda_Membresia.objects.get(tienda=tienda_id)
-    hoy = datetime.date.today()
+    hoy = timezone.localdate()
 
     # Pre-activada: acceso temporal mientras se revisa el comprobante
     if suscripcion_tienda.estado == 'Pre-activada':
@@ -1884,7 +2004,8 @@ def comprobar_estado_membresia(tienda_id):
         return
 
     pendiente_pago = suscripcion_tienda.fecha_vencimiento + datetime.timedelta(days=1)
-    vencida = pendiente_pago + datetime.timedelta(days=2)
+    # El bloqueo es en V+2, igual que el mantenimiento diario y el frontend.
+    vencida = suscripcion_tienda.fecha_vencimiento + datetime.timedelta(days=2)
 
     if suscripcion_tienda.estado == 'Activa' and hoy >= pendiente_pago:
         suscripcion_tienda.estado = 'Pendiente Pago'
@@ -1905,7 +2026,7 @@ def ingresos_membresias(request):
     if not request.user.is_superuser:
         return Response({'error': 'forbidden'}, status=403)
 
-    hoy = datetime.date.today()
+    hoy = timezone.localdate()
     try:
         year = int(request.GET.get('year', hoy.year))
     except (TypeError, ValueError):
@@ -1975,7 +2096,7 @@ def admin_resumen(request):
     # Recalcular estados para que los conteos reflejen la realidad de hoy
     _actualizar_estados_membresias()
 
-    hoy = datetime.date.today()
+    hoy = timezone.localdate()
     inicio_mes = hoy.replace(day=1)
 
     # Rutas por estado (las archivadas no cuentan en las métricas activas)
@@ -2099,7 +2220,7 @@ def archivar_ruta(request, pk):
         return Response({'error': 'Ruta no encontrada'}, status=status.HTTP_404_NOT_FOUND)
     archivar = request.data.get('archivar', True)
     tm.archivada = bool(archivar)
-    tm.fecha_archivado = datetime.date.today() if tm.archivada else None
+    tm.fecha_archivado = timezone.localdate() if tm.archivada else None
     tm.save(update_fields=['archivada', 'fecha_archivado'])
     return Response({'archivada': tm.archivada, 'fecha_archivado': str(tm.fecha_archivado) if tm.fecha_archivado else None}, status=status.HTTP_200_OK)
 
