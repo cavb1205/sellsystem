@@ -46,7 +46,7 @@ def _metricas_dashboard_tienda(tienda_id):
     from Utilidades.models import Utilidad
     from Recaudos.models import Recaudo
 
-    hoy = datetime.date.today()
+    hoy = timezone.localdate()
     ventas = list(Venta.objects.filter(tienda_id=tienda_id).values(
         'fecha_venta', 'valor_venta', 'interes', 'estado_venta', 'saldo_actual',
     ))
@@ -107,6 +107,11 @@ def _metricas_dashboard_tienda(tienda_id):
         for venta in ventas_ano
         if venta['estado_venta'] == 'Perdida'
     )
+    perdidas_mes = _sum_values(
+        venta['saldo_actual']
+        for venta in ventas_mes
+        if venta['estado_venta'] == 'Perdida'
+    )
 
     return {
         'cantidad_clientes': Cliente.objects.filter(tienda_id=tienda_id).count(),
@@ -128,6 +133,7 @@ def _metricas_dashboard_tienda(tienda_id):
         'utilidades_mes': utilidades['mes'],
         'ventas_netas_mes': total_ventas(ventas_mes),
         'utilidad_estimada_mes': utilidad_estimada(ventas_mes),
+        'perdidas_mes': perdidas_mes,
         'aportes_ano': aportes['ano'],
         'gastos_ano': gastos['ano'],
         'utilidades_ano': utilidades['ano'],
@@ -1003,7 +1009,7 @@ def cierre_resumen_movimientos(request, fecha, tienda_id=None):
             status=status.HTTP_404_NOT_FOUND,
         )
 
-    hoy = datetime.date.today()
+    hoy = timezone.localdate()
 
     def agregar(model, valor_field, fecha_field):
         fechas = {

@@ -2,7 +2,7 @@ import secrets
 from django.db import models
 from django.contrib.auth.models import User
 from django.db.models import Sum, Q
-from datetime import date, timedelta
+from datetime import timedelta
 from django.utils import timezone
 
 
@@ -54,32 +54,32 @@ class Tienda(models.Model):
 
     ### Calculamos lo correspondiente al día actual ###
     def aportes_dia(self):
-        hoy = date.today()
+        hoy = timezone.localdate()
         return self.aporte_set.filter(fecha=hoy).aggregate(
             total=Sum('valor'))['total'] or 0
 
     def gastos_dia(self):
-        hoy = date.today()
+        hoy = timezone.localdate()
         return self.gasto_set.filter(fecha=hoy).aggregate(
             total=Sum('valor'))['total'] or 0
 
     def utilidades_dia(self):
-        hoy = date.today()
+        hoy = timezone.localdate()
         return self.utilidad_set.filter(fecha=hoy).aggregate(
             total=Sum('valor'))['total'] or 0
 
     def recaudos_dia(self):
-        hoy = date.today()
+        hoy = timezone.localdate()
         return self.recaudo_set.filter(fecha_recaudo=hoy).aggregate(
             total=Sum('valor_recaudo'))['total'] or 0
 
     def ventas_netas_dia(self):
-        hoy = date.today()
+        hoy = timezone.localdate()
         return self.venta_set.filter(fecha_venta=hoy).aggregate(
             total=Sum('valor_venta'))['total'] or 0
 
     def utilidad_estimada_dia(self):
-        hoy = date.today()
+        hoy = timezone.localdate()
         ventas = self.venta_set.filter(fecha_venta=hoy)
         total_utilidad = 0
         
@@ -92,35 +92,35 @@ class Tienda(models.Model):
 
     ### Calculamos lo correspondiente al mes actual  ####
     def aportes_mes(self):
-        hoy = date.today()
+        hoy = timezone.localdate()
         return self.aporte_set.filter(
             fecha__year=hoy.year,
             fecha__month=hoy.month
         ).aggregate(total=Sum('valor'))['total'] or 0
 
     def gastos_mes(self):
-        hoy = date.today()
+        hoy = timezone.localdate()
         return self.gasto_set.filter(
             fecha__year=hoy.year,
             fecha__month=hoy.month
         ).aggregate(total=Sum('valor'))['total'] or 0
 
     def utilidades_mes(self):
-        hoy = date.today()
+        hoy = timezone.localdate()
         return self.utilidad_set.filter(
             fecha__year=hoy.year,
             fecha__month=hoy.month
         ).aggregate(total=Sum('valor'))['total'] or 0
 
     def ventas_netas_mes(self):
-        hoy = date.today()
+        hoy = timezone.localdate()
         return self.venta_set.filter(
             fecha_venta__year=hoy.year,
             fecha_venta__month=hoy.month
         ).aggregate(total=Sum('valor_venta'))['total'] or 0
 
     def utilidad_estimada_mes(self):
-        hoy = date.today()
+        hoy = timezone.localdate()
         ventas = self.venta_set.filter(
             fecha_venta__year=hoy.year,
             fecha_venta__month=hoy.month
@@ -135,40 +135,48 @@ class Tienda(models.Model):
             
         return total_utilidad
 
+    def perdidas_mes(self):
+        hoy = timezone.localdate()
+        return self.venta_set.filter(
+            estado_venta='Perdida',
+            fecha_venta__year=hoy.year,
+            fecha_venta__month=hoy.month
+        ).aggregate(total=Sum('saldo_actual'))['total'] or 0
+
     ### Calculamos lo correspondiente al año actual ###
     def aportes_ano(self):
-        hoy = date.today()
+        hoy = timezone.localdate()
         return self.aporte_set.filter(
             fecha__year=hoy.year
         ).aggregate(total=Sum('valor'))['total'] or 0
 
     def gastos_ano(self):
-        hoy = date.today()
+        hoy = timezone.localdate()
         return self.gasto_set.filter(
             fecha__year=hoy.year
         ).aggregate(total=Sum('valor'))['total'] or 0
 
     def utilidades_ano(self):
-        hoy = date.today()
+        hoy = timezone.localdate()
         return self.utilidad_set.filter(
             fecha__year=hoy.year
         ).aggregate(total=Sum('valor'))['total'] or 0
 
     def ventas_netas_ano(self):
-        hoy = date.today()
+        hoy = timezone.localdate()
         return self.venta_set.filter(
             fecha_venta__year=hoy.year
         ).aggregate(total=Sum('valor_venta'))['total'] or 0
 
     def perdidas_ano(self):
-        hoy = date.today()
+        hoy = timezone.localdate()
         return self.venta_set.filter(
             estado_venta='Perdida',
             fecha_venta__year=hoy.year
         ).aggregate(total=Sum('saldo_actual'))['total'] or 0
 
     def utilidad_estimada_ano(self):
-            hoy = date.today()
+            hoy = timezone.localdate()
             ventas = self.venta_set.filter(
                 fecha_venta__year=hoy.year
             )

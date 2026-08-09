@@ -75,6 +75,7 @@ class TiendaSerializer(serializers.ModelSerializer):
             'utilidades_mes': instance.utilidades_mes(),
             'ventas_netas_mes': instance.ventas_netas_mes(),
             'utilidad_estimada_mes': instance.utilidad_estimada_mes(),
+            'perdidas_mes': instance.perdidas_mes(),
             'aportes_ano': instance.aportes_ano(),
             'gastos_ano': instance.gastos_ano(),
             'utilidades_ano': instance.utilidades_ano(),
