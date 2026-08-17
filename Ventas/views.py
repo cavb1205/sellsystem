@@ -201,11 +201,6 @@ def get_venta(request, pk):
 @api_view(['PUT'])
 @permission_classes([IsAuthenticated])
 def put_venta(request, pk, tienda_id=None):
-    if tienda_id:
-        tienda = Tienda.objects.filter(id=tienda_id).first()
-    else:
-        tienda = Tienda.objects.filter(
-            id=request.user.perfil.tienda.id).first()
     venta = Venta.objects.filter(id=pk).first()
     if venta and not usuario_puede_acceder_tienda(request.user, venta.tienda_id):
         return respuesta_sin_permiso()
@@ -242,19 +237,32 @@ def put_venta(request, pk, tienda_id=None):
         venta_serializer = VentaUpdateSerializer(venta, data=new_data)
 
         if venta_serializer.is_valid():
-
-            vv = venta_serializer.validated_data['valor_venta']
-            interes = venta_serializer.validated_data['interes']
-            venta_serializer.validated_data['saldo_actual'] = vv + (Decimal(interes) / Decimal(100)) * vv
-            if venta_serializer.validated_data['valor_venta'] != venta.valor_venta:
-                with transaction.atomic():
-                    tienda.caja_inicial = tienda.caja_inicial + venta.valor_venta
-                    tienda.caja_inicial = tienda.caja_inicial - \
-                        venta_serializer.validated_data['valor_venta']
-                    venta_serializer.save()
-                    tienda.save()
-            else:
+            with transaction.atomic():
+                # La venta y la caja se leen dentro del mismo bloqueo para que
+                # una corrección no sobrescriba otro movimiento concurrente.
+                tienda = Tienda.objects.select_for_update().get(pk=venta.tienda_id)
+                venta = Venta.objects.select_for_update().get(pk=pk)
+                if Recaudo.objects.filter(venta=venta).exists():
+                    return Response(
+                        {
+                            'error': (
+                                'Esta venta tiene recaudos. Use la corrección administrativa '
+                                'para ajustar únicamente fecha, cuotas y motivo.'
+                            ),
+                        },
+                        status=status.HTTP_409_CONFLICT,
+                    )
+                venta_serializer = VentaUpdateSerializer(venta, data=new_data)
+                if not venta_serializer.is_valid():
+                    return Response(venta_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                vv = venta_serializer.validated_data['valor_venta']
+                interes = venta_serializer.validated_data['interes']
+                venta_serializer.validated_data['saldo_actual'] = vv + (Decimal(interes) / Decimal(100)) * vv
+                diferencia = vv - venta.valor_venta
                 venta_serializer.save()
+                if diferencia:
+                    tienda.caja_inicial -= diferencia
+                    tienda.save(update_fields=['caja_inicial'])
             return Response(venta_serializer.data, status=status.HTTP_200_OK)
         return Response(venta_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     return Response({'message': 'No se encontró la venta'}, status=status.HTTP_400_BAD_REQUEST)
@@ -418,6 +426,8 @@ def post_venta(request, tienda_id=None):
         else:
             tienda = Tienda.objects.filter(
                 id=request.user.perfil.tienda.id).first()
+        if not tienda:
+            return Response({'error': 'Ruta no encontrada'}, status=status.HTTP_404_NOT_FOUND)
         new_data = request.data.copy()
         new_data['tienda'] = tienda.id
         new_data['creado_por'] = request.user.id
@@ -451,10 +461,11 @@ def post_venta(request, tienda_id=None):
         venta_serializer = VentaSerializer(data=new_data)
         if venta_serializer.is_valid():
             with transaction.atomic():
+                tienda = Tienda.objects.select_for_update().get(pk=tienda.pk)
                 venta_nueva = venta_serializer.save(creado_por=request.user)
                 tienda.caja_inicial = tienda.caja_inicial - \
                     venta_serializer.validated_data['valor_venta']
-                tienda.save()
+                tienda.save(update_fields=['caja_inicial'])
                 # La alerta se programa después del commit. Si Telegram está
                 # caído, la venta igualmente se completa sin error.
                 registrar_alerta_venta(
@@ -468,23 +479,20 @@ def post_venta(request, tienda_id=None):
 
 @api_view(['DELETE'])
 def delete_venta(request, pk, tienda_id=None):
-    if tienda_id:
-        tienda = Tienda.objects.filter(id=tienda_id).first()
-    else:
-        tienda = Tienda.objects.filter(
-            id=request.user.perfil.tienda.id).first()
     venta = Venta.objects.filter(id=pk).first()
     if not venta:
         return Response({'message': 'No se encontró la venta'}, status=status.HTTP_400_BAD_REQUEST)
     if not usuario_puede_acceder_tienda(request.user, venta.tienda_id):
         return respuesta_sin_permiso()
-    recaudos = Recaudo.objects.filter(venta=venta.id)
-    if recaudos:
-        return Response({'message': 'No se puede eliminar la venta por que ya se realizaron pagos a la misma.'}, status=status.HTTP_406_NOT_ACCEPTABLE)
     with transaction.atomic():
+        tienda = Tienda.objects.select_for_update().get(pk=venta.tienda_id)
+        venta = Venta.objects.select_for_update().get(pk=pk)
+        if Recaudo.objects.filter(venta=venta.id).exists():
+            return Response({'message': 'No se puede eliminar la venta por que ya se realizaron pagos a la misma.'}, status=status.HTTP_406_NOT_ACCEPTABLE)
+        valor_venta = venta.valor_venta
         venta.delete()
-        tienda.caja_inicial = tienda.caja_inicial + venta.valor_venta
-        tienda.save()
+        tienda.caja_inicial = tienda.caja_inicial + valor_venta
+        tienda.save(update_fields=['caja_inicial'])
     return Response({'message': 'Venta eliminada correctamente'}, status=status.HTTP_200_OK)
 
 

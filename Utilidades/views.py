@@ -56,10 +56,6 @@ def get_utilidad(request, pk):
 
 @api_view(['PUT'])
 def put_utilidad(request, pk, tienda_id=None):
-    if tienda_id:
-        tienda = Tienda.objects.filter(id=tienda_id).first()
-    else:
-        tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
     utilidad = Utilidad.objects.filter(id=pk).first()
     if not utilidad:
         return Response({'message': 'No se encontró la utilidad'}, status=status.HTTP_400_BAD_REQUEST)
@@ -70,17 +66,20 @@ def put_utilidad(request, pk, tienda_id=None):
         utilidad_serializer = UtilidadUpdateSerializer(
             utilidad, data=request.data)
         if utilidad_serializer.is_valid():
-            if utilidad_valor < utilidad_serializer.validated_data['valor']:
-                tienda.caja_inicial = tienda.caja_inicial - \
-                    (utilidad_serializer.validated_data['valor']-utilidad_valor)
-
-            elif utilidad_valor > utilidad_serializer.validated_data['valor']:
-                tienda.caja_inicial = tienda.caja_inicial + \
-                    (utilidad_valor -
-                     utilidad_serializer.validated_data['valor'])
             with transaction.atomic():
+                tienda = Tienda.objects.select_for_update().get(pk=utilidad.tienda_id)
+                utilidad = Utilidad.objects.select_for_update().get(pk=pk)
+                utilidad_serializer = UtilidadUpdateSerializer(
+                    utilidad, data=request.data)
+                utilidad_serializer.is_valid(raise_exception=True)
+                nuevo_valor = utilidad_serializer.validated_data['valor']
+                diferencia = nuevo_valor - utilidad.valor
                 utilidad_serializer.save()
-                tienda.save()
+                if diferencia:
+                    # Una utilidad retirada reduce caja; una corrección hacia
+                    # abajo devuelve la diferencia a la caja.
+                    tienda.caja_inicial -= diferencia
+                    tienda.save(update_fields=['caja_inicial'])
             return Response(utilidad_serializer.data, status=status.HTTP_200_OK)
         return Response(utilidad_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     return Response({'message': 'No se encontró la utilidad'}, status=status.HTTP_400_BAD_REQUEST)
@@ -103,10 +102,11 @@ def post_utilidad(request, tienda_id=None):
         utilidad_serializer = UtilidadSerializer(data=new_data)
         if utilidad_serializer.is_valid():
             with transaction.atomic():
+                tienda = Tienda.objects.select_for_update().get(pk=tienda.pk)
                 utilidad_serializer.save()
                 tienda.caja_inicial = tienda.caja_inicial - \
                     utilidad_serializer.validated_data['valor']
-                tienda.save()
+                tienda.save(update_fields=['caja_inicial'])
             return Response(utilidad_serializer.data, status=status.HTTP_200_OK)
         return Response(utilidad_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -122,8 +122,10 @@ def delete_utilidad(request, pk, tienda_id=None):
         return respuesta_sin_permiso()
     if utilidad:
         with transaction.atomic():
+            tienda = Tienda.objects.select_for_update().get(pk=utilidad.tienda_id)
+            utilidad = Utilidad.objects.select_for_update().get(pk=pk)
             tienda.caja_inicial = tienda.caja_inicial + utilidad.valor
             utilidad.delete()
-            tienda.save()
+            tienda.save(update_fields=['caja_inicial'])
         return Response({'message': 'Utilidad eliminada correctamente'}, status=status.HTTP_200_OK)
     return Response({'message': 'No se encontró la utilidad'}, status=status.HTTP_400_BAD_REQUEST)

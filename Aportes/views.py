@@ -82,24 +82,22 @@ def put_aporte(request, pk, tienda_id=None):
     aporte_inicial = Aporte.objects.filter(id=pk).first()
     if aporte_inicial and not usuario_puede_acceder_tienda(request.user, aporte_inicial.tienda_id):
         return respuesta_sin_permiso()
-    if tienda_id:
-        tienda = Tienda.objects.filter(id=tienda_id).first()
-    else:
-        tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
     if aporte_inicial:
         aporte_serializer = AporteUpdateSerializer(
             aporte_inicial, data=request.data)
         if aporte_serializer.is_valid():
-            new_aporte = aporte_serializer.validated_data['valor']
-            if (aporte_inicial.valor <= new_aporte):
-                tienda.caja_inicial = tienda.caja_inicial + \
-                    (new_aporte - aporte_inicial.valor)
-            elif (aporte_inicial.valor >= new_aporte):
-                tienda.caja_inicial = tienda.caja_inicial - \
-                    (aporte_inicial.valor-new_aporte)
             with transaction.atomic():
+                tienda = Tienda.objects.select_for_update().get(pk=aporte_inicial.tienda_id)
+                aporte_inicial = Aporte.objects.select_for_update().get(pk=pk)
+                aporte_serializer = AporteUpdateSerializer(
+                    aporte_inicial, data=request.data)
+                aporte_serializer.is_valid(raise_exception=True)
+                new_aporte = aporte_serializer.validated_data['valor']
+                diferencia = new_aporte - aporte_inicial.valor
                 aporte_serializer.save()
-                tienda.save()
+                if diferencia:
+                    tienda.caja_inicial += diferencia
+                    tienda.save(update_fields=['caja_inicial'])
             return Response(aporte_serializer.data, status=status.HTTP_200_OK)
         return Response(aporte_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     return Response({'message': 'No se encontró el aporte'}, status=status.HTTP_400_BAD_REQUEST)
@@ -121,10 +119,11 @@ def post_aporte(request, tienda_id=None):
         aporte_serializer = AporteSerializer(data=new_data)
         if aporte_serializer.is_valid():
             with transaction.atomic():
+                tienda = Tienda.objects.select_for_update().get(pk=tienda.pk)
                 aporte_serializer.save()
                 tienda.caja_inicial = tienda.caja_inicial + \
                     aporte_serializer.validated_data['valor']
-                tienda.save()
+                tienda.save(update_fields=['caja_inicial'])
             return Response(aporte_serializer.data, status=status.HTTP_200_OK)
         return Response({'message': 'Por favor completar los campos del formulario.'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -134,14 +133,13 @@ def delete_aporte(request, pk, tienda_id=None):
     aporte = Aporte.objects.filter(id=pk).first()
     if aporte and not usuario_puede_acceder_tienda(request.user, aporte.tienda_id):
         return respuesta_sin_permiso()
-    if tienda_id:
-        tienda = Tienda.objects.filter(id=tienda_id).first()
-    else:
-        tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
     if aporte:
         with transaction.atomic():
+            tienda = Tienda.objects.select_for_update().get(pk=aporte.tienda_id)
+            aporte = Aporte.objects.select_for_update().get(pk=pk)
+            valor = aporte.valor
             aporte.delete()
-            tienda.caja_inicial = tienda.caja_inicial - aporte.valor
-            tienda.save()
+            tienda.caja_inicial -= valor
+            tienda.save(update_fields=['caja_inicial'])
         return Response({'message': 'Aporte eliminado correctamente'}, status=status.HTTP_200_OK)
     return Response({'message': 'No se encontró el aporte'}, status=status.HTTP_400_BAD_REQUEST)

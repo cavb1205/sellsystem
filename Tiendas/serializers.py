@@ -25,6 +25,10 @@ class TiendaSerializer(serializers.ModelSerializer):
     class Meta:
         model = Tienda
         fields = '__all__'
+        # La caja solo puede cambiar mediante operaciones financieras
+        # transaccionales (gasto, recaudo, venta, aporte o utilidad).
+        # Evita que un PUT administrativo sobrescriba el saldo.
+        read_only_fields = ['caja_inicial', 'fecha_registro', 'administrador']
 
     def to_representation(self, instance):
         # Los endpoints del dashboard pueden adjuntar estos valores ya

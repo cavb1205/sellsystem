@@ -125,30 +125,33 @@ def get_gasto(request, pk):
 
 @api_view(['PUT'])
 def put_gasto(request, pk, tienda_id=None):
-    
-    if tienda_id:
-        tienda = Tienda.objects.filter(id=tienda_id).first()
-    else:
-        tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
     gasto = Gasto.objects.filter(id=pk).first()
     if not gasto:
         return Response({'message':'No se encontró el gasto'}, status=status.HTTP_400_BAD_REQUEST)
     if not usuario_puede_acceder_tienda(request.user, gasto.tienda_id):
         return respuesta_sin_permiso()
-    gasto_valor = gasto.valor
-    if gasto:
-        gasto_serializer = GastoUpdateSerializer(gasto, data=request.data)
-        if gasto_serializer.is_valid():
-            if gasto_valor < gasto_serializer.validated_data['valor']:
-                tienda.caja_inicial = tienda.caja_inicial - (gasto_serializer.validated_data['valor']-gasto_valor)
-            elif gasto_valor > gasto_serializer.validated_data['valor']:
-                tienda.caja_inicial = tienda.caja_inicial + (gasto_valor - gasto_serializer.validated_data['valor'])
-            with transaction.atomic():
-                gasto_serializer.save()
-                tienda.save()
-            return Response(gasto_serializer.data,status=status.HTTP_200_OK)
+
+    gasto_serializer = GastoUpdateSerializer(gasto, data=request.data)
+    if not gasto_serializer.is_valid():
         return Response(gasto_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    return Response({'message':'No se encontró el gasto'}, status=status.HTTP_400_BAD_REQUEST)
+
+    with transaction.atomic():
+        # La ruta del gasto es la única fuente válida. La ruta recibida en la
+        # URL no debe poder desviar el ajuste de caja a otra tienda.
+        tienda = Tienda.objects.select_for_update().get(pk=gasto.tienda_id)
+        gasto = Gasto.objects.select_for_update().get(pk=pk)
+        gasto_valor = gasto.valor
+        nuevo_valor = gasto_serializer.validated_data['valor']
+        diferencia = nuevo_valor - gasto_valor
+
+        gasto_serializer = GastoUpdateSerializer(gasto, data=request.data)
+        gasto_serializer.is_valid(raise_exception=True)
+        gasto_serializer.save()
+        if diferencia:
+            tienda.caja_inicial -= diferencia
+            tienda.save(update_fields=['caja_inicial'])
+
+    return Response(gasto_serializer.data, status=status.HTTP_200_OK)
         
 
 @api_view(['POST'])
@@ -161,32 +164,38 @@ def post_gasto(request, tienda_id=None):
             tienda = Tienda.objects.filter(id=tienda_id).first()
         else:
             tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
-        new_data = request.data
+        if not tienda:
+            return Response({'error': 'Ruta no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+
+        new_data = request.data.copy()
         new_data['tienda']=tienda.id
         new_data['trabajador']=request.user.perfil.id
         gasto_serializer = GastoSerializer(data = new_data)
         if gasto_serializer.is_valid():
             with transaction.atomic():
+                # Bloquear la fila evita que dos movimientos concurrentes
+                # lean la misma caja y uno sobrescriba el descuento del otro.
+                tienda = Tienda.objects.select_for_update().get(pk=tienda.pk)
                 gasto_serializer.save()
                 tienda.caja_inicial = tienda.caja_inicial - gasto_serializer.validated_data['valor']
-                tienda.save()
+                tienda.save(update_fields=['caja_inicial'])
             return Response(gasto_serializer.data, status=status.HTTP_200_OK)
         return Response(gasto_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
 
 @api_view(['DELETE'])
 def delete_gasto(request, pk, tienda_id=None):
-    if tienda_id:
-        tienda = Tienda.objects.filter(id=tienda_id).first()
-    else:
-        tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
     gasto = Gasto.objects.filter(id=pk).first()
-    if gasto and not usuario_puede_acceder_tienda(request.user, gasto.tienda_id):
+    if not gasto:
+        return Response({'message':'No se encontró el gasto'}, status=status.HTTP_400_BAD_REQUEST)
+    if not usuario_puede_acceder_tienda(request.user, gasto.tienda_id):
         return respuesta_sin_permiso()
-    if gasto:
-        with transaction.atomic():
-            gasto.delete()
-            tienda.caja_inicial = tienda.caja_inicial + gasto.valor
-            tienda.save()
-        return Response({'message':'gasto eliminado correctamente'},status=status.HTTP_200_OK)
-    return Response({'message':'No se encontró el gasto'}, status=status.HTTP_400_BAD_REQUEST)
+
+    with transaction.atomic():
+        tienda = Tienda.objects.select_for_update().get(pk=gasto.tienda_id)
+        gasto = Gasto.objects.select_for_update().get(pk=pk)
+        valor = gasto.valor
+        gasto.delete()
+        tienda.caja_inicial += valor
+        tienda.save(update_fields=['caja_inicial'])
+    return Response({'message':'gasto eliminado correctamente'},status=status.HTTP_200_OK)

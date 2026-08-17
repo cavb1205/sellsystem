@@ -520,8 +520,22 @@ def delete_recaudo(request, pk):
         )
     if recaudo:
         with transaction.atomic():
-            tienda.caja_inicial = tienda.caja_inicial - recaudo.valor_recaudo
-            venta.saldo_actual = venta.saldo_actual + recaudo.valor_recaudo
+            recaudo = Recaudo.objects.select_for_update().get(pk=pk)
+            tienda = Tienda.objects.select_for_update().get(pk=recaudo.tienda_id)
+            venta = Venta.objects.select_for_update().get(pk=recaudo.venta_id)
+            if venta.tienda_id != recaudo.tienda_id:
+                return Response(
+                    {
+                        'error': (
+                            'Este recaudo está asociado a una ruta distinta de la venta. '
+                            'Corrige primero la asignación administrativa.'
+                        ),
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+            valor_recaudo = recaudo.valor_recaudo
+            tienda.caja_inicial -= valor_recaudo
+            venta.saldo_actual = venta.saldo_actual + valor_recaudo
             recaudos = Recaudo.objects.filter(
                 venta=venta.id,
                 es_renovacion=False,
