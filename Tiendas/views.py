@@ -18,8 +18,8 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from Clientes.models import Cliente
 from Ventas.models import Venta
-from Tiendas.models import AlertaOperativa, Tienda, Cierre_Caja, Tienda_Membresia, Membresia, Tienda_Administrador, SolicitudPago, CuentaDestino, PagoMembresia, _generar_codigo_solicitud
-from Tiendas.serializers import TiendaSerializer, CajaSerializer, TiendaMembresiaSerializer, TiendaMembresiaListaSerializer, TiendaCreateSerializer, TiendaAdminSerializer, SolicitudPagoSerializer, CuentaDestinoSerializer, MembresiaSerializer
+from Tiendas.models import AlertaOperativa, Tienda, Cierre_Caja, MovimientoCaja, Tienda_Membresia, Membresia, Tienda_Administrador, SolicitudPago, CuentaDestino, PagoMembresia, _generar_codigo_solicitud
+from Tiendas.serializers import TiendaSerializer, CajaSerializer, MovimientoCajaSerializer, TiendaMembresiaSerializer, TiendaMembresiaListaSerializer, TiendaCreateSerializer, TiendaAdminSerializer, SolicitudPagoSerializer, CuentaDestinoSerializer, MembresiaSerializer
 from Tiendas.alertas_operativas import rutas_del_usuario, usuario_alertas_configurado
 from Tiendas import telegram_bot
 from Tiendas import telegram_assistant
@@ -793,6 +793,49 @@ def get_cierres_caja(request, tienda_id=None):
         return Response(serializer.data, status=status.HTTP_200_OK)
     else:
         return Response({'message': 'No se encontraron registros'}, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@requiere_acceso_tienda
+def list_movimientos_caja(request, tienda_id=None):
+    """Lista el historial auditable de cambios de caja de una ruta."""
+    if tienda_id:
+        tienda = Tienda.objects.filter(id=tienda_id).first()
+    else:
+        tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
+    if not tienda:
+        return Response({'message': 'No se encontró la tienda'}, status=status.HTTP_404_NOT_FOUND)
+
+    movimientos = MovimientoCaja.objects.filter(tienda_id=tienda.id).select_related('usuario')
+    tipo = request.query_params.get('tipo')
+    if tipo:
+        movimientos = movimientos.filter(tipo=tipo)
+    accion = request.query_params.get('accion')
+    if accion:
+        movimientos = movimientos.filter(accion=accion)
+    desde = request.query_params.get('desde')
+    if desde:
+        movimientos = movimientos.filter(creado_en__date__gte=desde)
+    hasta = request.query_params.get('hasta')
+    if hasta:
+        movimientos = movimientos.filter(creado_en__date__lte=hasta)
+
+    try:
+        limite = min(max(int(request.query_params.get('limit', 100)), 1), 200)
+    except (TypeError, ValueError):
+        limite = 100
+
+    total = movimientos.count()
+    movimientos = movimientos.order_by('-creado_en', '-id')[:limite]
+    return Response({
+        'results': MovimientoCajaSerializer(movimientos, many=True).data,
+        'count': total,
+        'limit': limite,
+        'saldo_actual': tienda.caja_inicial,
+        'historial_desde': MovimientoCaja.objects.filter(
+            tienda_id=tienda.id,
+        ).order_by('creado_en', 'id').values_list('creado_en', flat=True).first(),
+    }, status=status.HTTP_200_OK)
 
 
 @api_view(['GET'])

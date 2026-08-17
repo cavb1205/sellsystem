@@ -28,6 +28,8 @@ urlpatterns = [
 
     path('cierres/', views.get_cierres_caja, name='get_cierres_caja'),
     path('cierres/t/<str:tienda_id>/', views.get_cierres_caja, name='get_cierres_caja_admin'),
+    path('caja/movimientos/', views.list_movimientos_caja, name='list_movimientos_caja'),
+    path('caja/movimientos/t/<str:tienda_id>/', views.list_movimientos_caja, name='list_movimientos_caja_admin'),
     path('cierre/<str:fecha>/', views.get_caja_anterior , name='get_caja_anterior'),
     path('cierre/<str:fecha>/t/<str:tienda_id>/', views.get_caja_anterior , name='get_caja_anterior_admin'),
     path('cierre/post/<str:fecha>/', views.post_cierre_caja, name='post_cierre_caja'),

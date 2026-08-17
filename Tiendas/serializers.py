@@ -1,6 +1,6 @@
 
 from rest_framework import serializers
-from .models import Tienda, Cierre_Caja, Tienda_Membresia, Membresia, Tienda_Administrador, SolicitudPago, CuentaDestino
+from .models import Tienda, Cierre_Caja, MovimientoCaja, Tienda_Membresia, Membresia, Tienda_Administrador, SolicitudPago, CuentaDestino
 from Trabajadores.serializers import UserSerializer, PerfilSerializer
 
 
@@ -211,3 +211,23 @@ class CajaSerializer(serializers.ModelSerializer):
     class Meta:
         model = Cierre_Caja
         fields = '__all__'
+
+
+class MovimientoCajaSerializer(serializers.ModelSerializer):
+    tipo_label = serializers.CharField(source='get_tipo_display', read_only=True)
+    accion_label = serializers.CharField(source='get_accion_display', read_only=True)
+    usuario_nombre = serializers.SerializerMethodField()
+
+    class Meta:
+        model = MovimientoCaja
+        fields = [
+            'id', 'tienda', 'tienda_nombre', 'tipo', 'tipo_label',
+            'accion', 'accion_label', 'delta', 'saldo_anterior',
+            'saldo_posterior', 'creado_en', 'usuario_nombre',
+            'origen_tipo', 'origen_id', 'detalle',
+        ]
+
+    def get_usuario_nombre(self, obj):
+        if not obj.usuario:
+            return 'Sistema'
+        return obj.usuario.get_full_name() or obj.usuario.username

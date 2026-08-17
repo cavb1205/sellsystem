@@ -199,6 +199,67 @@ class Cierre_Caja(models.Model):
     def __str__(self):
         return str(self.fecha_cierre)
 
+
+class MovimientoCaja(models.Model):
+    """Bitácora inmutable de cada cambio real en la caja de una ruta.
+
+    ``delta`` siempre representa el cambio aplicado a la caja: positivo es
+    dinero que entra y negativo es dinero que sale. Los saldos se guardan en
+    cada fila para que una revisión no dependa de reconstruir la caja desde
+    modelos históricos que pueden haber sido corregidos o eliminados.
+    """
+
+    TIPOS = [
+        ('VENTA', 'Crédito nuevo'),
+        ('RECAUDO', 'Abono recibido'),
+        ('GASTO', 'Gasto'),
+        ('UTILIDAD', 'Utilidad retirada'),
+        ('APORTE', 'Aporte de capital'),
+        ('AJUSTE', 'Ajuste de caja'),
+    ]
+    ACCIONES = [
+        ('CREACION', 'Creación'),
+        ('CORRECCION', 'Corrección'),
+        ('REVERSA', 'Reversa'),
+        ('AJUSTE', 'Ajuste'),
+    ]
+
+    tienda = models.ForeignKey(
+        Tienda,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='movimientos_caja',
+    )
+    # Conserva el nombre aunque una ruta se elimine posteriormente.
+    tienda_nombre = models.CharField(max_length=200, blank=True)
+    tipo = models.CharField(max_length=20, choices=TIPOS, db_index=True)
+    accion = models.CharField(max_length=20, choices=ACCIONES, default='CREACION')
+    delta = models.DecimalField(max_digits=12, decimal_places=2)
+    saldo_anterior = models.DecimalField(max_digits=12, decimal_places=2)
+    saldo_posterior = models.DecimalField(max_digits=12, decimal_places=2)
+    usuario = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='movimientos_caja',
+    )
+    creado_en = models.DateTimeField(auto_now_add=True, db_index=True)
+    origen_tipo = models.CharField(max_length=60, blank=True)
+    origen_id = models.PositiveBigIntegerField(null=True, blank=True)
+    detalle = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ['-creado_en', '-id']
+        indexes = [
+            models.Index(fields=['tienda', '-creado_en']),
+            models.Index(fields=['tipo', '-creado_en']),
+        ]
+
+    def __str__(self):
+        return f'{self.tienda_nombre or "Ruta eliminada"} · {self.tipo} · {self.delta}'
+
 class Tienda_Administrador(models.Model):
     tienda = models.ForeignKey(Tienda, on_delete=models.CASCADE)
     administrador = models.ForeignKey(User, on_delete=models.CASCADE)

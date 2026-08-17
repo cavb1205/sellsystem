@@ -22,6 +22,7 @@ from Tiendas.models import Tienda
 from Tiendas.alertas_operativas import revisar_riesgo_venta
 from Tiendas.views import comprobar_estado_membresia
 from Tiendas.permissions import requiere_acceso_tienda, usuario_puede_acceder_tienda, respuesta_sin_permiso
+from Tiendas.caja import registrar_movimiento_caja
 from Ventas.models import Venta
 
 from datetime import datetime
@@ -308,9 +309,9 @@ def put_recaudo(request, pk, tienda_id=None):
             )
 
         with transaction.atomic():
+            tienda = Tienda.objects.select_for_update().get(pk=recaudo.tienda_id)
             recaudo = Recaudo.objects.select_for_update().get(pk=pk)
             venta = Venta.objects.select_for_update().get(pk=recaudo.venta_id)
-            tienda = Tienda.objects.select_for_update().get(pk=recaudo.tienda_id)
             saldo_disponible = (venta.saldo_actual or Decimal('0')) + recaudo.valor_recaudo
             if nuevo_valor > saldo_disponible:
                 return Response(
@@ -339,8 +340,16 @@ def put_recaudo(request, pk, tienda_id=None):
                 venta.estado_venta = 'Vencido'
             if venta.saldo_actual <= 0:
                 venta.estado_venta = 'Pagado'
-            tienda.caja_inicial = tienda.caja_inicial - diferencia
-            tienda.save(update_fields=['caja_inicial'])
+            if diferencia:
+                registrar_movimiento_caja(
+                    tienda,
+                    -diferencia,
+                    tipo='RECAUDO',
+                    accion='CORRECCION',
+                    usuario=request.user,
+                    origen=recaudo,
+                    detalle='Corrección del valor del abono',
+                )
             venta.save(update_fields=['saldo_actual', 'estado_venta'])
 
         # El panel se mantiene actualizado, pero una falla o corrección de
@@ -386,8 +395,8 @@ def post_recaudo(request, tienda_id=None):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             with transaction.atomic():
-                venta = Venta.objects.select_for_update().get(pk=venta.pk)
                 tienda = Tienda.objects.select_for_update().get(pk=tienda.pk)
+                venta = Venta.objects.select_for_update().get(pk=venta.pk)
                 if venta.tienda_id != tienda.id:
                     return Response(
                         {'error': 'La venta pertenece a otra ruta.'},
@@ -409,12 +418,19 @@ def post_recaudo(request, tienda_id=None):
                         },
                         status=status.HTTP_409_CONFLICT,
                     )
-                recaudo_serializer.save(
+                recaudo = recaudo_serializer.save(
                     venta=venta,
                     tienda=tienda,
                     es_renovacion=False,
                 )
-                tienda.caja_inicial = tienda.caja_inicial + valor_recaudo
+                registrar_movimiento_caja(
+                    tienda,
+                    valor_recaudo,
+                    tipo='RECAUDO',
+                    usuario=request.user,
+                    origen=recaudo,
+                    detalle='Abono recibido',
+                )
                 venta.saldo_actual = saldo_actual - valor_recaudo
                 recaudos = Recaudo.objects.filter(
                     venta=venta.id,
@@ -466,8 +482,8 @@ def post_recaudo_no_pay(request, tienda_id=None):
             return Response(visita_blanco_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         with transaction.atomic():
-            venta = Venta.objects.select_for_update().get(pk=venta.pk)
             tienda = Tienda.objects.select_for_update().get(pk=tienda.pk)
+            venta = Venta.objects.select_for_update().get(pk=venta.pk)
             visita_blanco = visita_blanco_serializer.save()
             new_data['visita_blanco'] = visita_blanco.id
             recaudo_serializer = RecaudoSerializer(data=new_data)
@@ -475,12 +491,13 @@ def post_recaudo_no_pay(request, tienda_id=None):
                 # recaudo inválido → revierte la visita_blanco recién creada
                 transaction.set_rollback(True)
                 return Response(recaudo_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-            recaudo_serializer.save(
+            recaudo = recaudo_serializer.save(
                 venta=venta,
                 tienda=tienda,
                 es_renovacion=False,
             )
-            tienda.caja_inicial = tienda.caja_inicial + recaudo_serializer.validated_data['valor_recaudo']
+            # Las visitas fallidas tienen valor cero y no son movimientos de
+            # caja; solo se registra la visita para el seguimiento operativo.
             venta.saldo_actual = venta.saldo_actual - recaudo_serializer.validated_data['valor_recaudo']
             recaudos = Recaudo.objects.filter(
                 venta=venta.id,
@@ -520,8 +537,8 @@ def delete_recaudo(request, pk):
         )
     if recaudo:
         with transaction.atomic():
-            recaudo = Recaudo.objects.select_for_update().get(pk=pk)
             tienda = Tienda.objects.select_for_update().get(pk=recaudo.tienda_id)
+            recaudo = Recaudo.objects.select_for_update().get(pk=pk)
             venta = Venta.objects.select_for_update().get(pk=recaudo.venta_id)
             if venta.tienda_id != recaudo.tienda_id:
                 return Response(
@@ -532,15 +549,27 @@ def delete_recaudo(request, pk):
                         ),
                     },
                     status=status.HTTP_409_CONFLICT,
-                )
+            )
             valor_recaudo = recaudo.valor_recaudo
-            tienda.caja_inicial -= valor_recaudo
+            origen_id = recaudo.pk
+            origen_tipo = recaudo._meta.label_lower
             venta.saldo_actual = venta.saldo_actual + valor_recaudo
             recaudos = Recaudo.objects.filter(
                 venta=venta.id,
                 es_renovacion=False,
             )
             recaudo.delete()
+            if valor_recaudo:
+                registrar_movimiento_caja(
+                    tienda,
+                    -valor_recaudo,
+                    tipo='RECAUDO',
+                    accion='REVERSA',
+                    usuario=request.user,
+                    origen_tipo=origen_tipo,
+                    origen_id=origen_id,
+                    detalle='Reversa por eliminación del abono',
+                )
             if venta.promedio_pago() >= venta.valor_cuota():
                 venta.estado_venta = 'Vigente'
             elif venta.promedio_pago() < venta.valor_cuota():
@@ -549,7 +578,6 @@ def delete_recaudo(request, pk):
                 venta.estado_venta = 'Vencido'
             elif venta.saldo_actual <= 0:
                 venta.estado_venta = 'Pagado'
-            tienda.save()
             venta.save()
             revisar_riesgo_venta(venta, notificar=False)
         return Response({'message':'Recaudo eliminado correctamente'},status=status.HTTP_200_OK)

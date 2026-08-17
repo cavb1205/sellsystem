@@ -3,6 +3,7 @@ from .models import (
     AlertaOperativa,
     Tienda,
     Cierre_Caja,
+    MovimientoCaja,
     Membresia,
     Tienda_Membresia,
     Tienda_Administrador,
@@ -15,6 +16,7 @@ from .models import (
 admin.site.register(Tienda)
 admin.site.register(Tienda_Administrador)
 admin.site.register(Cierre_Caja)
+admin.site.register(MovimientoCaja)
 admin.site.register(Membresia)
 admin.site.register(Tienda_Membresia)
 admin.site.register(PagoMembresia)

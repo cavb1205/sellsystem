@@ -7,6 +7,7 @@ from django.db import transaction
 from .models import *
 from .serializers import GastoSerializer, TipoGastoSerializer, GastoUpdateSerializer, GastoDetailSerializer
 from Tiendas.permissions import requiere_acceso_tienda, usuario_puede_acceder_tienda, respuesta_sin_permiso
+from Tiendas.caja import registrar_movimiento_caja
 
 
 
@@ -148,8 +149,15 @@ def put_gasto(request, pk, tienda_id=None):
         gasto_serializer.is_valid(raise_exception=True)
         gasto_serializer.save()
         if diferencia:
-            tienda.caja_inicial -= diferencia
-            tienda.save(update_fields=['caja_inicial'])
+            registrar_movimiento_caja(
+                tienda,
+                -diferencia,
+                tipo='GASTO',
+                accion='CORRECCION',
+                usuario=request.user,
+                origen=gasto,
+                detalle='Corrección del valor del gasto',
+            )
 
     return Response(gasto_serializer.data, status=status.HTTP_200_OK)
         
@@ -176,9 +184,15 @@ def post_gasto(request, tienda_id=None):
                 # Bloquear la fila evita que dos movimientos concurrentes
                 # lean la misma caja y uno sobrescriba el descuento del otro.
                 tienda = Tienda.objects.select_for_update().get(pk=tienda.pk)
-                gasto_serializer.save()
-                tienda.caja_inicial = tienda.caja_inicial - gasto_serializer.validated_data['valor']
-                tienda.save(update_fields=['caja_inicial'])
+                gasto = gasto_serializer.save()
+                registrar_movimiento_caja(
+                    tienda,
+                    -gasto.valor,
+                    tipo='GASTO',
+                    usuario=request.user,
+                    origen=gasto,
+                    detalle=gasto.comentario or '',
+                )
             return Response(gasto_serializer.data, status=status.HTTP_200_OK)
         return Response(gasto_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
@@ -195,7 +209,17 @@ def delete_gasto(request, pk, tienda_id=None):
         tienda = Tienda.objects.select_for_update().get(pk=gasto.tienda_id)
         gasto = Gasto.objects.select_for_update().get(pk=pk)
         valor = gasto.valor
+        origen_id = gasto.pk
+        origen_tipo = gasto._meta.label_lower
         gasto.delete()
-        tienda.caja_inicial += valor
-        tienda.save(update_fields=['caja_inicial'])
+        registrar_movimiento_caja(
+            tienda,
+            valor,
+            tipo='GASTO',
+            accion='REVERSA',
+            usuario=request.user,
+            origen_tipo=origen_tipo,
+            origen_id=origen_id,
+            detalle='Reversa por eliminación del gasto',
+        )
     return Response({'message':'gasto eliminado correctamente'},status=status.HTTP_200_OK)

@@ -14,6 +14,7 @@ from django.db import transaction
 from .models import *
 from .serializers import AporteSerializer, AporteUpdateSerializer, AporteDetailSerializer
 from Tiendas.permissions import requiere_acceso_tienda, usuario_puede_acceder_tienda, respuesta_sin_permiso
+from Tiendas.caja import registrar_movimiento_caja
 
 
 @api_view(['GET'])
@@ -96,8 +97,15 @@ def put_aporte(request, pk, tienda_id=None):
                 diferencia = new_aporte - aporte_inicial.valor
                 aporte_serializer.save()
                 if diferencia:
-                    tienda.caja_inicial += diferencia
-                    tienda.save(update_fields=['caja_inicial'])
+                    registrar_movimiento_caja(
+                        tienda,
+                        diferencia,
+                        tipo='APORTE',
+                        accion='CORRECCION',
+                        usuario=request.user,
+                        origen=aporte_inicial,
+                        detalle='Corrección del valor del aporte',
+                    )
             return Response(aporte_serializer.data, status=status.HTTP_200_OK)
         return Response(aporte_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     return Response({'message': 'No se encontró el aporte'}, status=status.HTTP_400_BAD_REQUEST)
@@ -120,10 +128,15 @@ def post_aporte(request, tienda_id=None):
         if aporte_serializer.is_valid():
             with transaction.atomic():
                 tienda = Tienda.objects.select_for_update().get(pk=tienda.pk)
-                aporte_serializer.save()
-                tienda.caja_inicial = tienda.caja_inicial + \
-                    aporte_serializer.validated_data['valor']
-                tienda.save(update_fields=['caja_inicial'])
+                aporte = aporte_serializer.save()
+                registrar_movimiento_caja(
+                    tienda,
+                    aporte.valor,
+                    tipo='APORTE',
+                    usuario=request.user,
+                    origen=aporte,
+                    detalle=aporte.comentario or '',
+                )
             return Response(aporte_serializer.data, status=status.HTTP_200_OK)
         return Response({'message': 'Por favor completar los campos del formulario.'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -138,8 +151,18 @@ def delete_aporte(request, pk, tienda_id=None):
             tienda = Tienda.objects.select_for_update().get(pk=aporte.tienda_id)
             aporte = Aporte.objects.select_for_update().get(pk=pk)
             valor = aporte.valor
+            origen_id = aporte.pk
+            origen_tipo = aporte._meta.label_lower
             aporte.delete()
-            tienda.caja_inicial -= valor
-            tienda.save(update_fields=['caja_inicial'])
+            registrar_movimiento_caja(
+                tienda,
+                -valor,
+                tipo='APORTE',
+                accion='REVERSA',
+                usuario=request.user,
+                origen_tipo=origen_tipo,
+                origen_id=origen_id,
+                detalle='Reversa por eliminación del aporte',
+            )
         return Response({'message': 'Aporte eliminado correctamente'}, status=status.HTTP_200_OK)
     return Response({'message': 'No se encontró el aporte'}, status=status.HTTP_400_BAD_REQUEST)

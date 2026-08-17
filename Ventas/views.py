@@ -30,6 +30,7 @@ from Tiendas.permissions import (
     respuesta_sin_permiso,
 )
 from Tiendas.alertas_operativas import registrar_alerta_venta
+from Tiendas.caja import registrar_movimiento_caja
 from Clientes.views import _calcular_score
 from Ventas.riesgo import calcular_fecha_vencimiento, normalizar_plazo
 
@@ -261,8 +262,15 @@ def put_venta(request, pk, tienda_id=None):
                 diferencia = vv - venta.valor_venta
                 venta_serializer.save()
                 if diferencia:
-                    tienda.caja_inicial -= diferencia
-                    tienda.save(update_fields=['caja_inicial'])
+                    registrar_movimiento_caja(
+                        tienda,
+                        -diferencia,
+                        tipo='VENTA',
+                        accion='CORRECCION',
+                        usuario=request.user,
+                        origen=venta,
+                        detalle='Corrección del capital del crédito',
+                    )
             return Response(venta_serializer.data, status=status.HTTP_200_OK)
         return Response(venta_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     return Response({'message': 'No se encontró la venta'}, status=status.HTTP_400_BAD_REQUEST)
@@ -463,9 +471,14 @@ def post_venta(request, tienda_id=None):
             with transaction.atomic():
                 tienda = Tienda.objects.select_for_update().get(pk=tienda.pk)
                 venta_nueva = venta_serializer.save(creado_por=request.user)
-                tienda.caja_inicial = tienda.caja_inicial - \
-                    venta_serializer.validated_data['valor_venta']
-                tienda.save(update_fields=['caja_inicial'])
+                registrar_movimiento_caja(
+                    tienda,
+                    -venta_nueva.valor_venta,
+                    tipo='VENTA',
+                    usuario=request.user,
+                    origen=venta_nueva,
+                    detalle='Capital entregado para nuevo crédito',
+                )
                 # La alerta se programa después del commit. Si Telegram está
                 # caído, la venta igualmente se completa sin error.
                 registrar_alerta_venta(
@@ -490,9 +503,19 @@ def delete_venta(request, pk, tienda_id=None):
         if Recaudo.objects.filter(venta=venta.id).exists():
             return Response({'message': 'No se puede eliminar la venta por que ya se realizaron pagos a la misma.'}, status=status.HTTP_406_NOT_ACCEPTABLE)
         valor_venta = venta.valor_venta
+        origen_id = venta.pk
+        origen_tipo = venta._meta.label_lower
         venta.delete()
-        tienda.caja_inicial = tienda.caja_inicial + valor_venta
-        tienda.save(update_fields=['caja_inicial'])
+        registrar_movimiento_caja(
+            tienda,
+            valor_venta,
+            tipo='VENTA',
+            accion='REVERSA',
+            usuario=request.user,
+            origen_tipo=origen_tipo,
+            origen_id=origen_id,
+            detalle='Reversa por eliminación del crédito',
+        )
     return Response({'message': 'Venta eliminada correctamente'}, status=status.HTTP_200_OK)
 
 
