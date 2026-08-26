@@ -34,7 +34,7 @@ from Tiendas.alertas_operativas import (
 from Tiendas.models import (
     Membresia, PagoMembresia, SolicitudPago, Tienda, Tienda_Membresia,
 )
-from Tiendas.views import _actualizar_estados_membresias
+from Tiendas.views import _actualizar_estados_membresias, _marcar_solicitud_expirada
 from Trabajadores.models import Perfil
 
 # Días vencida tras los cuales una ruta se archiva automáticamente
@@ -126,10 +126,14 @@ class Command(BaseCommand):
 
         # 3. Solicitudes pre-activadas sin confirmar (+3 días)
         limite = timezone.now() - datetime.timedelta(days=3)
-        expiradas = SolicitudPago.objects.filter(
+        solicitudes_por_expirar = SolicitudPago.objects.filter(
             estado='pendiente_confirmacion',
             creada__lt=limite,
-        ).update(estado='expirada')
+        ).select_related('tienda', 'membresia')
+        expiradas = 0
+        for solicitud in solicitudes_por_expirar:
+            if _marcar_solicitud_expirada(solicitud):
+                expiradas += 1
         self.stdout.write(f'{expiradas} solicitud(es) marcada(s) como expiradas.')
 
         # 4. Comprobantes con más de 6 meses

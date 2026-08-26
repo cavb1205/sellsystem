@@ -143,6 +143,30 @@ def marcar_procesada(solicitud, accion, admin_nombre):
         logger.warning('No se pudo editar el mensaje de Telegram: %s', exc)
 
 
+def marcar_expirada(solicitud):
+    """Edita una solicitud vencida y quita botones para evitar aprobaciones falsas."""
+    if not _configurado() or not solicitud.telegram_message_id:
+        return
+
+    nuevo_texto = (
+        _caption(solicitud)
+        + '\n\n⌛ <b>Expirada</b> — no se activó la ruta. '
+          'Genera una nueva solicitud si corresponde.'
+    )
+    metodo = 'editMessageCaption' if solicitud.comprobante else 'editMessageText'
+    payload = {
+        'chat_id': settings.TELEGRAM_ADMIN_CHAT_ID,
+        'message_id': solicitud.telegram_message_id,
+        'parse_mode': 'HTML',
+        'reply_markup': {'inline_keyboard': []},
+    }
+    payload['caption' if solicitud.comprobante else 'text'] = nuevo_texto
+    try:
+        requests.post(_api(metodo), json=payload, timeout=TIMEOUT)
+    except Exception as exc:
+        logger.warning('No se pudo marcar como expirada la solicitud %s en Telegram: %s', solicitud.codigo, exc)
+
+
 def _enviar_alerta(texto, teclado=None):
     """Envía un mensaje de texto simple (sin botones) al chat del admin.
     Nunca lanza excepción: las alertas son informativas y no deben romper el

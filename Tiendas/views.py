@@ -168,8 +168,12 @@ def _actualizar_estados_membresias():
 
 def extender_membresia(tienda_id, plan_nombre):
     """Extiende la membresía desde max(fecha_vencimiento, hoy). Retorna la Tienda_Membresia."""
-    tm = Tienda_Membresia.objects.get(tienda_id=tienda_id)
-    membresia = Membresia.objects.get(nombre=plan_nombre)
+    if plan_nombre not in ('Mensual', 'Anual'):
+        raise ValueError(f'Plan de membresía no válido: {plan_nombre}')
+    tm = Tienda_Membresia.objects.select_for_update().get(tienda_id=tienda_id)
+    membresia = Membresia.objects.filter(nombre=plan_nombre).first()
+    if not membresia:
+        raise ValueError(f'Plan de membresía no configurado: {plan_nombre}')
     dias = 30 if plan_nombre == 'Mensual' else 365
     hoy = timezone.localdate()
     base = max(tm.fecha_vencimiento, hoy)
@@ -188,25 +192,57 @@ def extender_membresia(tienda_id, plan_nombre):
 def _confirmar_solicitud(solicitud, revisor=None):
     """Confirma una solicitud y extiende la membresía. Guarda el vencimiento previo
     para poder revertir con exactitud. revisor puede ser None (confirmado vía Telegram)."""
-    tm = Tienda_Membresia.objects.filter(tienda=solicitud.tienda).first()
-    solicitud.fecha_vencimiento_previa = tm.fecha_vencimiento if tm else None
-    solicitud.estado = 'confirmada'
-    solicitud.motivo_rechazo = ''
-    solicitud.revisada_por = revisor
-    solicitud.procesada = timezone.now()
-    solicitud.save()
-    tm = extender_membresia(solicitud.tienda_id, solicitud.membresia.nombre)
-    # Registrar el ingreso en el libro de pagos (precio congelado al momento del cobro)
-    if not PagoMembresia.objects.filter(solicitud=solicitud).exists():
-        PagoMembresia.objects.create(
-            tienda_id=solicitud.tienda_id,
-            tienda_nombre=solicitud.tienda.nombre,
-            membresia=solicitud.membresia,
-            monto=solicitud.membresia.precio,
-            fecha=timezone.localdate(),
-            origen='panel' if revisor else 'telegram',
-            solicitud=solicitud,
-            registrado_por=revisor,
+    # La aprobación, la activación y el ingreso deben ser una sola operación.
+    # Antes se guardaba la solicitud como confirmada antes de extender la ruta;
+    # si algo fallaba después, quedaban estados incompatibles.
+    with transaction.atomic():
+        solicitud_db = (
+            SolicitudPago.objects
+            .select_for_update()
+            .select_related('tienda', 'membresia')
+            .get(pk=solicitud.pk)
+        )
+        if solicitud_db.estado == 'confirmada':
+            return Tienda_Membresia.objects.select_for_update().get(tienda_id=solicitud_db.tienda_id)
+        if solicitud_db.estado != 'pendiente_confirmacion':
+            raise ValueError('La solicitud ya no está disponible para confirmación.')
+
+        tm = Tienda_Membresia.objects.filter(tienda_id=solicitud_db.tienda_id).first()
+        if not tm:
+            raise ValueError('La ruta no tiene una membresía configurada.')
+
+        fecha_vencimiento_previa = tm.fecha_vencimiento
+        tm = extender_membresia(solicitud_db.tienda_id, solicitud_db.membresia.nombre)
+
+        solicitud_db.fecha_vencimiento_previa = fecha_vencimiento_previa
+        solicitud_db.estado = 'confirmada'
+        solicitud_db.motivo_rechazo = ''
+        solicitud_db.revisada_por = revisor
+        solicitud_db.procesada = timezone.now()
+        solicitud_db.save(update_fields=[
+            'fecha_vencimiento_previa', 'estado', 'motivo_rechazo',
+            'revisada_por', 'procesada',
+        ])
+
+        # Registrar el ingreso en el libro de pagos (precio congelado al momento del cobro).
+        PagoMembresia.objects.get_or_create(
+            solicitud=solicitud_db,
+            defaults={
+                'tienda_id': solicitud_db.tienda_id,
+                'tienda_nombre': solicitud_db.tienda.nombre,
+                'membresia': solicitud_db.membresia,
+                'monto': solicitud_db.membresia.precio,
+                'fecha': timezone.localdate(),
+                'origen': 'panel' if revisor else 'telegram',
+                'registrado_por': revisor,
+            },
+        )
+        logger.info(
+            'Solicitud de membresía %s confirmada (%s): tienda=%s vencimiento=%s',
+            solicitud_db.codigo,
+            'panel' if revisor else 'telegram',
+            solicitud_db.tienda_id,
+            tm.fecha_vencimiento,
         )
     return tm
 
@@ -1577,6 +1613,41 @@ def activar_membresia_ano(request, pk):
 
 ####### SOLICITUDES DE PAGO (membresías automáticas vía WhatsApp) ##########
 
+def _marcar_solicitud_expirada(solicitud):
+    """Expira una solicitud y deja el botón de Telegram inutilizable."""
+    with transaction.atomic():
+        solicitud_db = SolicitudPago.objects.select_for_update().get(pk=solicitud.pk)
+        if solicitud_db.estado not in ('pendiente', 'pendiente_confirmacion'):
+            # Otra operación pudo confirmarla o rechazarla mientras se revisaba.
+            # Nunca sobrescribir ese resultado con una expiración.
+            solicitud.estado = solicitud_db.estado
+            solicitud.procesada = solicitud_db.procesada
+            return False
+
+        solicitud_db.estado = 'expirada'
+        solicitud_db.procesada = timezone.now()
+        solicitud_db.save(update_fields=['estado', 'procesada'])
+
+        tm = (
+            Tienda_Membresia.objects
+            .select_for_update()
+            .filter(tienda_id=solicitud_db.tienda_id)
+            .first()
+        )
+        if tm and tm.estado == 'Pre-activada':
+            tm.estado = 'Pendiente Pago'
+            tm.pre_activada_hasta = None
+            tm.save(update_fields=['estado', 'pre_activada_hasta'])
+
+        solicitud.estado = solicitud_db.estado
+        solicitud.procesada = solicitud_db.procesada
+
+    # Si Telegram no responde, la expiración en base de datos se conserva y el
+    # siguiente toque del botón volverá a mostrar el mensaje correcto.
+    telegram_bot.marcar_expirada(solicitud)
+    return True
+
+
 def _normalizar_solicitud_pago(solicitud):
     """Expira solicitudes desde cualquier endpoint, no solo desde el cron.
 
@@ -1586,8 +1657,7 @@ def _normalizar_solicitud_pago(solicitud):
     ahora = timezone.now()
 
     if solicitud.estado == 'pendiente' and ahora >= solicitud.expira:
-        solicitud.estado = 'expirada'
-        solicitud.save(update_fields=['estado'])
+        _marcar_solicitud_expirada(solicitud)
         return solicitud
 
     if solicitud.estado == 'pendiente_confirmacion':
@@ -1599,12 +1669,7 @@ def _normalizar_solicitud_pago(solicitud):
             and timezone.localdate() > tm.pre_activada_hasta
         )
         if ahora >= limite or preactivacion_vencida:
-            solicitud.estado = 'expirada'
-            solicitud.save(update_fields=['estado'])
-            if tm and tm.estado == 'Pre-activada':
-                tm.estado = 'Pendiente Pago'
-                tm.pre_activada_hasta = None
-                tm.save(update_fields=['estado', 'pre_activada_hasta'])
+            _marcar_solicitud_expirada(solicitud)
 
     return solicitud
 
@@ -1909,9 +1974,18 @@ def telegram_webhook(request):
         telegram_bot.responder_callback(callback_id, 'Solicitud no encontrada')
         return Response({'ok': True})
 
+    estado_antes = solicitud.estado
     _normalizar_solicitud_pago(solicitud)
 
-    if solicitud.estado in ('aprobada', 'confirmada', 'rechazada', 'expirada'):
+    if solicitud.estado == 'expirada':
+        # Las solicitudes expiradas anteriores a esta corrección pueden aún
+        # conservar botones en Telegram; limpiarlos al primer toque.
+        if estado_antes == 'expirada':
+            telegram_bot.marcar_expirada(solicitud)
+        telegram_bot.responder_callback(callback_id, '⚠️ Solicitud expirada: la ruta no se activó')
+        return Response({'ok': True})
+
+    if solicitud.estado in ('aprobada', 'confirmada', 'rechazada'):
         telegram_bot.responder_callback(callback_id, 'Esta solicitud ya fue procesada')
         return Response({'ok': True})
 
@@ -1925,7 +1999,18 @@ def telegram_webhook(request):
         if solicitud.estado != 'pendiente_confirmacion':
             telegram_bot.responder_callback(callback_id, 'Falta comprobante o la solicitud ya expiró')
             return Response({'ok': True})
-        _confirmar_solicitud(solicitud)
+        try:
+            _confirmar_solicitud(solicitud)
+        except ValueError as exc:
+            logger.warning('No se pudo confirmar %s vía Telegram: %s', codigo, exc)
+            telegram_bot.responder_callback(callback_id, f'⚠️ {exc}')
+            return Response({'ok': True})
+        except Exception:
+            # La transacción revierte cualquier cambio parcial. Se deja el
+            # botón disponible para reintentar o usar el panel web.
+            logger.exception('Error confirmando solicitud %s vía Telegram', codigo)
+            telegram_bot.responder_callback(callback_id, '⚠️ No se pudo confirmar; revisa el panel y reintenta')
+            return Response({'ok': True})
         solicitud.refresh_from_db()
         telegram_bot.marcar_procesada(solicitud, 'confirmar', admin_nombre)
         telegram_bot.responder_callback(callback_id, f'✅ {codigo} confirmado')
@@ -2019,7 +2104,11 @@ def revisar_solicitud_admin(request, codigo):
             return Response({'estado': 'confirmada', 'message': 'Ya confirmada'}, status=status.HTTP_409_CONFLICT)
         if solicitud.estado != 'pendiente_confirmacion':
             return Response({'error': 'Solo se pueden confirmar solicitudes con comprobante enviado.'}, status=status.HTTP_409_CONFLICT)
-        tm = _confirmar_solicitud(solicitud, revisor=request.user)
+        try:
+            tm = _confirmar_solicitud(solicitud, revisor=request.user)
+        except ValueError as exc:
+            logger.warning('No se pudo confirmar %s desde el panel: %s', codigo, exc)
+            return Response({'error': str(exc)}, status=status.HTTP_409_CONFLICT)
         solicitud.refresh_from_db()
         telegram_bot.marcar_procesada(solicitud, 'confirmar', admin_nombre)
     else:  # rechazar — sirve también para revertir una confirmada en la conciliación
