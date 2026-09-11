@@ -343,7 +343,7 @@ def put_recaudo(request, pk, tienda_id=None):
             if diferencia:
                 registrar_movimiento_caja(
                     tienda,
-                    -diferencia,
+                    diferencia,
                     tipo='RECAUDO',
                     accion='CORRECCION',
                     usuario=request.user,
