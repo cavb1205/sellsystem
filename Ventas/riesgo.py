@@ -1,6 +1,7 @@
 """Reglas compartidas de frecuencia, cobranza y deterioro de créditos."""
 
 from datetime import timedelta
+from decimal import Decimal
 
 from django.utils import timezone
 
@@ -42,6 +43,23 @@ def normalizar_plazo(plazo):
 
 def intervalo_cobro(plazo):
     return INTERVALOS_COBRO.get(plazo, INTERVALOS_COBRO['Diario'])
+
+
+def calcular_cuotas_atrasadas(valor_cuota, ciclos_registrados, total_abonado):
+    """Calcula cuotas pendientes dentro de los ciclos de cobro registrados.
+
+    Un recaudo puede cubrir más de una cuota. Por eso el atraso se calcula
+    contra el monto abonado y no contra la cantidad de recibos. Un crédito no
+    puede quedar con un atraso negativo: los pagos adelantados se gestionan
+    como una señal distinta, no como ``cuotas_atrasadas``.
+    """
+    cuota = Decimal(str(valor_cuota or 0))
+    if not cuota:
+        return Decimal('0')
+    ciclos = Decimal(str(ciclos_registrados or 0))
+    abonado = Decimal(str(total_abonado or 0))
+    atraso = ((cuota * ciclos) - abonado) / cuota
+    return round(max(Decimal('0'), atraso), 2)
 
 
 def umbrales_dsa(plazo):

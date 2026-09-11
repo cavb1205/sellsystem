@@ -4,7 +4,11 @@ from rest_framework import serializers
 from rest_framework.serializers import ModelSerializer
 
 from Ventas.models import Venta
-from Ventas.riesgo import calcular_riesgo_venta, dias_completos_sin_abono
+from Ventas.riesgo import (
+    calcular_cuotas_atrasadas,
+    calcular_riesgo_venta,
+    dias_completos_sin_abono,
+)
 from Clientes.serializers import ClienteSerializer
 from Clientes.models import Cliente
 
@@ -182,9 +186,10 @@ class VentaListaSerializer(ModelSerializer):
         cuota = self._cuota(obj)
         if not cuota:
             return 0
-        return round(
-            ((cuota * self._recaudos_count(obj)) - self.get_total_abonado(obj)) / cuota,
-            2,
+        return calcular_cuotas_atrasadas(
+            cuota,
+            self._recaudos_count(obj),
+            self.get_total_abonado(obj),
         )
 
     def get_perdida(self, obj):

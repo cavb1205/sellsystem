@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from Clientes.models import Cliente
 from Tiendas.models import Tienda
-from Ventas.riesgo import dias_completos_sin_abono
+from Ventas.riesgo import calcular_cuotas_atrasadas, dias_completos_sin_abono
 
 
 
@@ -100,8 +100,11 @@ class Venta(models.Model):
             venta=venta.id,
             es_renovacion=False,
         )
-        dias_atrasados = round(((self.valor_cuota() * recaudos.count()) - self.total_abonado()) / self.valor_cuota(), 2)
-        return dias_atrasados
+        return calcular_cuotas_atrasadas(
+            self.valor_cuota(),
+            recaudos.count(),
+            self.total_abonado(),
+        )
 
     def perdida(self):
         return self.saldo_actual or Decimal(0)
