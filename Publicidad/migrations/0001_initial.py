@@ -8,8 +8,11 @@ class Migration(migrations.Migration):
     initial = True
 
     dependencies = [
-        ('Tiendas', '__latest__'),
-        ('Trabajadores', '__latest__'),
+        # Depend on the schema that provides Tienda, not on ``__latest__``.
+        # A dynamic dependency makes every new Tiendas migration appear before
+        # this already-applied migration and breaks production history.
+        ('Tiendas', '0002_alter_tienda_fecha_registro'),
+        ('Trabajadores', '0001_initial'),
     ]
 
     operations = [
