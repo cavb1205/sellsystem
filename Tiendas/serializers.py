@@ -2,12 +2,13 @@
 from rest_framework import serializers
 from .models import Tienda, Cierre_Caja, MovimientoCaja, Tienda_Membresia, Membresia, Tienda_Administrador, SolicitudPago, CuentaDestino
 from Trabajadores.serializers import UserSerializer, PerfilSerializer
+from Tiendas.fecha_operativa import validar_zona_horaria
 
 
 class TiendaCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Tienda
-        fields = ['id', 'nombre', 'administrador']
+        fields = ['id', 'nombre', 'administrador', 'zona_horaria']
 
     def validate(self, attrs):
         nombre = attrs.get('nombre', '').strip()
@@ -18,6 +19,12 @@ class TiendaCreateSerializer(serializers.ModelSerializer):
             )
         attrs['nombre'] = nombre
         return attrs
+
+    def validate_zona_horaria(self, value):
+        zona = validar_zona_horaria(value)
+        if not zona:
+            raise serializers.ValidationError('Selecciona una zona horaria válida.')
+        return zona
 
 
 class TiendaSerializer(serializers.ModelSerializer):
@@ -47,6 +54,7 @@ class TiendaSerializer(serializers.ModelSerializer):
                 'caja': instance.caja_inicial,
                 'estado': instance.estado,
                 'cupo_minimo_nuevo': instance.cupo_minimo_nuevo,
+                'zona_horaria': instance.zona_horaria,
                 **metricas,
             }
         return {
@@ -60,6 +68,7 @@ class TiendaSerializer(serializers.ModelSerializer):
             'caja':instance.caja_inicial,
             'estado': instance.estado,
             'cupo_minimo_nuevo': instance.cupo_minimo_nuevo,
+            'zona_horaria': instance.zona_horaria,
             'cantidad_clientes': instance.cliente_set.count(),
             'cantidad_ventas': instance.venta_set.count(),
             'inversion': instance.inversion(),
@@ -131,7 +140,7 @@ class TiendaListaSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'nombre', 'telefono', 'prefijo_telefono', 'fecha_registro',
             'administrador', 'administrador_id', 'caja', 'estado',
-            'cupo_minimo_nuevo',
+            'cupo_minimo_nuevo', 'zona_horaria',
         ]
 
     def get_administrador(self, obj):

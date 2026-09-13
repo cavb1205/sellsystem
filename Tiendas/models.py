@@ -1,9 +1,12 @@
 import secrets
 from django.db import models
 from django.contrib.auth.models import User
+from django.core.exceptions import ValidationError
 from django.db.models import Sum, Q
 from datetime import timedelta
 from django.utils import timezone
+
+from Tiendas.fecha_operativa import fecha_operativa
 
 
 class Tienda(models.Model):
@@ -15,6 +18,9 @@ class Tienda(models.Model):
     caja_inicial = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     estado = models.BooleanField(default=True)
     cupo_minimo_nuevo = models.DecimalField(max_digits=12, decimal_places=2, default=100000)
+    # Zona IANA de la jornada contable de la ruta. Las rutas históricas
+    # conservan Santiago hasta que un administrador seleccione otra.
+    zona_horaria = models.CharField(max_length=64, default='America/Santiago')
     
     class Meta:
         constraints = [
@@ -54,32 +60,32 @@ class Tienda(models.Model):
 
     ### Calculamos lo correspondiente al día actual ###
     def aportes_dia(self):
-        hoy = timezone.localdate()
+        hoy = fecha_operativa(self)
         return self.aporte_set.filter(fecha=hoy).aggregate(
             total=Sum('valor'))['total'] or 0
 
     def gastos_dia(self):
-        hoy = timezone.localdate()
+        hoy = fecha_operativa(self)
         return self.gasto_set.filter(fecha=hoy).aggregate(
             total=Sum('valor'))['total'] or 0
 
     def utilidades_dia(self):
-        hoy = timezone.localdate()
+        hoy = fecha_operativa(self)
         return self.utilidad_set.filter(fecha=hoy).aggregate(
             total=Sum('valor'))['total'] or 0
 
     def recaudos_dia(self):
-        hoy = timezone.localdate()
+        hoy = fecha_operativa(self)
         return self.recaudo_set.filter(fecha_recaudo=hoy).aggregate(
             total=Sum('valor_recaudo'))['total'] or 0
 
     def ventas_netas_dia(self):
-        hoy = timezone.localdate()
+        hoy = fecha_operativa(self)
         return self.venta_set.filter(fecha_venta=hoy).aggregate(
             total=Sum('valor_venta'))['total'] or 0
 
     def utilidad_estimada_dia(self):
-        hoy = timezone.localdate()
+        hoy = fecha_operativa(self)
         ventas = self.venta_set.filter(fecha_venta=hoy)
         total_utilidad = 0
         
@@ -92,35 +98,35 @@ class Tienda(models.Model):
 
     ### Calculamos lo correspondiente al mes actual  ####
     def aportes_mes(self):
-        hoy = timezone.localdate()
+        hoy = fecha_operativa(self)
         return self.aporte_set.filter(
             fecha__year=hoy.year,
             fecha__month=hoy.month
         ).aggregate(total=Sum('valor'))['total'] or 0
 
     def gastos_mes(self):
-        hoy = timezone.localdate()
+        hoy = fecha_operativa(self)
         return self.gasto_set.filter(
             fecha__year=hoy.year,
             fecha__month=hoy.month
         ).aggregate(total=Sum('valor'))['total'] or 0
 
     def utilidades_mes(self):
-        hoy = timezone.localdate()
+        hoy = fecha_operativa(self)
         return self.utilidad_set.filter(
             fecha__year=hoy.year,
             fecha__month=hoy.month
         ).aggregate(total=Sum('valor'))['total'] or 0
 
     def ventas_netas_mes(self):
-        hoy = timezone.localdate()
+        hoy = fecha_operativa(self)
         return self.venta_set.filter(
             fecha_venta__year=hoy.year,
             fecha_venta__month=hoy.month
         ).aggregate(total=Sum('valor_venta'))['total'] or 0
 
     def utilidad_estimada_mes(self):
-        hoy = timezone.localdate()
+        hoy = fecha_operativa(self)
         ventas = self.venta_set.filter(
             fecha_venta__year=hoy.year,
             fecha_venta__month=hoy.month
@@ -136,7 +142,7 @@ class Tienda(models.Model):
         return total_utilidad
 
     def perdidas_mes(self):
-        hoy = timezone.localdate()
+        hoy = fecha_operativa(self)
         return self.venta_set.filter(
             estado_venta='Perdida',
             fecha_venta__year=hoy.year,
@@ -145,38 +151,38 @@ class Tienda(models.Model):
 
     ### Calculamos lo correspondiente al año actual ###
     def aportes_ano(self):
-        hoy = timezone.localdate()
+        hoy = fecha_operativa(self)
         return self.aporte_set.filter(
             fecha__year=hoy.year
         ).aggregate(total=Sum('valor'))['total'] or 0
 
     def gastos_ano(self):
-        hoy = timezone.localdate()
+        hoy = fecha_operativa(self)
         return self.gasto_set.filter(
             fecha__year=hoy.year
         ).aggregate(total=Sum('valor'))['total'] or 0
 
     def utilidades_ano(self):
-        hoy = timezone.localdate()
+        hoy = fecha_operativa(self)
         return self.utilidad_set.filter(
             fecha__year=hoy.year
         ).aggregate(total=Sum('valor'))['total'] or 0
 
     def ventas_netas_ano(self):
-        hoy = timezone.localdate()
+        hoy = fecha_operativa(self)
         return self.venta_set.filter(
             fecha_venta__year=hoy.year
         ).aggregate(total=Sum('valor_venta'))['total'] or 0
 
     def perdidas_ano(self):
-        hoy = timezone.localdate()
+        hoy = fecha_operativa(self)
         return self.venta_set.filter(
             estado_venta='Perdida',
             fecha_venta__year=hoy.year
         ).aggregate(total=Sum('saldo_actual'))['total'] or 0
 
     def utilidad_estimada_ano(self):
-            hoy = timezone.localdate()
+            hoy = fecha_operativa(self)
             ventas = self.venta_set.filter(
                 fecha_venta__year=hoy.year
             )
@@ -256,6 +262,14 @@ class MovimientoCaja(models.Model):
             models.Index(fields=['tienda', '-creado_en']),
             models.Index(fields=['tipo', '-creado_en']),
         ]
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            raise ValidationError('El historial de caja es inmutable; registra un ajuste nuevo.')
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError('El historial de caja no se puede eliminar.')
 
     def __str__(self):
         return f'{self.tienda_nombre or "Ruta eliminada"} · {self.tipo} · {self.delta}'

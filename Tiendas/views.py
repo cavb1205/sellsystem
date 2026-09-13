@@ -21,9 +21,15 @@ from Ventas.models import Venta
 from Tiendas.models import AlertaOperativa, Tienda, Cierre_Caja, MovimientoCaja, Tienda_Membresia, Membresia, Tienda_Administrador, SolicitudPago, CuentaDestino, PagoMembresia, _generar_codigo_solicitud
 from Tiendas.serializers import TiendaSerializer, CajaSerializer, MovimientoCajaSerializer, TiendaMembresiaSerializer, TiendaMembresiaListaSerializer, TiendaCreateSerializer, TiendaAdminSerializer, SolicitudPagoSerializer, CuentaDestinoSerializer, MembresiaSerializer
 from Tiendas.alertas_operativas import rutas_del_usuario, usuario_alertas_configurado
+from Tiendas.fecha_operativa import fecha_operativa, validar_zona_horaria
 from Tiendas import telegram_bot
 from Tiendas import telegram_assistant
-from Tiendas.permissions import requiere_acceso_tienda, usuario_puede_acceder_tienda, respuesta_sin_permiso
+from Tiendas.permissions import (
+    requiere_acceso_tienda,
+    usuario_puede_acceder_tienda,
+    usuario_es_administrador_tienda,
+    respuesta_sin_permiso,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +52,8 @@ def _metricas_dashboard_tienda(tienda_id):
     from Utilidades.models import Utilidad
     from Recaudos.models import Recaudo
 
-    hoy = timezone.localdate()
+    tienda = Tienda.objects.get(pk=tienda_id)
+    hoy = fecha_operativa(tienda)
     ventas = list(Venta.objects.filter(tienda_id=tienda_id).values(
         'fecha_venta', 'valor_venta', 'interes', 'estado_venta', 'saldo_actual',
     ))
@@ -144,26 +151,26 @@ def _metricas_dashboard_tienda(tienda_id):
 
 
 def _actualizar_estados_membresias():
-    """Recalcula en bulk los estados de todas las membresías según la fecha actual.
-    Activa → Pendiente Pago cuando fecha_vencimiento ya pasó (día +1, único día de gracia).
-    Pendiente Pago → Vencida cuando han pasado 2+ días desde el vencimiento (bloqueo en V+2).
-    Pre-activada → Pendiente Pago cuando pre_activada_hasta ya pasó."""
-    hoy = timezone.localdate()
+    """Recalcula estados usando la zona horaria de cada ruta.
 
-    Tienda_Membresia.objects.filter(
-        estado='Activa',
-        fecha_vencimiento__lte=hoy - datetime.timedelta(days=1)
-    ).update(estado='Pendiente Pago')
-
-    Tienda_Membresia.objects.filter(
-        estado='Pendiente Pago',
-        fecha_vencimiento__lte=hoy - datetime.timedelta(days=2)
-    ).update(estado='Vencida')
-
-    Tienda_Membresia.objects.filter(
-        estado='Pre-activada',
-        pre_activada_hasta__lt=hoy
-    ).update(estado='Pendiente Pago', pre_activada_hasta=None)
+    Es intencionalmente un recorrido pequeño: las rutas pueden estar en
+    países distintos y por eso un único ``timezone.localdate()`` del servidor
+    no representa el mismo día para todas.
+    """
+    for tm in Tienda_Membresia.objects.select_related('tienda').all():
+        hoy = fecha_operativa(tm.tienda)
+        if tm.estado == 'Pre-activada':
+            if tm.pre_activada_hasta and tm.pre_activada_hasta >= hoy:
+                continue
+            tm.estado = 'Pendiente Pago'
+            tm.pre_activada_hasta = None
+            tm.save(update_fields=['estado', 'pre_activada_hasta'])
+        elif tm.estado == 'Activa' and hoy >= tm.fecha_vencimiento + datetime.timedelta(days=1):
+            tm.estado = 'Pendiente Pago'
+            tm.save(update_fields=['estado'])
+        elif tm.estado == 'Pendiente Pago' and hoy >= tm.fecha_vencimiento + datetime.timedelta(days=2):
+            tm.estado = 'Vencida'
+            tm.save(update_fields=['estado'])
 
 
 def extender_membresia(tienda_id, plan_nombre):
@@ -175,7 +182,7 @@ def extender_membresia(tienda_id, plan_nombre):
     if not membresia:
         raise ValueError(f'Plan de membresía no configurado: {plan_nombre}')
     dias = 30 if plan_nombre == 'Mensual' else 365
-    hoy = timezone.localdate()
+    hoy = fecha_operativa(tm.tienda)
     base = max(tm.fecha_vencimiento, hoy)
     tm.membresia = membresia
     tm.fecha_activacion = hoy
@@ -232,7 +239,7 @@ def _confirmar_solicitud(solicitud, revisor=None):
                 'tienda_nombre': solicitud_db.tienda.nombre,
                 'membresia': solicitud_db.membresia,
                 'monto': solicitud_db.membresia.precio,
-                'fecha': timezone.localdate(),
+                'fecha': fecha_operativa(solicitud_db.tienda),
                 'origen': 'panel' if revisor else 'telegram',
                 'registrado_por': revisor,
             },
@@ -387,12 +394,33 @@ def patch_tienda_settings(request, pk):
         return Response({'message': 'Tienda no encontrada'}, status=status.HTTP_404_NOT_FOUND)
     if not usuario_puede_acceder_tienda(request.user, pk):
         return respuesta_sin_permiso()
-    allowed = ['prefijo_telefono', 'telefono', 'cupo_minimo_nuevo']
+    if not usuario_es_administrador_tienda(request.user, pk):
+        return Response(
+            {'error': 'Solo un administrador puede cambiar la configuración de la ruta.'},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    allowed = ['prefijo_telefono', 'telefono', 'cupo_minimo_nuevo', 'zona_horaria']
     for field in allowed:
         if field in request.data:
+            if field == 'zona_horaria':
+                zona = validar_zona_horaria(request.data[field])
+                if not zona:
+                    return Response(
+                        {'zona_horaria': 'Selecciona una zona horaria válida.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                request.data[field] = zona
             setattr(tienda, field, request.data[field])
     tienda.save()
-    return Response({'prefijo_telefono': tienda.prefijo_telefono}, status=status.HTTP_200_OK)
+    return Response(
+        {
+            'prefijo_telefono': tienda.prefijo_telefono,
+            'telefono': tienda.telefono,
+            'cupo_minimo_nuevo': tienda.cupo_minimo_nuevo,
+            'zona_horaria': tienda.zona_horaria,
+        },
+        status=status.HTTP_200_OK,
+    )
 
 
 @api_view(['POST'])
@@ -405,7 +433,7 @@ def post_tienda(request):
         serialize = TiendaCreateSerializer(data=request.data)
         if serialize.is_valid():
             tienda = serialize.save()
-            hoy = timezone.localdate()
+            hoy = fecha_operativa(tienda)
             Cierre_Caja.objects.create(tienda=tienda, valor=tienda.caja_inicial, fecha_cierre=(
                 hoy - datetime.timedelta(days=1)))
 
@@ -883,10 +911,16 @@ def get_caja_anterior(request, fecha, tienda_id=None):
     else:
         tienda = Tienda.objects.filter(
             id=request.user.perfil.tienda.id).first()
-    fecha = datetime.datetime.strptime(fecha, '%Y-%m-%d')
-    dia_anterior = fecha - (datetime.timedelta(days=1))
+    try:
+        fecha = datetime.datetime.strptime(fecha, '%Y-%m-%d').date()
+    except (TypeError, ValueError):
+        return Response(
+            {'error': 'Fecha inválida. Use el formato YYYY-MM-DD.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    dia_anterior = fecha - datetime.timedelta(days=1)
     caja_anterior = Cierre_Caja.objects.filter(
-        tienda=tienda.id, fecha_cierre=dia_anterior).first()
+        tienda=tienda.id, fecha_cierre=dia_anterior).order_by('-id').first()
     if caja_anterior:
         serializer = CajaSerializer(caja_anterior, many=False)
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -903,9 +937,22 @@ def post_cierre_caja(request, fecha, tienda_id=None):
         tienda = Tienda.objects.filter(id=tienda_id).first()
     else:
         tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
-    fecha = datetime.datetime.strptime(fecha, '%Y-%m-%d')
-    cierre_caja = Cierre_Caja.objects.create(
-        fecha_cierre=fecha, valor=tienda.caja_inicial, tienda=tienda)
+    try:
+        fecha = datetime.datetime.strptime(fecha, '%Y-%m-%d').date()
+    except (TypeError, ValueError):
+        return Response(
+            {'error': 'Fecha inválida. Use el formato YYYY-MM-DD.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    with transaction.atomic():
+        tienda = Tienda.objects.select_for_update().get(pk=tienda.pk)
+        if Cierre_Caja.objects.filter(tienda=tienda, fecha_cierre=fecha).exists():
+            return Response(
+                {'error': 'Ya existe un cierre de caja para esa fecha.'},
+                status=status.HTTP_409_CONFLICT,
+            )
+        Cierre_Caja.objects.create(
+            fecha_cierre=fecha, valor=tienda.caja_inicial, tienda=tienda)
     return Response({'message': 'Se creo el registro'}, status=status.HTTP_200_OK)
 
 
@@ -918,6 +965,11 @@ def delete_cierre_caja(request, pk):
         return Response({'message': 'Cierre de caja no encontrado'}, status=status.HTTP_404_NOT_FOUND)
     if not usuario_puede_acceder_tienda(request.user, cierre_caja.tienda_id):
         return respuesta_sin_permiso()
+    if not request.user.is_staff and not request.user.is_superuser:
+        return Response(
+            {'error': 'Solo un administrador puede eliminar cierres de caja.'},
+            status=status.HTTP_403_FORBIDDEN,
+        )
     cierre_caja.delete()
     return Response({'message': 'Cierre Caja Eliminado'}, status=status.HTTP_200_OK)
 
@@ -1086,7 +1138,7 @@ def cierre_resumen_movimientos(request, fecha, tienda_id=None):
             status=status.HTTP_404_NOT_FOUND,
         )
 
-    hoy = timezone.localdate()
+    hoy = fecha_operativa(tienda)
 
     def agregar(model, valor_field, fecha_field):
         fechas = {
@@ -1573,7 +1625,7 @@ def _registrar_pago_manual(tienda_membresia, user):
     PagoMembresia.objects.get_or_create(
         tienda=tienda_membresia.tienda,
         membresia=tienda_membresia.membresia,
-        fecha=timezone.localdate(),
+        fecha=fecha_operativa(tienda_membresia.tienda),
         origen='manual',
         defaults={
             'tienda_nombre': tienda_membresia.tienda.nombre,
@@ -1666,7 +1718,7 @@ def _normalizar_solicitud_pago(solicitud):
         preactivacion_vencida = (
             tm and tm.estado == 'Pre-activada'
             and tm.pre_activada_hasta
-            and timezone.localdate() > tm.pre_activada_hasta
+            and fecha_operativa(tm.tienda) > tm.pre_activada_hasta
         )
         if ahora >= limite or preactivacion_vencida:
             _marcar_solicitud_expirada(solicitud)
@@ -1888,7 +1940,7 @@ def adjuntar_comprobante(request, codigo):
         solicitud.comprobante.save(nombre, ContentFile(comprobante_bytes), save=False)
         solicitud.referencia_bancaria = referencia
         tm.estado = 'Pre-activada'
-        tm.pre_activada_hasta = timezone.localdate() + datetime.timedelta(days=3)
+        tm.pre_activada_hasta = fecha_operativa(tm.tienda) + datetime.timedelta(days=3)
         # Si estaba archivada por inactividad, el pago la reactiva (deja de estar oculta)
         tm.archivada = False
         tm.fecha_archivado = None
@@ -2126,8 +2178,17 @@ def revisar_solicitud_admin(request, codigo):
 
 def comprobar_estado_membresia(tienda_id):
     '''verificamos el estado de la membresia'''
-    suscripcion_tienda = Tienda_Membresia.objects.get(tienda=tienda_id)
-    hoy = timezone.localdate()
+    suscripcion_tienda = (
+        Tienda_Membresia.objects
+        .select_related('tienda')
+        .filter(tienda_id=tienda_id)
+        .first()
+    )
+    # Algunas rutas históricas aún no tienen fila de membresía. No deben
+    # provocar un 500 al consultar recaudos o el dashboard.
+    if not suscripcion_tienda:
+        return None
+    hoy = fecha_operativa(suscripcion_tienda.tienda)
 
     # Pre-activada: acceso temporal mientras se revisa el comprobante
     if suscripcion_tienda.estado == 'Pre-activada':
@@ -2356,7 +2417,7 @@ def archivar_ruta(request, pk):
         return Response({'error': 'Ruta no encontrada'}, status=status.HTTP_404_NOT_FOUND)
     archivar = request.data.get('archivar', True)
     tm.archivada = bool(archivar)
-    tm.fecha_archivado = timezone.localdate() if tm.archivada else None
+    tm.fecha_archivado = fecha_operativa(tm.tienda) if tm.archivada else None
     tm.save(update_fields=['archivada', 'fecha_archivado'])
     return Response({'archivada': tm.archivada, 'fecha_archivado': str(tm.fecha_archivado) if tm.fecha_archivado else None}, status=status.HTTP_200_OK)
 

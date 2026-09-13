@@ -5,6 +5,7 @@ from decimal import Decimal
 from Clientes.models import Cliente
 from Tiendas.models import Tienda
 from Ventas.riesgo import calcular_cuotas_atrasadas, dias_completos_sin_abono
+from Tiendas.fecha_operativa import fecha_operativa
 
 
 
@@ -125,7 +126,10 @@ class Venta(models.Model):
             .first()
         )
         referencia = ultimo.fecha_recaudo if ultimo else self.fecha_venta
-        return dias_completos_sin_abono(referencia)
+        return dias_completos_sin_abono(
+            referencia,
+            hoy=fecha_operativa(self.tienda),
+        )
 
 
 class AjusteVentaAdministrativo(models.Model):

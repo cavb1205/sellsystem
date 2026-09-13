@@ -19,6 +19,7 @@ from Tiendas.serializers import TiendaCreateSerializer
 from Tiendas.views import comprobar_estado_membresia
 from Tiendas import telegram_bot
 from Tiendas.permissions import requiere_acceso_tienda, usuario_puede_acceder_tienda, respuesta_sin_permiso
+from Tiendas.fecha_operativa import fecha_operativa
 from Trabajadores.throttles import LoginRateThrottle, RegisterRateThrottle
 ##### LOGIN #####
 
@@ -239,12 +240,13 @@ def register_user(request):
         serializer_tienda = TiendaCreateSerializer(data=tienda_data)
         if serializer_tienda.is_valid():
             tienda = serializer_tienda.save()
-            Cierre_Caja.objects.create(tienda=tienda, valor=tienda.caja_inicial, fecha_cierre=(datetime.date.today() - datetime.timedelta(days=1)))
+            hoy = fecha_operativa(tienda)
+            Cierre_Caja.objects.create(tienda=tienda, valor=tienda.caja_inicial, fecha_cierre=(hoy - datetime.timedelta(days=1)))
             Tienda_Membresia.objects.create(
                 tienda=tienda,
                 membresia=Membresia.objects.get(nombre='Prueba'),
-                fecha_activacion=datetime.date.today(),
-                fecha_vencimiento=(datetime.date.today() + datetime.timedelta(days=7)),
+                fecha_activacion=hoy,
+                fecha_vencimiento=(hoy + datetime.timedelta(days=7)),
                 estado='Activa'
             )
             Tienda_Administrador.objects.create(tienda=tienda, administrador=user)

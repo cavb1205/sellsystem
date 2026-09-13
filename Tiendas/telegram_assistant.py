@@ -6,8 +6,6 @@ una ruta, usuario o saldo enviados por el chat como fuente de autoridad.
 """
 import html
 import logging
-from datetime import date
-
 import requests
 from django.conf import settings
 from django.contrib.auth.models import User
@@ -18,6 +16,7 @@ from Clientes.views import _calcular_score
 from Recaudos.models import Recaudo
 from Tiendas.models import AlertaOperativa, Tienda
 from Tiendas.alertas_operativas import rutas_del_usuario
+from Tiendas.fecha_operativa import fecha_operativa
 from Ventas.models import Venta
 from Ventas.riesgo import calcular_riesgo_venta
 
@@ -120,12 +119,17 @@ def _texto_resumen(rutas):
     activas = _ventas_activas(rutas)
     vencidas = activas.filter(estado_venta='Vencido')
     atrasadas = activas.filter(estado_venta='Atrasado')
-    recaudo_hoy = Recaudo.objects.filter(
-        tienda__in=rutas,
-        fecha_recaudo=date.today(),
-        visita_blanco__isnull=True,
-        es_renovacion=False,
-    ).aggregate(total=Sum('valor_recaudo'))['total'] or 0
+    recaudo_hoy = sum(
+        (
+            Recaudo.objects.filter(
+                tienda=ruta,
+                fecha_recaudo=fecha_operativa(ruta),
+                visita_blanco__isnull=True,
+                es_renovacion=False,
+            ).aggregate(total=Sum('valor_recaudo'))['total'] or 0
+        )
+        for ruta in rutas
+    )
     por_cobrar = activas.aggregate(total=Sum('saldo_actual'))['total'] or 0
     vencido = vencidas.aggregate(total=Sum('saldo_actual'))['total'] or 0
     return (
@@ -175,7 +179,7 @@ def _texto_ruta(ruta, rutas):
     ventas = _ventas_activas(rutas.filter(id=ruta.id))
     vencidas = ventas.filter(estado_venta='Vencido')
     recaudo_hoy = Recaudo.objects.filter(
-        tienda=ruta, fecha_recaudo=date.today(), visita_blanco__isnull=True, es_renovacion=False
+        tienda=ruta, fecha_recaudo=fecha_operativa(ruta), visita_blanco__isnull=True, es_renovacion=False
     ).aggregate(total=Sum('valor_recaudo'))['total'] or 0
     saldo = ventas.aggregate(total=Sum('saldo_actual'))['total'] or 0
     vencido = vencidas.aggregate(total=Sum('saldo_actual'))['total'] or 0

@@ -11,6 +11,8 @@ from Ventas.riesgo import (
 )
 from Clientes.serializers import ClienteSerializer
 from Clientes.models import Cliente
+from Tiendas.fecha_operativa import fecha_operativa
+from Ventas.riesgo import calcular_fecha_vencimiento
 
 
 def _renovacion_id(obj):
@@ -20,6 +22,20 @@ def _renovacion_id(obj):
 
 
 class VentaSerializer(ModelSerializer):
+    valor_venta = serializers.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        min_value=Decimal('0.01'),
+    )
+    interes = serializers.IntegerField(min_value=0, max_value=100)
+    cuotas = serializers.IntegerField(min_value=1, max_value=120)
+    saldo_actual = serializers.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        read_only=True,
+    )
+    fecha_vencimiento = serializers.DateField(read_only=True)
+    estado_venta = serializers.CharField(read_only=True)
     fue_renovada = serializers.SerializerMethodField()
     renovacion_id = serializers.SerializerMethodField()
     creado_por = serializers.PrimaryKeyRelatedField(read_only=True)
@@ -34,12 +50,46 @@ class VentaSerializer(ModelSerializer):
     def get_renovacion_id(self, obj):
         return _renovacion_id(obj)
 
+    def validate_fecha_venta(self, value):
+        tienda = self.context.get('tienda') or getattr(self.instance, 'tienda', None)
+        if tienda and value > fecha_operativa(tienda):
+            raise serializers.ValidationError('La fecha de venta no puede quedar en el futuro.')
+        return value
+
+    def create(self, validated_data):
+        valor_venta = validated_data['valor_venta']
+        interes = Decimal(validated_data.get('interes', 0))
+        validated_data['saldo_actual'] = valor_venta + (interes / Decimal('100')) * valor_venta
+        validated_data['estado_venta'] = 'Vigente'
+        validated_data['fecha_vencimiento'] = calcular_fecha_vencimiento(
+            validated_data['fecha_venta'],
+            validated_data['cuotas'],
+            validated_data['plazo'],
+        )
+        return super().create(validated_data)
+
 
 
 class VentaUpdateSerializer(ModelSerializer):
+    valor_venta = serializers.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        min_value=Decimal('0.01'),
+    )
+    interes = serializers.IntegerField(min_value=0, max_value=100)
+    cuotas = serializers.IntegerField(min_value=1, max_value=120)
+
     class Meta:
         model = Venta
         exclude = ['cliente', 'creado_por']
+
+    def to_internal_value(self, data):
+        # Estos campos los recalcula el backend; nunca se acepta su valor
+        # enviado por el navegador.
+        data = data.copy()
+        for field_name in ('saldo_actual', 'estado_venta', 'fecha_vencimiento'):
+            data.pop(field_name, None)
+        return super().to_internal_value(data)
 
 
 class VentaCorreccionAdministrativaSerializer(serializers.Serializer):
@@ -229,7 +279,10 @@ class VentaListaSerializer(ModelSerializer):
 
     def get_dias_sin_abono(self, obj):
         referencia = getattr(obj, '_ultimo_abono_real', None) or obj.fecha_venta
-        return dias_completos_sin_abono(referencia)
+        return dias_completos_sin_abono(
+            referencia,
+            hoy=fecha_operativa(obj.tienda),
+        )
 
     def get_fecha_ultimo_abono(self, obj):
         return getattr(obj, '_ultimo_abono_real', None)

@@ -15,6 +15,7 @@ from django.utils import timezone
 
 from Clientes.serializers import ClienteSerializer, ClienteCreateSerializer
 from Tiendas.permissions import requiere_acceso_tienda, usuario_puede_acceder_tienda, respuesta_sin_permiso
+from Tiendas.fecha_operativa import fecha_operativa
 
 
 def _calcular_score_desde_datos(cliente_id, tienda, ventas, recaudos,
@@ -26,7 +27,7 @@ def _calcular_score_desde_datos(cliente_id, tienda, ventas, recaudos,
     carga de datos y cálculo permite que el endpoint bulk lea la ruta completa
     en pocas consultas y luego procese los clientes en memoria.
     """
-    hoy = hoy or timezone.localdate()
+    hoy = hoy or fecha_operativa(tienda)
     recaudos_por_venta = defaultdict(list)
     for recaudo in recaudos:
         recaudos_por_venta[recaudo['venta_id']].append(recaudo)
@@ -553,7 +554,7 @@ def scores_tienda(request, tienda_id):
     for recaudo in recaudos:
         recaudos_por_venta[recaudo['venta_id']].append(recaudo)
 
-    hoy = timezone.localdate()
+    hoy = fecha_operativa(tienda)
     result = {}
     for cliente_id in cliente_ids:
         ventas_cliente = ventas_por_cliente.get(cliente_id, [])

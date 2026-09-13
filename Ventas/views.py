@@ -1,4 +1,4 @@
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from datetime import date, datetime, timedelta
 import Ventas
 
@@ -33,6 +33,7 @@ from Tiendas.alertas_operativas import registrar_alerta_venta
 from Tiendas.caja import registrar_movimiento_caja
 from Clientes.views import _calcular_score
 from Ventas.riesgo import calcular_fecha_vencimiento, normalizar_plazo
+from Tiendas.fecha_operativa import fecha_operativa
 
 
 def _anotar_ventas_lista(queryset):
@@ -40,7 +41,7 @@ def _anotar_ventas_lista(queryset):
     renovacion = Venta.objects.filter(
         origen_renovacion_id=OuterRef('pk'),
     ).order_by('id')
-    return queryset.select_related('cliente').annotate(
+    return queryset.select_related('cliente', 'tienda').annotate(
         # Las visitas fallidas cuentan como ciclos; la liquidación automática
         # de una renovación no es un ciclo de cobro del crédito anterior.
         _recaudos_count=Count(
@@ -222,8 +223,24 @@ def put_venta(request, pk, tienda_id=None):
         )
     if venta:
         new_data = request.data.copy()
-        fecha_venta = datetime.strptime(new_data['fecha_venta'], '%Y-%m-%d')
-        fecha_venta = datetime.date(fecha_venta)
+        try:
+            fecha_venta = datetime.strptime(new_data['fecha_venta'], '%Y-%m-%d').date()
+            cuotas = int(new_data['cuotas'])
+        except (KeyError, TypeError, ValueError):
+            return Response(
+                {'error': 'fecha_venta y cuotas deben tener un formato válido.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if cuotas < 1:
+            return Response(
+                {'cuotas': 'Las cuotas deben ser mayores que cero.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if fecha_venta > fecha_operativa(venta.tienda):
+            return Response(
+                {'fecha_venta': 'La fecha de venta no puede quedar en el futuro.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         plazo = normalizar_plazo(new_data.get('plazo') or venta.plazo)
         if not plazo:
             return Response(
@@ -323,9 +340,9 @@ def corregir_venta_administrativamente(request, pk, tienda_id=None):
     cuotas_nuevas = serializer.validated_data['cuotas']
     motivo = serializer.validated_data['motivo']
 
-    if fecha_nueva > timezone.localdate():
+    if fecha_nueva > fecha_operativa(venta.tienda):
         return Response(
-            {'error': 'La fecha de venta no puede quedar en el futuro.'},
+            {'error': 'La fecha de venta no puede quedar en el futuro para la zona horaria de la ruta.'},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -454,19 +471,14 @@ def post_venta(request, tienda_id=None):
                 )
             plazo = 'Diario'
         new_data['plazo'] = plazo
-        valor_venta = Decimal(str(new_data['valor_venta']))
-        interes = Decimal(str(new_data['interes']))
         try:
             score_previo = _calcular_score(new_data['cliente'], tienda.id)
         except (TypeError, ValueError, Cliente.DoesNotExist):
             score_previo = None
-        new_data['saldo_actual'] = valor_venta + (interes / Decimal(100)) * valor_venta
-        fecha_venta = datetime.strptime(new_data['fecha_venta'], '%Y-%m-%d')
-        fecha_venta = datetime.date(fecha_venta)
-        new_data['fecha_vencimiento'] = str(
-            calcular_fecha_vencimiento(fecha_venta, new_data['cuotas'], plazo)
+        venta_serializer = VentaSerializer(
+            data=new_data,
+            context={'tienda': tienda},
         )
-        venta_serializer = VentaSerializer(data=new_data)
         if venta_serializer.is_valid():
             with transaction.atomic():
                 tienda = Tienda.objects.select_for_update().get(pk=tienda.pk)

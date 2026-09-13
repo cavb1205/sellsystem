@@ -8,6 +8,7 @@ from Publicidad.models import Publicidad
 from Publicidad.serializers import PublicidadSerializer, PublicidadCreateSerializer
 from Tiendas.models import Tienda
 from Tiendas.permissions import requiere_acceso_tienda, usuario_puede_acceder_tienda, respuesta_sin_permiso
+from Tiendas.fecha_operativa import fecha_operativa
 from Trabajadores.models import Perfil
 
 
@@ -64,7 +65,7 @@ def delete_publicidad(request, pk):
 
     is_admin = request.user.is_staff or request.user.is_superuser
     is_owner = publicidad.trabajador == request.user.perfil
-    is_today = publicidad.fecha == timezone.localdate()
+    is_today = publicidad.fecha == fecha_operativa(publicidad.tienda)
 
     if not is_admin and not (is_owner and is_today):
         return Response(
