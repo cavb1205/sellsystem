@@ -263,3 +263,22 @@ TELEGRAM_ASSISTANT_USERNAME = globals().get('TELEGRAM_ASSISTANT_USERNAME', 'cavb
 TELEGRAM_ALERTAS_USERNAME = globals().get(
     'TELEGRAM_ALERTAS_USERNAME', TELEGRAM_ASSISTANT_USERNAME
 )
+
+# Bot separado para avisos de clientes. Las dos banderas deben estar activas
+# para que un worker pueda realizar una petición a Telegram; por defecto no
+# se envía nada aunque existan eventos pendientes.
+TELEGRAM_CLIENTES_ENABLED = globals().get('TELEGRAM_CLIENTES_ENABLED', False)
+TELEGRAM_CLIENTES_DELIVERY_ENABLED = globals().get(
+    'TELEGRAM_CLIENTES_DELIVERY_ENABLED', False
+)
+TELEGRAM_CLIENTES_BOT_TOKEN = globals().get('TELEGRAM_CLIENTES_BOT_TOKEN', '')
+TELEGRAM_CLIENTES_BOT_USERNAME = globals().get('TELEGRAM_CLIENTES_BOT_USERNAME', '')
+TELEGRAM_CLIENTES_WEBHOOK_SECRET = globals().get(
+    'TELEGRAM_CLIENTES_WEBHOOK_SECRET', ''
+)
+TELEGRAM_CLIENTES_USERNAME = globals().get(
+    'TELEGRAM_CLIENTES_USERNAME', 'cavb1205'
+)
+TELEGRAM_CLIENTES_LIMPIEZA_ENABLED = globals().get(
+    'TELEGRAM_CLIENTES_LIMPIEZA_ENABLED', TELEGRAM_CLIENTES_ENABLED is True
+)

@@ -2,7 +2,7 @@ from django.contrib.auth import authenticate
 import datetime
 
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
 
@@ -10,7 +10,10 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from django.contrib.auth.models import User
-from Trabajadores.models import Perfil
+from django.db import transaction
+from django.db.models import F, Q
+from django.utils import timezone
+from Trabajadores.models import AsignacionTrabajador, Perfil
 
 from Trabajadores.serializers import UserCreateSerializer, PerfilSerializer, UserSerializer, UserUpdateSerializer,PerfilCreateSerializer
 from Trabajadores.serializers import UserTokenLoginObtainSerializer,UserLoginSerializer
@@ -18,7 +21,12 @@ from Tiendas.models import Tienda, Cierre_Caja, Tienda_Membresia, Membresia, Tie
 from Tiendas.serializers import TiendaCreateSerializer
 from Tiendas.views import comprobar_estado_membresia
 from Tiendas import telegram_bot
-from Tiendas.permissions import requiere_acceso_tienda, usuario_puede_acceder_tienda, respuesta_sin_permiso
+from Tiendas.permissions import (
+    requiere_acceso_tienda,
+    usuario_puede_acceder_tienda,
+    usuario_es_administrador_tienda,
+    respuesta_sin_permiso,
+)
 from Tiendas.fecha_operativa import fecha_operativa
 from Trabajadores.throttles import LoginRateThrottle, RegisterRateThrottle
 ##### LOGIN #####
@@ -41,6 +49,23 @@ class Login(TokenObtainPairView):
                 return Response(
                     {'error': 'Tu usuario no tiene un perfil de ruta asociado. Contacta al soporte.'},
                     status=status.HTTP_400_BAD_REQUEST)
+            if not (user.is_staff or user.is_superuser):
+                tiene_ruta_activa = AsignacionTrabajador.objects.filter(
+                    perfil=perfil,
+                    activa=True,
+                    tienda__estado=True,
+                    tienda__administrador_id=F('perfil__tienda__administrador_id'),
+                ).exists()
+                tiene_asignaciones = AsignacionTrabajador.objects.filter(
+                    perfil=perfil,
+                ).exists()
+                if not tiene_ruta_activa and not tiene_asignaciones and perfil.tienda.estado:
+                    tiene_ruta_activa = True
+                if not tiene_ruta_activa:
+                    return Response(
+                        {'error': 'Tu usuario no tiene rutas activas asignadas. Contacta al administrador.'},
+                        status=status.HTTP_403_FORBIDDEN,
+                    )
             login_serializer = self.serializer_class(data=request.data)
             if login_serializer.is_valid():
                 user_serializer = UserLoginSerializer(user)
@@ -86,11 +111,174 @@ def list_trabajadores(request, tienda_id = None):
         tienda = Tienda.objects.filter(id=tienda_id).first()    
     else:    
         tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
-    trabajadores = Perfil.objects.filter(tienda=tienda.id)
-    if trabajadores:
+    if not tienda:
+        return Response({'error': 'Ruta no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+    trabajadores = Perfil.objects.filter(
+        Q(tienda_id=tienda.id, asignaciones_ruta__isnull=True)
+        | Q(asignaciones_ruta__tienda_id=tienda.id, asignaciones_ruta__activa=True)
+    ).distinct()
+    if trabajadores.exists():
         trabajadores_serializer = PerfilSerializer(trabajadores, many = True)
         return Response(trabajadores_serializer.data, status=status.HTTP_200_OK)
     return Response({'message':'No se han creado trabajadores'}, status=status.HTTP_200_OK)
+
+
+def _rutas_perfil_ids(perfil):
+    asignaciones = AsignacionTrabajador.objects.filter(perfil=perfil)
+    if not asignaciones.exists():
+        return [perfil.tienda_id]
+    return list(asignaciones.filter(activa=True).values_list('tienda_id', flat=True))
+
+
+def _admin_puede_gestionar_perfil(user, perfil):
+    if not _es_admin(user):
+        return False
+    return any(
+        usuario_es_administrador_tienda(user, tienda_id)
+        for tienda_id in _rutas_perfil_ids(perfil)
+    )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def mis_rutas(request):
+    """Lista mínima de rutas activas asignadas al trabajador autenticado."""
+    if request.user.is_staff or request.user.is_superuser:
+        return respuesta_sin_permiso()
+    perfil = Perfil.objects.select_related('tienda').filter(trabajador=request.user).first()
+    if not perfil:
+        return Response(
+            {'error': 'Perfil de trabajador no encontrado.'},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    tienda_ids = _rutas_perfil_ids(perfil)
+    tiendas = Tienda.objects.filter(
+        id__in=tienda_ids,
+        estado=True,
+        administrador_id=perfil.tienda.administrador_id,
+    ).order_by('nombre')
+    return Response(
+        [{'id': tienda.id, 'nombre': tienda.nombre} for tienda in tiendas],
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+@requiere_acceso_tienda
+def candidatos_asignacion(request, tienda_id=None):
+    """Devuelve trabajadores existentes del mismo propietario."""
+    if not _es_admin(request.user):
+        return respuesta_sin_permiso()
+    tienda = Tienda.objects.filter(id=tienda_id).first()
+    if not tienda:
+        return Response({'error': 'Ruta no encontrada.'}, status=status.HTTP_404_NOT_FOUND)
+    if not usuario_es_administrador_tienda(request.user, tienda.id):
+        return respuesta_sin_permiso()
+    if not tienda.estado:
+        return Response(
+            {'error': 'Solo puedes asignar trabajadores a una ruta activa.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    candidatos = Perfil.objects.filter(
+        tienda__administrador_id=tienda.administrador_id,
+        trabajador__is_staff=False,
+        trabajador__is_superuser=False,
+    ).exclude(
+        asignaciones_ruta__tienda_id=tienda.id,
+        asignaciones_ruta__activa=True,
+    ).select_related('trabajador', 'tienda').distinct().order_by(
+        'trabajador__first_name',
+        'trabajador__username',
+    )
+    return Response(
+        [{
+            'id': perfil.id,
+            'trabajador': perfil.trabajador.get_full_name() or perfil.trabajador.username,
+            'username': perfil.trabajador.username,
+            'identificacion': perfil.identificacion,
+            'ruta_origen': perfil.tienda.nombre,
+        } for perfil in candidatos],
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(['POST', 'DELETE'])
+@permission_classes([IsAuthenticated])
+@requiere_acceso_tienda
+def asignar_trabajador_ruta(request, pk, tienda_id=None):
+    """Asigna o retira acceso operativo sin duplicar la cuenta del usuario."""
+    if not _es_admin(request.user):
+        return respuesta_sin_permiso()
+    tienda = Tienda.objects.filter(id=tienda_id).first()
+    perfil = Perfil.objects.select_related('tienda', 'trabajador').filter(id=pk).first()
+    if not tienda or not perfil:
+        return Response(
+            {'error': 'Trabajador o ruta no encontrados.'},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    if not usuario_es_administrador_tienda(request.user, tienda.id):
+        return respuesta_sin_permiso()
+    if request.method == 'POST' and not tienda.estado:
+        return Response(
+            {'error': 'Solo puedes asignar trabajadores a una ruta activa.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if perfil.tienda.administrador_id != tienda.administrador_id:
+        return Response(
+            {'error': 'Solo puedes asignar trabajadores de rutas del mismo administrador propietario.'},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    if perfil.trabajador.is_staff or perfil.trabajador.is_superuser:
+        return Response(
+            {'error': 'Solo se pueden asignar cuentas de trabajador.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    with transaction.atomic():
+        asignaciones = AsignacionTrabajador.objects.select_for_update().filter(
+            perfil=perfil,
+            tienda=tienda,
+        )
+        if request.method == 'DELETE':
+            asignacion = asignaciones.filter(activa=True).first()
+            if not asignacion:
+                return Response(
+                    {'error': 'El trabajador no está asignado a esta ruta.'},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            asignacion.activa = False
+            asignacion.retirada_en = timezone.now()
+            asignacion.retirada_por = request.user
+            asignacion.save(update_fields=['activa', 'retirada_en', 'retirada_por'])
+            return Response(
+                {'message': 'Se retiró el acceso del trabajador a esta ruta.'},
+                status=status.HTTP_200_OK,
+            )
+
+        asignacion, creada = AsignacionTrabajador.objects.select_for_update().get_or_create(
+            perfil=perfil,
+            tienda=tienda,
+            defaults={'asignada_por': request.user},
+        )
+        if asignacion.activa and not creada:
+            return Response(
+                {'message': 'El trabajador ya está asignado a esta ruta.'},
+                status=status.HTTP_200_OK,
+            )
+        asignacion.activa = True
+        asignacion.asignada_por = request.user
+        asignacion.retirada_en = None
+        asignacion.retirada_por = None
+        asignacion.save(update_fields=[
+            'activa', 'asignada_por', 'retirada_en', 'retirada_por',
+        ])
+
+    return Response(
+        {'message': 'Trabajador asignado a la ruta correctamente.'},
+        status=status.HTTP_201_CREATED if creada else status.HTTP_200_OK,
+    )
 
 
 @api_view(['GET'])
@@ -99,7 +287,7 @@ def get_trabajador(request, pk):
         return respuesta_sin_permiso()
     trabajador = Perfil.objects.filter(id=pk).first()
     if trabajador:
-        if not usuario_puede_acceder_tienda(request.user, trabajador.tienda_id):
+        if not _admin_puede_gestionar_perfil(request.user, trabajador):
             return respuesta_sin_permiso()
         user_id = trabajador.trabajador.id
         user = User.objects.filter(id=user_id).first()
@@ -132,7 +320,7 @@ def put_trabajador(request, pk):
         return respuesta_sin_permiso()
     trabajador = Perfil.objects.filter(id=pk).first()
     if trabajador:
-        if not usuario_puede_acceder_tienda(request.user, trabajador.tienda_id):
+        if not _admin_puede_gestionar_perfil(request.user, trabajador):
             return respuesta_sin_permiso()
         user = User.objects.filter(id=trabajador.trabajador.id).first()
         user_data = {
@@ -147,7 +335,9 @@ def put_trabajador(request, pk):
         'identificacion':request.data['identificacion'],
         'telefono':request.data['telefono'],
         'direccion':request.data['direccion'],
-        'tienda':request.data['tienda']
+        # La ruta principal no se modifica desde la edición del perfil.
+        # Las rutas adicionales se gestionan con la operación de asignación.
+        'tienda':trabajador.tienda_id
         }
         user_serializer = UserUpdateSerializer(user, data=user_data)
         trabajador_serializer = PerfilSerializer(trabajador, data=trabajador_data)
@@ -201,7 +391,12 @@ def post_trabajador(request, tienda_id = None):
         
         trabajador_serializer = PerfilSerializer(data = trabajador_data)
         if trabajador_serializer.is_valid():
-            trabajador_serializer.save()
+            perfil = trabajador_serializer.save()
+            AsignacionTrabajador.objects.get_or_create(
+                perfil=perfil,
+                tienda_id=perfil.tienda_id,
+                defaults={'asignada_por': request.user},
+            )
             return Response(trabajador_serializer.data,status=status.HTTP_200_OK)
         else:
             Response(trabajador_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -287,8 +482,17 @@ def delete_trabajador(request, pk):
         return respuesta_sin_permiso()
     trabajador = Perfil.objects.filter(id=pk).first()
     if trabajador:
-        if not usuario_puede_acceder_tienda(request.user, trabajador.tienda_id):
+        if not _admin_puede_gestionar_perfil(request.user, trabajador):
             return respuesta_sin_permiso()
+        rutas_activas = AsignacionTrabajador.objects.filter(
+            perfil=trabajador,
+            activa=True,
+        ).count()
+        if rutas_activas > 1:
+            return Response(
+                {'error': 'Este trabajador tiene varias rutas asignadas. Retira primero cada asignación; así no se eliminará su cuenta en otras rutas.'},
+                status=status.HTTP_409_CONFLICT,
+            )
         user = User.objects.filter(id=trabajador.trabajador.id).first()
         # Blindaje anti-cascada: Tienda.administrador es FK CASCADE — borrar al
         # usuario que administra una ruta destruiría la tienda completa con sus
@@ -314,7 +518,10 @@ def update_password(request, pk):
         es_propia = trabajador.trabajador_id == request.user.id
         if not es_propia and not _es_admin(request.user):
             return respuesta_sin_permiso()
-        if not usuario_puede_acceder_tienda(request.user, trabajador.tienda_id):
+        if not any(
+            usuario_puede_acceder_tienda(request.user, tienda_id)
+            for tienda_id in _rutas_perfil_ids(trabajador)
+        ):
             return respuesta_sin_permiso()
         password = request.data.get('passwordNuevo') or ''
         if len(password) < 8:

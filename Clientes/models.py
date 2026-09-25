@@ -1,6 +1,10 @@
 from django.db import models
 
 from Tiendas.models import Tienda
+from .telegram_models import (
+    TelegramEvento, TelegramInvitacion, TelegramMensaje, TelegramVinculo,
+    TelegramWorkerCursor,
+)
 
 
 class Cliente(models.Model):

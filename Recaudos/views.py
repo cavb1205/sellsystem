@@ -1,4 +1,6 @@
 from itertools import count
+from copy import copy
+from uuid import uuid4
 from Ventas.models import Venta
 from rest_framework.decorators import api_view
 from rest_framework import generics
@@ -23,6 +25,7 @@ from Tiendas.alertas_operativas import revisar_riesgo_venta
 from Tiendas.views import comprobar_estado_membresia
 from Tiendas.permissions import requiere_acceso_tienda, usuario_puede_acceder_tienda, respuesta_sin_permiso
 from Tiendas.caja import registrar_movimiento_caja
+from Clientes.telegram_eventos import registrar_evento
 from Ventas.models import Venta
 
 from datetime import datetime
@@ -324,6 +327,7 @@ def put_recaudo(request, pk, tienda_id=None):
                     status=status.HTTP_409_CONFLICT,
                 )
             diferencia = nuevo_valor - recaudo.valor_recaudo
+            cambiado = bool(diferencia) or recaudo.fecha_recaudo != recaudo_serializer.validated_data['fecha_recaudo']
             recaudo.fecha_recaudo = recaudo_serializer.validated_data['fecha_recaudo']
             recaudo.valor_recaudo = nuevo_valor
             recaudo.save(update_fields=['fecha_recaudo', 'valor_recaudo'])
@@ -351,6 +355,8 @@ def put_recaudo(request, pk, tienda_id=None):
                     detalle='Corrección del valor del abono',
                 )
             venta.save(update_fields=['saldo_actual', 'estado_venta'])
+            if cambiado:
+                registrar_evento(venta, recaudo, accion='correccion', operacion_id=uuid4())
 
         # El panel se mantiene actualizado, pero una falla o corrección de
         # recaudo no debe interrumpir al administrador por Telegram.
@@ -447,6 +453,7 @@ def post_recaudo(request, tienda_id=None):
                 tienda.save()
                 venta.save()
                 # Las fallas y abonos se consolidan en el reporte nocturno.
+                registrar_evento(venta, recaudo)
                 revisar_riesgo_venta(venta, notificar=False)
             return Response(recaudo_serializer.data, status=status.HTTP_200_OK)
         return Response(recaudo_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -513,6 +520,7 @@ def post_recaudo_no_pay(request, tienda_id=None):
                 venta.estado_venta = 'Pagado'
             tienda.save()
             venta.save()
+            registrar_evento(venta, recaudo)
             revisar_riesgo_venta(venta, notificar=False)
         return Response(recaudo_serializer.data, status=status.HTTP_200_OK)
 
@@ -558,6 +566,7 @@ def delete_recaudo(request, pk):
                 venta=venta.id,
                 es_renovacion=False,
             )
+            referencia_recaudo = copy(recaudo)
             recaudo.delete()
             if valor_recaudo:
                 registrar_movimiento_caja(
@@ -579,6 +588,7 @@ def delete_recaudo(request, pk):
             elif venta.saldo_actual <= 0:
                 venta.estado_venta = 'Pagado'
             venta.save()
+            registrar_evento(venta, referencia_recaudo, accion='reversa', operacion_id=uuid4())
             revisar_riesgo_venta(venta, notificar=False)
         return Response({'message':'Recaudo eliminado correctamente'},status=status.HTTP_200_OK)
     return Response({'message':'No se encontró el recaudo'}, status=status.HTTP_400_BAD_REQUEST)

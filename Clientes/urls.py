@@ -1,8 +1,11 @@
 from django.urls import path
 from . import views
 from .views import ClientesListAPIView
+from . import telegram_views
 
 urlpatterns = [
+    path('<int:pk>/telegram/', telegram_views.vinculacion, name='telegram_cliente'),
+    path('<int:pk>/telegram/invitacion/', telegram_views.invitacion, name='telegram_cliente_invitacion'),
 
 
     ###CLIENTES###

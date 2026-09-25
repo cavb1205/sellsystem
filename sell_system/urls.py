@@ -9,6 +9,7 @@ from django.conf import settings
 
 
 from Trabajadores.views import Login, register_user
+from Clientes.telegram_webhook import webhook as telegram_clientes_webhook
 
 from rest_framework_simplejwt.views import (
     TokenObtainPairView,
@@ -27,6 +28,7 @@ urlpatterns = [
     path('tiendas/', include('Tiendas.urls')),
     path('trabajadores/', include('Trabajadores.urls')),
     path('clientes/', include('Clientes.urls')),
+    path('telegram/clientes/webhook/', telegram_clientes_webhook, name='telegram_clientes_webhook'),
     path('aportes/', include('Aportes.urls')),
     path('gastos/', include('Gastos.urls')),
     path('utilidades/', include('Utilidades.urls')),
@@ -35,5 +37,4 @@ urlpatterns = [
     path('recaudos/', include('Recaudos.urls')),
     path('publicidad/', include('Publicidad.urls')),
 ] + static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
-
 
