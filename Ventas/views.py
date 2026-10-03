@@ -1,5 +1,6 @@
 from decimal import Decimal, InvalidOperation
 from datetime import date, datetime, timedelta
+from uuid import uuid4
 import Ventas
 
 from rest_framework.decorators import api_view, permission_classes
@@ -32,6 +33,7 @@ from Tiendas.permissions import (
 from Tiendas.alertas_operativas import registrar_alerta_venta
 from Tiendas.caja import registrar_movimiento_caja
 from Clientes.views import _calcular_score
+from Clientes.telegram_eventos import registrar_evento
 from Ventas.riesgo import calcular_fecha_vencimiento, normalizar_plazo
 from Tiendas.fecha_operativa import fecha_operativa
 
@@ -277,6 +279,12 @@ def put_venta(request, pk, tienda_id=None):
                 interes = venta_serializer.validated_data['interes']
                 venta_serializer.validated_data['saldo_actual'] = vv + (Decimal(interes) / Decimal(100)) * vv
                 diferencia = vv - venta.valor_venta
+                campos_aviso = ('fecha_venta', 'valor_venta', 'interes', 'cuotas', 'plazo')
+                cambiado = any(
+                    campo in venta_serializer.validated_data
+                    and getattr(venta, campo) != venta_serializer.validated_data[campo]
+                    for campo in campos_aviso
+                )
                 venta_serializer.save()
                 if diferencia:
                     registrar_movimiento_caja(
@@ -288,6 +296,8 @@ def put_venta(request, pk, tienda_id=None):
                         origen=venta,
                         detalle='Corrección del capital del crédito',
                     )
+                if cambiado:
+                    registrar_evento(venta, accion='edicion_credito', operacion_id=uuid4())
             return Response(venta_serializer.data, status=status.HTTP_200_OK)
         return Response(venta_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     return Response({'message': 'No se encontró la venta'}, status=status.HTTP_400_BAD_REQUEST)
@@ -410,6 +420,7 @@ def corregir_venta_administrativamente(request, pk, tienda_id=None):
         venta.fecha_vencimiento = fecha_vencimiento_nueva
         # saldo_actual, estado, capital, intereses y recaudos se preservan.
         venta.save(update_fields=['fecha_venta', 'cuotas', 'fecha_vencimiento'])
+        registrar_evento(venta, ajuste=ajuste)
 
         try:
             from Tiendas.telegram_bot import notificar_correccion_venta
@@ -498,6 +509,7 @@ def post_venta(request, tienda_id=None):
                     score_previo=score_previo,
                     usuario=request.user,
                 )
+                registrar_evento(venta_nueva)
             return Response(venta_serializer.data, status=status.HTTP_200_OK)
         return Response(venta_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -517,6 +529,9 @@ def delete_venta(request, pk, tienda_id=None):
         valor_venta = venta.valor_venta
         origen_id = venta.pk
         origen_tipo = venta._meta.label_lower
+        # Capturar antes de eliminar: conserva referencia y saldo histórico.
+        # Si la eliminación o la caja fallan, también se revierte el aviso.
+        registrar_evento(venta, accion='eliminacion_credito', operacion_id=uuid4())
         venta.delete()
         registrar_movimiento_caja(
             tienda,
@@ -588,7 +603,12 @@ def renovar_venta(request, pk, tienda_id=None):
 
     with transaction.atomic():
         # 1. Recaudo que cierra el viejo (marcado como renovación)
-        Recaudo.objects.create(
+        tienda = Tienda.objects.select_for_update().get(pk=tienda.pk)
+        venta_vieja = Venta.objects.select_for_update().get(pk=venta_vieja.pk)
+        saldo = venta_vieja.saldo_actual or Decimal('0')
+        if venta_vieja.estado_venta in ('Pagado', 'Perdida') or saldo <= 0 or venta_vieja.renovacion.exists():
+            return Response({'error': 'El crédito ya no está disponible para renovar'}, status=status.HTTP_409_CONFLICT)
+        recaudo_renovacion = Recaudo.objects.create(
             fecha_recaudo=fecha_venta,
             valor_recaudo=saldo,
             venta=venta_vieja,
@@ -622,6 +642,8 @@ def renovar_venta(request, pk, tienda_id=None):
             origen_renovacion=venta_vieja,
         )
         # Caja: +saldo (recaudo) -saldo (capital nuevo) = neto 0. No tocar.
+        registrar_evento(venta_vieja, recaudo_renovacion, accion='renovacion', operacion_id=uuid4())
+        registrar_evento(nueva_venta)
 
     return Response({
         'venta_anterior_id': venta_vieja.id,
