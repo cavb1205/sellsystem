@@ -1,4 +1,5 @@
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.core.exceptions import PermissionDenied, ValidationError
@@ -76,6 +77,23 @@ class VinculacionTests(TestCase):
         TelegramInvitacion.objects.update(expira_en=timezone.now()-timedelta(seconds=1))
         with self.assertRaises(ValidationError):
             aceptar_invitacion(nuevo, 12345, True)
+
+    def test_invitacion_puede_aceptarse_despues_de_instalar_telegram(self):
+        inicio = timezone.now()
+        with patch('Clientes.telegram_vinculacion.timezone.now', return_value=inicio):
+            token, expira = crear_invitacion(self.clientes[0].pk, self.admin)
+        self.assertEqual(expira, inicio + timedelta(hours=72))
+        with patch('Clientes.telegram_vinculacion.timezone.now', return_value=inicio + timedelta(hours=71, minutes=59)):
+            vinculo = aceptar_invitacion(token, 12345, True)
+        self.assertTrue(vinculo.activo)
+
+    def test_invitacion_vence_exactamente_a_las_72_horas(self):
+        inicio = timezone.now()
+        with patch('Clientes.telegram_vinculacion.timezone.now', return_value=inicio):
+            token, _ = crear_invitacion(self.clientes[0].pk, self.admin)
+        with patch('Clientes.telegram_vinculacion.timezone.now', return_value=inicio + timedelta(hours=72)):
+            with self.assertRaises(ValidationError):
+                aceptar_invitacion(token, 12345, True)
 
     def test_ajeno_y_grupos_no_autorizados(self):
         with self.assertRaises(PermissionDenied):

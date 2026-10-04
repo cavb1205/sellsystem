@@ -12,6 +12,8 @@ from Clientes.telegram_models import TelegramEvento, TelegramInvitacion, Telegra
 from Tiendas.models import Tienda_Administrador
 from Trabajadores.models import Perfil
 
+INVITACION_VIGENCIA = timedelta(hours=72)
+
 
 def _alcance(cliente):
     return Tienda_Administrador.objects.filter(
@@ -60,9 +62,28 @@ def crear_invitacion(cliente_id, usuario):
     token = secrets.token_urlsafe(32)
     invitacion = TelegramInvitacion.objects.create(
         cliente=cliente, token_hash=hashlib.sha256(token.encode()).hexdigest(),
-        expira_en=ahora + timedelta(minutes=15), creada_por=usuario,
+        expira_en=ahora + INVITACION_VIGENCIA, creada_por=usuario,
     )
     return token, invitacion.expira_en
+
+
+def invitacion_vigente(cliente_id):
+    """Metadatos de la invitación vigente; nunca devuelve el token ni su hash."""
+    return TelegramInvitacion.objects.filter(
+        cliente_id=cliente_id, consumida_en__isnull=True,
+        expira_en__gt=timezone.now(),
+    ).order_by('-creada_en', '-id').first()
+
+
+@transaction.atomic
+def cancelar_invitacion(cliente_id, usuario, invitacion_id):
+    cliente = Cliente.objects.select_for_update().get(pk=cliente_id)
+    _usuario_autorizado(usuario, cliente)
+    # Usar el id evita que una pantalla antigua cancele una invitación nueva.
+    # Si ya fue aceptada, no modificar ni revocar el vínculo del cliente.
+    TelegramInvitacion.objects.filter(
+        pk=invitacion_id, cliente=cliente, consumida_en__isnull=True,
+    ).update(consumida_en=timezone.now())
 
 
 def invitacion_pendiente(token):
