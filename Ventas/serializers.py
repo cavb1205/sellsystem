@@ -13,6 +13,7 @@ from Clientes.serializers import ClienteSerializer
 from Clientes.models import Cliente
 from Tiendas.fecha_operativa import fecha_operativa
 from Ventas.riesgo import calcular_fecha_vencimiento
+from Ventas.calendario import calendario_venta, riesgo_calendario
 
 
 def _renovacion_id(obj):
@@ -39,6 +40,9 @@ class VentaSerializer(ModelSerializer):
     fue_renovada = serializers.SerializerMethodField()
     renovacion_id = serializers.SerializerMethodField()
     creado_por = serializers.PrimaryKeyRelatedField(read_only=True)
+    origen_renovacion = serializers.PrimaryKeyRelatedField(read_only=True)
+    tipo_origen = serializers.CharField(read_only=True)
+    calendario_version = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = Venta
@@ -57,6 +61,7 @@ class VentaSerializer(ModelSerializer):
         return value
 
     def create(self, validated_data):
+        validated_data['calendario_version'] = 1 if validated_data['plazo'] in ('Semanal', 'Mensual') else 0
         valor_venta = validated_data['valor_venta']
         interes = Decimal(validated_data.get('interes', 0))
         validated_data['saldo_actual'] = valor_venta + (interes / Decimal('100')) * valor_venta
@@ -65,6 +70,7 @@ class VentaSerializer(ModelSerializer):
             validated_data['fecha_venta'],
             validated_data['cuotas'],
             validated_data['plazo'],
+            version=validated_data['calendario_version'],
         )
         return super().create(validated_data)
 
@@ -82,6 +88,14 @@ class VentaUpdateSerializer(ModelSerializer):
     class Meta:
         model = Venta
         exclude = ['cliente', 'creado_por']
+        read_only_fields = ['origen_renovacion', 'tipo_origen', 'tienda', 'calendario_version']
+
+    def update(self, instance, validated_data):
+        validated_data['fecha_vencimiento'] = calcular_fecha_vencimiento(
+            validated_data.get('fecha_venta', instance.fecha_venta),
+            validated_data.get('cuotas', instance.cuotas),
+            validated_data.get('plazo', instance.plazo), version=instance.calendario_version)
+        return super().update(instance, validated_data)
 
     def to_internal_value(self, data):
         # Estos campos los recalcula el backend; nunca se acepta su valor
@@ -96,11 +110,13 @@ class VentaCorreccionAdministrativaSerializer(serializers.Serializer):
     """Campos permitidos al corregir una venta que ya tiene recaudos."""
 
     fecha_venta = serializers.DateField()
-    cuotas = serializers.IntegerField(min_value=1)
+    cuotas = serializers.IntegerField(min_value=1, max_value=120)
     motivo = serializers.CharField(min_length=5, max_length=500, trim_whitespace=True)
 
 
 class VentaDetailSerializer(ModelSerializer):
+    calendario_pago = serializers.SerializerMethodField()
+    estado_venta = serializers.SerializerMethodField()
     cliente = ClienteSerializer()
     fue_renovada = serializers.SerializerMethodField()
     renovacion_id = serializers.SerializerMethodField()
@@ -115,10 +131,18 @@ class VentaDetailSerializer(ModelSerializer):
             'fecha_vencimiento','total_abonado','promedio_pago','dias_atrasados',
             'perdida','dias_sin_abono',
             'fue_renovada', 'renovacion_id', 'origen_renovacion_id', 'creado_por',
+            'calendario_version', 'calendario_pago',
             )
 
     def get_fue_renovada(self, obj):
         return _renovacion_id(obj) is not None
+
+    def get_calendario_pago(self, obj):
+        return calendario_venta(obj)
+
+    def get_estado_venta(self, obj):
+        calendario = calendario_venta(obj)
+        return calendario['estado'] if calendario else obj.estado_venta
 
     def get_renovacion_id(self, obj):
         return _renovacion_id(obj)
@@ -174,6 +198,8 @@ class VentaListaSerializer(ModelSerializer):
     renovacion_id = serializers.SerializerMethodField()
     origen_renovacion_id = serializers.IntegerField(read_only=True)
     riesgo_cartera = serializers.SerializerMethodField()
+    calendario_pago = serializers.SerializerMethodField()
+    estado_venta = serializers.SerializerMethodField()
 
     class Meta:
         model = Venta
@@ -188,6 +214,7 @@ class VentaListaSerializer(ModelSerializer):
             'interes_no_cobrado',
             'fue_renovada', 'renovacion_id', 'origen_renovacion_id',
             'creado_por', 'riesgo_cartera',
+            'calendario_version', 'calendario_pago',
         )
 
     @staticmethod
@@ -233,6 +260,9 @@ class VentaListaSerializer(ModelSerializer):
         return round(self.get_total_abonado(obj) / count, 0)
 
     def get_dias_atrasados(self, obj):
+        calendario = calendario_venta(obj)
+        if calendario:
+            return Decimal(calendario['cuotas_atrasadas'])
         cuota = self._cuota(obj)
         if not cuota:
             return 0
@@ -288,6 +318,9 @@ class VentaListaSerializer(ModelSerializer):
         return getattr(obj, '_ultimo_abono_real', None)
 
     def get_riesgo_cartera(self, obj):
+        calendario = calendario_venta(obj)
+        if calendario:
+            return riesgo_calendario(calendario, obj.plazo, self.get_dias_sin_abono(obj))
         return calcular_riesgo_venta(
             plazo=obj.plazo,
             estado_venta=obj.estado_venta,
@@ -295,6 +328,13 @@ class VentaListaSerializer(ModelSerializer):
             dias_atrasados=self.get_dias_atrasados(obj),
             total_abonado=self.get_total_abonado(obj),
         )
+
+    def get_calendario_pago(self, obj):
+        return calendario_venta(obj)
+
+    def get_estado_venta(self, obj):
+        calendario = calendario_venta(obj)
+        return calendario['estado'] if calendario else obj.estado_venta
 
     def get_fue_renovada(self, obj):
         return getattr(obj, '_renovacion_id', None) is not None

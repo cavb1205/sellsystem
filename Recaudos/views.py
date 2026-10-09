@@ -31,6 +31,8 @@ from Ventas.models import Venta
 from datetime import datetime
 from decimal import Decimal
 from django.utils import timezone
+from Ventas.calendario import calendario_venta, actualizar_estado
+from Tiendas.fecha_operativa import fecha_operativa
 
 
 def _validar_ruta_de_venta(venta, tienda):
@@ -336,14 +338,7 @@ def put_recaudo(request, pk, tienda_id=None):
                 venta=venta.id,
                 es_renovacion=False,
             )
-            if venta.promedio_pago() >= venta.valor_cuota():
-                venta.estado_venta = 'Vigente'
-            if venta.promedio_pago() < venta.valor_cuota():
-                venta.estado_venta = 'Atrasado'
-            if venta.cuotas < recaudos.count():
-                venta.estado_venta = 'Vencido'
-            if venta.saldo_actual <= 0:
-                venta.estado_venta = 'Pagado'
+            actualizar_estado(venta)
             if diferencia:
                 registrar_movimiento_caja(
                     tienda,
@@ -442,14 +437,7 @@ def post_recaudo(request, tienda_id=None):
                     venta=venta.id,
                     es_renovacion=False,
                 )
-                if venta.promedio_pago() >= venta.valor_cuota():
-                    venta.estado_venta = 'Vigente'
-                if venta.promedio_pago() < venta.valor_cuota():
-                    venta.estado_venta = 'Atrasado'
-                if venta.cuotas < recaudos.count():
-                    venta.estado_venta = 'Vencido'
-                if venta.saldo_actual <= 0:
-                    venta.estado_venta = 'Pagado'
+                actualizar_estado(venta)
                 tienda.save()
                 venta.save()
                 # Las fallas y abonos se consolidan en el reporte nocturno.
@@ -491,6 +479,18 @@ def post_recaudo_no_pay(request, tienda_id=None):
         with transaction.atomic():
             tienda = Tienda.objects.select_for_update().get(pk=tienda.pk)
             venta = Venta.objects.select_for_update().get(pk=venta.pk)
+            if venta.plazo in ('Semanal', 'Mensual'):
+                try:
+                    fecha_visita = datetime.strptime(new_data.get('fecha_recaudo', ''), '%Y-%m-%d').date()
+                except (ValueError, TypeError):
+                    return Response({'error': 'Fecha inválida.'}, status=status.HTTP_400_BAD_REQUEST)
+                if fecha_visita > fecha_operativa(tienda):
+                    return Response({'error': 'La visita no puede quedar en el futuro.'}, status=status.HTTP_400_BAD_REQUEST)
+                calendario = calendario_venta(venta, fecha_visita)
+                if not calendario['permite_falla']:
+                    return Response({'error': 'No corresponde registrar falla: no hay una cuota exigible pendiente en esa fecha.'}, status=status.HTTP_409_CONFLICT)
+                if venta.recaudo_set.filter(fecha_recaudo=fecha_visita, visita_blanco__isnull=False, es_renovacion=False).exists():
+                    return Response({'error': 'Esta visita sin abono ya fue registrada.'}, status=status.HTTP_409_CONFLICT)
             visita_blanco = visita_blanco_serializer.save()
             new_data['visita_blanco'] = visita_blanco.id
             recaudo_serializer = RecaudoSerializer(data=new_data)
@@ -510,14 +510,7 @@ def post_recaudo_no_pay(request, tienda_id=None):
                 venta=venta.id,
                 es_renovacion=False,
             )
-            if venta.promedio_pago() >= venta.valor_cuota():
-                venta.estado_venta = 'Vigente'
-            if venta.promedio_pago() < venta.valor_cuota():
-                venta.estado_venta = 'Atrasado'
-            if venta.cuotas < recaudos.count():
-                venta.estado_venta = 'Vencido'
-            if venta.saldo_actual <= 0:
-                venta.estado_venta = 'Pagado'
+            actualizar_estado(venta)
             tienda.save()
             venta.save()
             registrar_evento(venta, recaudo)
@@ -579,14 +572,7 @@ def delete_recaudo(request, pk):
                     origen_id=origen_id,
                     detalle='Reversa por eliminación del abono',
                 )
-            if venta.promedio_pago() >= venta.valor_cuota():
-                venta.estado_venta = 'Vigente'
-            elif venta.promedio_pago() < venta.valor_cuota():
-                venta.estado_venta = 'Atrasado'
-            elif venta.cuotas < recaudos.count():
-                venta.estado_venta = 'Vencido'
-            elif venta.saldo_actual <= 0:
-                venta.estado_venta = 'Pagado'
+            actualizar_estado(venta)
             venta.save()
             registrar_evento(venta, referencia_recaudo, accion='reversa', operacion_id=uuid4())
             revisar_riesgo_venta(venta, notificar=False)

@@ -1,6 +1,8 @@
 from django.db import models
 from django.contrib.auth.models import User
 from decimal import Decimal
+from django.core.exceptions import ValidationError
+from django.utils import timezone
 
 from Clientes.models import Cliente
 from Tiendas.models import Tienda
@@ -34,6 +36,9 @@ class Venta(models.Model):
     interes = models.IntegerField(null=False, blank=False, default=20)
     cuotas = models.IntegerField(blank=False,null=False, default=20)
     plazo = models.CharField(max_length=10, choices=Plazo_Venta_Choises, default='Diario')
+    # 0 conserva la cronología histórica (mensual 30 días y tolerancia final).
+    # 1: nuevos no diarios con fechas contractuales explícitas, mensual calendario.
+    calendario_version = models.PositiveSmallIntegerField(default=0, editable=False)
     comentario = models.CharField(max_length=100, blank=True,)
     estado_venta = models.CharField(max_length=10, choices=Estado_Venta_Choises, default='Vigente')
     saldo_actual = models.DecimalField(max_digits=10,decimal_places=2, null=True, blank=True)
@@ -51,6 +56,12 @@ class Venta(models.Model):
     origen_renovacion = models.ForeignKey(
         'self', on_delete=models.SET_NULL, null=True, blank=True,
         related_name='renovacion',
+    )
+    # Vacío para históricos sin evidencia. No se deduce de un FK nulo:
+    # una venta original eliminada puede haber borrado ese vínculo.
+    tipo_origen = models.CharField(
+        max_length=10, blank=True, default='', editable=False,
+        choices=[('Nuevo', 'Nuevo'), ('Renovacion', 'Renovación')],
     )
 
     def __str__(self):
@@ -94,6 +105,10 @@ class Venta(models.Model):
             return 0
 
     def dias_atrasados(self):
+        from Ventas.calendario import calendario_venta
+        calendario = calendario_venta(self)
+        if calendario is not None:
+            return Decimal(calendario['cuotas_atrasadas'])
         if not self.valor_cuota():
             return 0
         venta = Venta.objects.get(id=self.id)
@@ -130,6 +145,47 @@ class Venta(models.Model):
             referencia,
             hoy=fecha_operativa(self.tienda),
         )
+
+
+class DeclaracionPerdidaVenta(models.Model):
+    """Foto de una declaración, no una pérdida definitiva neta de recuperaciones.
+
+    Los identificadores y montos sobreviven a eliminaciones. Una nueva transición
+    a pérdida tras reactivación es otra declaración; no se reescribe la anterior.
+    """
+
+    venta = models.ForeignKey(Venta, on_delete=models.SET_NULL, null=True,
+                              related_name='declaraciones_perdida')
+    tienda = models.ForeignKey(Tienda, on_delete=models.SET_NULL, null=True)
+    usuario = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
+    venta_id_ref = models.PositiveBigIntegerField()
+    tienda_id_ref = models.PositiveBigIntegerField(db_index=True)
+    tienda_nombre = models.CharField(max_length=200)
+    usuario_nombre = models.CharField(max_length=150)
+    registrada_en = models.DateTimeField(default=timezone.now, editable=False)
+    fecha_declaracion = models.DateField(db_index=True)
+    zona_horaria = models.CharField(max_length=64)
+    fecha_venta_original = models.DateField()
+    capital_original = models.DecimalField(max_digits=12, decimal_places=2)
+    interes_contratado = models.DecimalField(max_digits=12, decimal_places=2)
+    abonos_reales_netos = models.DecimalField(max_digits=12, decimal_places=2)
+    saldo_declarado = models.DecimalField(max_digits=12, decimal_places=2)
+    capital_no_recuperado = models.DecimalField(max_digits=12, decimal_places=2)
+    interes_no_cobrado = models.DecimalField(max_digits=12, decimal_places=2)
+    saldo_consistente = models.BooleanField()
+
+    class Meta:
+        ordering = ['-registrada_en', '-id']
+        indexes = [models.Index(fields=['tienda_id_ref', 'fecha_declaracion'],
+                                name='perdida_ruta_fecha_idx')]
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            raise ValidationError('Las declaraciones de pérdida no se reescriben.')
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError('Las declaraciones de pérdida no se eliminan.')
 
 
 class AjusteVentaAdministrativo(models.Model):

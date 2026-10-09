@@ -33,6 +33,10 @@ def estado_credito_visible(datos):
         return '✅ Pagado'
     if datos.get('estado_venta') == 'Vencido':
         return '🔴 Vencido'
+    calendario = datos.get('calendario_pago')
+    if calendario:
+        # La antigüedad del último recibo no implica mora si las cuotas están cubiertas.
+        return '🟠 Con atraso' if Decimal(calendario['importe_vencido']) > 0 else '🟢 Al día'
     try:
         cuotas_atrasadas = Decimal(str(datos.get('cuotas_atrasadas', 0)))
         dias_sin_abono = int(datos.get('dias_sin_abono', 0) or 0)
@@ -82,6 +86,10 @@ def resumen_credito(venta):
             cuotas_atrasadas,
             Decimal(max(0, dias_sin_abono // intervalo_cobro(venta.plazo))),
         )
+    from Ventas.calendario import calendario_venta
+    calendario = calendario_venta(venta)
+    if calendario:
+        cuotas_atrasadas = Decimal(calendario['cuotas_atrasadas'])
     return {
         'credito': venta.pk,
         'cliente_primer_nombre': primer_nombre(
@@ -94,7 +102,8 @@ def resumen_credito(venta):
         'cuotas': venta.cuotas,
         'frecuencia': venta.plazo,
         'valor_cuota': str(venta.valor_cuota()),
-        'estado_venta': getattr(venta, 'estado_venta', 'Vigente'),
+        'estado_venta': calendario['estado'] if calendario else getattr(venta, 'estado_venta', 'Vigente'),
+        'calendario_pago': calendario,
         'fecha_vencimiento': (
             venta.fecha_vencimiento.isoformat()
             if getattr(venta, 'fecha_vencimiento', None) else None

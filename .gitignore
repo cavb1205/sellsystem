@@ -4,6 +4,11 @@ db.sqlite3
 .DS_Store
 sell_system/variables.py
 sell_system/settings.py
+.env*
+*.bak*
+*.sql
+*.dump
+*.backup
 
 # Python
 __pycache__/

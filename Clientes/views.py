@@ -16,6 +16,7 @@ from django.utils import timezone
 from Clientes.serializers import ClienteSerializer, ClienteCreateSerializer
 from Tiendas.permissions import requiere_acceso_tienda, usuario_puede_acceder_tienda, respuesta_sin_permiso
 from Tiendas.fecha_operativa import fecha_operativa
+from Ventas.calendario import NO_DIARIOS, datos_calendario_score
 
 
 def _calcular_score_desde_datos(cliente_id, tienda, ventas, recaudos,
@@ -32,8 +33,20 @@ def _calcular_score_desde_datos(cliente_id, tienda, ventas, recaudos,
     for recaudo in recaudos:
         recaudos_por_venta[recaudo['venta_id']].append(recaudo)
 
+    # Las condiciones y el historial se leen sin reescribir ventas ni fallas.
+    ventas = [dict(venta) for venta in ventas]
+    calendarios, obligaciones = {}, []
+    ids_no_diarios = set()
+    for venta in ventas:
+        if venta['plazo'] in NO_DIARIOS:
+            ids_no_diarios.add(venta['id'])
+            perfil, observaciones = datos_calendario_score(venta, recaudos_por_venta.get(venta['id'], []), hoy)
+            calendarios[venta['id']] = perfil
+            venta['estado_venta'] = perfil['estado']
+            obligaciones.extend(observaciones)
+
     # Solo recaudos reales — excluye los generados al renovar.
-    recaudos_reales = [r for r in recaudos if not r['es_renovacion']]
+    recaudos_reales = [r for r in recaudos if not r['es_renovacion'] and r['venta_id'] not in ids_no_diarios] + obligaciones
     visitas_recientes = sorted(
         recaudos_reales,
         key=lambda r: (r['fecha_recaudo'], r['id']),
@@ -64,6 +77,7 @@ def _calcular_score_desde_datos(cliente_id, tienda, ventas, recaudos,
     ]
 
     dias_sin_abono_max = 0
+    dias_incumplimiento_max = 0
     peor_bucket = 0
     for venta in activas:
         pagos_reales = [
@@ -77,8 +91,11 @@ def _calcular_score_desde_datos(cliente_id, tienda, ventas, recaudos,
         referencia = ultimo_abono or venta['fecha_venta']
         dsa = dias_completos_sin_abono(referencia, hoy)
         sano, leve, grave = UMBRALES_DSA.get(venta['plazo'], UMBRALES_DSA['Diario'])
-        bucket = 0 if dsa <= sano else 1 if dsa <= leve else 2 if dsa <= grave else 3
+        calendario = calendarios.get(venta['id'])
+        dias_riesgo = calendario['dias_mora'] if calendario else dsa
+        bucket = 0 if dias_riesgo <= sano else 1 if dias_riesgo <= leve else 2 if dias_riesgo <= grave else 3
         dias_sin_abono_max = max(dias_sin_abono_max, dsa)
+        dias_incumplimiento_max = max(dias_incumplimiento_max, dias_riesgo)
         peor_bucket = max(peor_bucket, bucket)
 
     if (vencidos + renovaciones) > 0 or peor_bucket == 3:
@@ -109,7 +126,7 @@ def _calcular_score_desde_datos(cliente_id, tienda, ventas, recaudos,
         senales.append(f'{perdidos} crédito(s) perdido(s)')
     if peor_bucket == 3 and activas:
         score = min(score, 40)
-        senales.append(f'{dias_sin_abono_max} días sin abono en crédito vigente')
+        senales.append(f'{dias_incumplimiento_max} días de incumplimiento en crédito activo')
     if racha_fallas >= 5:
         score = min(score, 50)
         senales.append(f'{racha_fallas} fallas consecutivas')
@@ -313,6 +330,7 @@ def _score_data_queryset(cliente_id, tienda_id):
     ).values(
         'id', 'cliente_id', 'fecha_venta', 'valor_venta', 'cuotas', 'plazo',
         'estado_venta', 'saldo_actual', 'origen_renovacion_id',
+        'interes', 'calendario_version', 'fecha_vencimiento',
     ))
     venta_ids = [v['id'] for v in ventas]
     recaudos = list(Recaudo.objects.filter(venta_id__in=venta_ids).values(
@@ -537,6 +555,7 @@ def scores_tienda(request, tienda_id):
     ventas = list(Venta.objects.filter(tienda_id=tienda_id).values(
         'id', 'cliente_id', 'fecha_venta', 'valor_venta', 'cuotas', 'plazo',
         'estado_venta', 'saldo_actual', 'origen_renovacion_id',
+        'interes', 'calendario_version', 'fecha_vencimiento',
     ))
     venta_ids = [v['id'] for v in ventas]
     recaudos = list(Recaudo.objects.filter(venta_id__in=venta_ids).values(

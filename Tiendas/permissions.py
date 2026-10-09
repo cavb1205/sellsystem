@@ -10,10 +10,11 @@ Un usuario puede acceder a una `tienda_id` si:
 - es root (`is_superuser`) — necesario para la impersonación del panel admin;
 - es el admin dueño de la ruta (`Tienda.administrador`);
 - es un admin que maneja la ruta (`Tienda_Administrador`);
-- es un trabajador asignado a esa ruta (`Perfil.tienda`).
+- es un trabajador con asignación activa a una ruta activa del mismo administrador.
 """
 from functools import wraps
 
+from django.db.models import F
 from rest_framework import status
 from rest_framework.response import Response
 
@@ -34,10 +35,31 @@ def usuario_puede_acceder_tienda(user, tienda_id):
         return True
     if Tienda_Administrador.objects.filter(tienda_id=tid, administrador=user).exists():
         return True
-    try:
-        return user.perfil.tienda_id == tid
-    except Exception:
+    # Route assignments grant operational access only; their owner must still
+    # match the worker's primary route owner. Import locally to avoid coupling
+    # model initialization across apps.
+    if user.is_staff:
         return False
+    from Trabajadores.models import AsignacionTrabajador, Perfil
+
+    perfil = Perfil.objects.filter(trabajador_id=user.pk).only('id', 'tienda_id').first()
+    if perfil is None:
+        return False
+
+    asignaciones = AsignacionTrabajador.objects.filter(perfil_id=perfil.pk)
+    if not asignaciones.exists():
+        # Legacy fallback until the assignment backfill has been applied.
+        return perfil.tienda_id == tid and Tienda.objects.filter(
+            id=tid,
+            estado=True,
+        ).exists()
+
+    return asignaciones.filter(
+        tienda_id=tid,
+        activa=True,
+        tienda__estado=True,
+        tienda__administrador_id=F('perfil__tienda__administrador_id'),
+    ).exists()
 
 
 def usuario_es_administrador_tienda(user, tienda_id):

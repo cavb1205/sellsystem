@@ -322,6 +322,10 @@ def registrar_alerta_venta(venta, score_previo=None, usuario=None):
 
 
 def _perfil_riesgo(venta):
+    from Ventas.calendario import calendario_venta, riesgo_calendario
+    calendario = calendario_venta(venta)
+    if calendario:
+        return riesgo_calendario(calendario, venta.plazo, venta.dias_sin_abono())
     return calcular_riesgo_venta(
         plazo=venta.plazo,
         estado_venta=venta.estado_venta,
@@ -349,7 +353,7 @@ def _tipo_alerta_cartera(venta, perfil, tiene_abono_real):
         tiene_abono_real
         and perfil['nivel_cobranza'] == 1
         and perfil['cuotas_atrasadas'] <= 0
-        and venta.estado_venta == 'Vigente'
+        and perfil.get('estado_calendario', venta.estado_venta) == 'Vigente'
     )
     if not tiene_abono_real:
         return 'SIN_PRIMER_ABONO'
@@ -370,7 +374,8 @@ def _datos_alerta_cartera(venta, perfil, tipo):
             'SEGUIMIENTO_PREVENTIVO': 'seguimiento_preventivo',
             'SIN_PRIMER_ABONO': 'sin_primer_abono',
         }.get(tipo, 'riesgo_cartera'),
-        'estado_venta': venta.estado_venta,
+        'estado_venta': perfil.get('estado_calendario', venta.estado_venta),
+        'dias_mora': perfil.get('dias_mora'),
         'actualizado_en': timezone.now().isoformat(),
     }
 
@@ -382,6 +387,23 @@ def _texto_alerta_cartera(venta, perfil, tipo):
     cuotas_atrasadas = perfil['cuotas_atrasadas']
     cliente = f'{venta.cliente.nombres} {venta.cliente.apellidos}'.strip()
     severidad = {1: 'media', 2: 'alta', 3: 'critica'}[nivel]
+
+    if 'dias_mora' in perfil:
+        # En planes por calendario, DSA es informativo, no el disparador de mora.
+        return {
+            'severidad': severidad,
+            'titulo': f'Venta #{venta.id} requiere gestión {perfil["clave_cobranza"]}',
+            'detalle': (
+                f'📅 <b>Cobranza por calendario · {_escape(venta.plazo)}</b>\n\n'
+                f'🏪 Ruta: <b>{_escape(venta.tienda.nombre)}</b>\n'
+                f'👤 Cliente: <b>{_escape(cliente)}</b> · venta #{venta.id}\n'
+                f'💰 Pendiente exigible: <b>{_dinero(perfil["importe_pendiente_hoy"])}</b>\n'
+                f'📉 Cuotas atrasadas: <b>{cuotas_atrasadas:.1f}</b> · '
+                f'<b>{perfil["dias_mora"]} días de mora</b>\n'
+                f'📌 {_escape(perfil["motivo"])}. El día del pago permanece abierto; '
+                f'los días sin abonar no indican atraso si las cuotas están cubiertas.'
+            ),
+        }
 
     if tipo == 'SEGUIMIENTO_PREVENTIVO':
         unidad = 'día' if umbral == 1 else 'días'

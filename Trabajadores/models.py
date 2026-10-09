@@ -19,7 +19,45 @@ class Perfil(models.Model):
         return self.identificacion
 
 
+class AsignacionTrabajador(models.Model):
+    """Acceso operativo de un trabajador a una ruta adicional."""
 
+    perfil = models.ForeignKey(
+        Perfil,
+        on_delete=models.CASCADE,
+        related_name='asignaciones_ruta',
+    )
+    tienda = models.ForeignKey(
+        Tienda,
+        on_delete=models.CASCADE,
+        related_name='asignaciones_trabajador',
+    )
+    activa = models.BooleanField(default=True)
+    asignada_en = models.DateTimeField(auto_now_add=True)
+    asignada_por = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='asignaciones_trabajador_creadas',
+    )
+    retirada_en = models.DateTimeField(null=True, blank=True)
+    retirada_por = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='asignaciones_trabajador_retiradas',
+    )
 
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['perfil', 'tienda'],
+                name='unique_asignacion_trabajador_tienda',
+            ),
+        ]
+        ordering = ['tienda__nombre']
 
- 
+    def __str__(self):
+        return f'{self.perfil_id} -> {self.tienda_id}'

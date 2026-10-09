@@ -1613,10 +1613,11 @@ def reporte_utilidad_diario(request, date1, date2, tienda_id=None):
             - datos['gastos']
         )
 
-    return Response(
-        sorted(datos_por_fecha.values(), key=lambda item: item['fecha'], reverse=True),
-        status=status.HTTP_200_OK,
-    )
+    filas = sorted(datos_por_fecha.values(), key=lambda item: item['fecha'], reverse=True)
+    if request.query_params.get('version') == '2':
+        from Tiendas.reporte_historico import ampliar_reporte
+        return Response(ampliar_reporte(tienda, inicio, fin, filas, fila))
+    return Response(filas, status=status.HTTP_200_OK)
 
 def _registrar_pago_manual(tienda_membresia, user):
     """Registra en el libro de pagos una activación manual hecha por el root.

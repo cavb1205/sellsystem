@@ -66,8 +66,11 @@ def umbrales_dsa(plazo):
     return UMBRALES_DSA.get(plazo, UMBRALES_DSA['Diario'])
 
 
-def calcular_fecha_vencimiento(fecha_venta, cuotas, plazo):
+def calcular_fecha_vencimiento(fecha_venta, cuotas, plazo, version=0):
     """Calcula el final cronológico respetando la frecuencia del crédito."""
+    if version == 1 and plazo in ('Semanal', 'Mensual'):
+        from Ventas.calendario import fechas_cuotas
+        return list(fechas_cuotas(fecha_venta, cuotas, plazo, version))[-1]
     return fecha_venta + timedelta(
         days=(int(cuotas) * intervalo_cobro(plazo)) + 4,
     )

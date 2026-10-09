@@ -9,7 +9,7 @@ from rest_framework.response import Response
 from rest_framework import status
 
 from django.db import transaction
-from django.db.models import Count, Max, Q, OuterRef, Subquery, Sum
+from django.db.models import Count, Max, Q, OuterRef, Subquery, Sum, Value, DateField
 from django.utils import timezone
 
 from Ventas.models import Venta, AjusteVentaAdministrativo
@@ -36,14 +36,23 @@ from Clientes.views import _calcular_score
 from Clientes.telegram_eventos import registrar_evento
 from Ventas.riesgo import calcular_fecha_vencimiento, normalizar_plazo
 from Tiendas.fecha_operativa import fecha_operativa
+from Ventas.perdidas import declarar_perdida
+from Ventas.calendario import calendario_venta
 
 
-def _anotar_ventas_lista(queryset):
+def _anotar_ventas_lista(queryset, consulta=None, abonos_hasta=None):
     """Prepara ventas para listados sin consultas por cada fila."""
+    if consulta is None:
+        ruta = Tienda.objects.filter(pk__in=queryset.values('tienda_id')[:1]).first()
+        consulta = fecha_operativa(ruta) if ruta else timezone.localdate()
+    limite_abonos = abonos_hasta or consulta
     renovacion = Venta.objects.filter(
         origen_renovacion_id=OuterRef('pk'),
     ).order_by('id')
     return queryset.select_related('cliente', 'tienda').annotate(
+        _fecha_calendario=Value(consulta, output_field=DateField()),
+        _abonos_calendario=Sum('recaudo__valor_recaudo', filter=Q(recaudo__es_renovacion=False, recaudo__fecha_recaudo__lte=limite_abonos)),
+        _gestiones_calendario=Count('recaudo', filter=Q(recaudo__es_renovacion=False, recaudo__fecha_recaudo=consulta, recaudo__fecha_recaudo__lte=limite_abonos)),
         # Las visitas fallidas cuentan como ciclos; la liquidación automática
         # de una renovación no es un ciclo de cobro del crédito anterior.
         _recaudos_count=Count(
@@ -105,14 +114,34 @@ def list_ventas_a_liquidar(request, date, tienda_id=None):
     ventas = Venta.objects.filter(tienda=tienda.id).exclude(
         estado_venta='Pagado').exclude(estado_venta='Perdida')
 
-    parsed_date = datetime.strptime(date, '%Y-%m-%d')
-    ventas = ventas.filter(fecha_venta__lt=parsed_date).exclude(
-        recaudo__fecha_recaudo=parsed_date).order_by('id')
-    ventas = _anotar_ventas_lista(ventas)
-    if ventas.exists():
-        venta_serializer = VentaListaSerializer(ventas, many=True)
-        return Response(venta_serializer.data, status=status.HTTP_200_OK)
-    return Response({'message': 'No se han creado ventas'}, status=status.HTTP_200_OK)
+    try:
+        parsed_date = datetime.strptime(date, '%Y-%m-%d').date()
+    except ValueError:
+        return Response({'error': 'Fecha inválida.'}, status=status.HTTP_400_BAD_REQUEST)
+    hoy = fecha_operativa(tienda)
+    previa = parsed_date > hoy and request.query_params.get('vista') == 'previa'
+    if previa and not usuario_es_administrador_tienda(user, tienda.id):
+        return respuesta_sin_permiso()
+    if parsed_date > hoy and not previa:
+        return Response({'error': 'No se puede liquidar una fecha futura.'}, status=status.HTTP_400_BAD_REQUEST)
+    ventas = ventas.filter(fecha_venta__lt=parsed_date)
+    if previa:
+        ventas = ventas.filter(fecha_venta__lte=hoy)
+    ventas = _anotar_ventas_lista(ventas.order_by('id'), parsed_date, abonos_hasta=hoy if previa else None)
+    visibles = []
+    for venta in ventas:
+        calendario = calendario_venta(venta)
+        if calendario and calendario['visible_liquidar']:
+            visibles.append(venta)
+        elif calendario is None and not venta._gestiones_calendario:
+            visibles.append(venta)
+    datos = VentaListaSerializer(visibles, many=True).data
+    if previa:
+        # Solo proyección: no persistir estados ni asumir abonos futuros.
+        return Response({'vista_previa': True, 'fecha_operativa': hoy.isoformat(),
+                         'fecha_consulta': parsed_date.isoformat(), 'creditos': datos},
+                        status=status.HTTP_200_OK)
+    return Response(datos, status=status.HTTP_200_OK)
 
 
 @api_view(['GET'])
@@ -233,9 +262,9 @@ def put_venta(request, pk, tienda_id=None):
                 {'error': 'fecha_venta y cuotas deben tener un formato válido.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if cuotas < 1:
+        if cuotas < 1 or cuotas > 120:
             return Response(
-                {'cuotas': 'Las cuotas deben ser mayores que cero.'},
+                {'cuotas': 'Las cuotas deben estar entre 1 y 120.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         if fecha_venta > fecha_operativa(venta.tienda):
@@ -391,6 +420,7 @@ def corregir_venta_administrativamente(request, pk, tienda_id=None):
         fecha_nueva,
         cuotas_nuevas,
         venta.plazo,
+        version=venta.calendario_version,
     )
     total_a_pagar = venta.total_a_pagar()
     valor_cuota_nueva = (total_a_pagar / cuotas_nuevas).quantize(Decimal('0.01'))
@@ -493,7 +523,7 @@ def post_venta(request, tienda_id=None):
         if venta_serializer.is_valid():
             with transaction.atomic():
                 tienda = Tienda.objects.select_for_update().get(pk=tienda.pk)
-                venta_nueva = venta_serializer.save(creado_por=request.user)
+                venta_nueva = venta_serializer.save(creado_por=request.user, tipo_origen='Nuevo')
                 registrar_movimiento_caja(
                     tienda,
                     -venta_nueva.valor_venta,
@@ -547,20 +577,16 @@ def delete_venta(request, pk, tienda_id=None):
 
 
 @api_view(['PUT'])
+@permission_classes([IsAuthenticated])
 def perdida_venta(request, pk):
-    venta = Venta.objects.filter(id=pk).first()
-    if venta:
-        if not usuario_puede_acceder_tienda(request.user, venta.tienda_id):
-            return respuesta_sin_permiso()
-        cliente = Cliente.objects.get(pk=venta.cliente.id)
-        cliente.estado_cliente = 'Bloqueado'
-        cliente.save()
-        venta.estado_venta = 'Perdida'
-        venta.comentario = 'Venta en pérdida, cliente bloqueado'
-        venta.save()
-        return Response({'message': 'Venta enviada como pérdida.'})
-    else:
-        return Response({'message': 'No se encontró la venta'}, status=status.HTTP_400_BAD_REQUEST)
+    declaracion, creada = declarar_perdida(pk, request.user)
+    return Response({
+        'message': 'Venta enviada como pérdida.',
+        'declaracion_creada': creada,
+        'declaracion_id': declaracion.pk if declaracion else None,
+        'fecha_declaracion': declaracion.fecha_declaracion if declaracion else None,
+        'advertencia': None if declaracion else 'Pérdida histórica sin fecha de declaración conocida.',
+    })
 
 
 @api_view(['POST'])
@@ -594,7 +620,7 @@ def renovar_venta(request, pk, tienda_id=None):
         cuotas = int(request.data.get('cuotas'))
     except (TypeError, ValueError):
         return Response({'error': 'fecha_venta, interes y cuotas son requeridos'}, status=status.HTTP_400_BAD_REQUEST)
-    if cuotas < 1 or interes < 0:
+    if cuotas < 1 or cuotas > 120 or interes < 0:
         return Response({'error': 'interes y cuotas inválidos'}, status=status.HTTP_400_BAD_REQUEST)
 
     saldo = venta_vieja.saldo_actual or Decimal('0')
@@ -625,6 +651,7 @@ def renovar_venta(request, pk, tienda_id=None):
             fecha_venta,
             cuotas,
             venta_vieja.plazo,
+            version=1 if venta_vieja.plazo in ('Semanal', 'Mensual') else 0,
         )
         nueva_venta = Venta.objects.create(
             fecha_venta=fecha_venta,
@@ -633,6 +660,7 @@ def renovar_venta(request, pk, tienda_id=None):
             interes=interes,
             cuotas=cuotas,
             plazo=venta_vieja.plazo,
+            calendario_version=1 if venta_vieja.plazo in ('Semanal', 'Mensual') else 0,
             comentario=f'Renovación de crédito #{venta_vieja.id}',
             creado_por=request.user,
             estado_venta='Vigente',
@@ -640,6 +668,7 @@ def renovar_venta(request, pk, tienda_id=None):
             fecha_vencimiento=fecha_vencimiento,
             tienda=tienda,
             origen_renovacion=venta_vieja,
+            tipo_origen='Renovacion',
         )
         # Caja: +saldo (recaudo) -saldo (capital nuevo) = neto 0. No tocar.
         registrar_evento(venta_vieja, recaudo_renovacion, accion='renovacion', operacion_id=uuid4())
