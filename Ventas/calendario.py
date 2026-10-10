@@ -27,6 +27,30 @@ def fechas_cuotas(fecha_venta, cuotas, plazo, version=0):
             yield fecha_venta + timedelta(days=numero * {'Diario': 1, 'Semanal': 7, 'Mensual': 30}[plazo])
 
 
+def importe_cuota_fecha(*, fecha_venta, cuotas, plazo, total, saldo_inicio,
+                       consulta, version=0):
+    """Cuota de esta fecha antes de sus cobros; no acumula deuda anterior.
+
+    Diario conserva la cobranza por jornada del contrato histórico. Semanal y
+    mensual usan sus vencimientos exactos y descuentan anticipos anteriores.
+    Un pago, falla o cancelación completa durante la fecha no cambia esta base.
+    """
+    total = Decimal(str(total)).quantize(CENTAVO, rounding=ROUND_HALF_UP)
+    saldo = max(Decimal('0'), min(total, Decimal(str(saldo_inicio or 0))))
+    if consulta <= fecha_venta or not cuotas or saldo == 0:
+        return Decimal('0.00')
+    if plazo == 'Diario':
+        return min(saldo, (total / int(cuotas)).quantize(CENTAVO, rounding=ROUND_HALF_UP))
+    fechas = list(fechas_cuotas(fecha_venta, cuotas, plazo, version))
+    if consulta not in fechas:
+        return Decimal('0.00')
+    numero = fechas.index(consulta) + 1
+    anterior = (total * (numero - 1) / int(cuotas)).quantize(CENTAVO, rounding=ROUND_HALF_UP)
+    exigido = (total * numero / int(cuotas)).quantize(CENTAVO, rounding=ROUND_HALF_UP)
+    abonado_antes = total - saldo
+    return max(Decimal('0.00'), exigido - max(anterior, abonado_antes))
+
+
 def calcular_calendario(*, fecha_venta, cuotas, plazo, total, abonado, consulta,
                        version=0, vencimiento=None, estado='Vigente', gestionado=False):
     fechas = list(fechas_cuotas(fecha_venta, cuotas, plazo, version))
