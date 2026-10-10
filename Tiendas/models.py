@@ -9,6 +9,29 @@ from django.utils import timezone
 from Tiendas.fecha_operativa import fecha_operativa
 
 
+class OrdenVisita(models.Model):
+    """Recorrido compartido. Conserva posiciones de clientes sin crédito activo."""
+    tienda = models.OneToOneField('Tiendas.Tienda', on_delete=models.CASCADE)
+    clientes = models.JSONField(default=list)
+    version = models.PositiveIntegerField(default=0)
+    actualizado_en = models.DateTimeField(null=True, blank=True)
+    actualizado_por_nombre = models.CharField(max_length=200, blank=True)
+
+
+class CambioOrdenVisita(models.Model):
+    tienda = models.ForeignKey('Tiendas.Tienda', on_delete=models.CASCADE)
+    version = models.PositiveIntegerField()
+    anterior = models.JSONField(default=list)
+    nuevo = models.JSONField(default=list)
+    usuario = models.ForeignKey(User, null=True, on_delete=models.SET_NULL)
+    usuario_nombre = models.CharField(max_length=200)
+    registrado_en = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(
+            fields=['tienda', 'version'], name='unique_cambio_orden_visita_version')]
+
+
 class Tienda(models.Model):
     nombre = models.CharField(max_length=200)
     telefono = models.CharField(max_length=20, blank=True, null=True)

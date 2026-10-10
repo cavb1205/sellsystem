@@ -38,6 +38,7 @@ from Ventas.riesgo import calcular_fecha_vencimiento, normalizar_plazo
 from Tiendas.fecha_operativa import fecha_operativa
 from Ventas.perdidas import declarar_perdida
 from Ventas.calendario import calendario_venta
+from Tiendas.orden_visita import ordenar_ventas_recorrido
 
 
 def _anotar_ventas_lista(queryset, consulta=None, abonos_hasta=None):
@@ -135,6 +136,7 @@ def list_ventas_a_liquidar(request, date, tienda_id=None):
             visibles.append(venta)
         elif calendario is None and not venta._gestiones_calendario:
             visibles.append(venta)
+    visibles = ordenar_ventas_recorrido(visibles, tienda.id)
     datos = VentaListaSerializer(visibles, many=True).data
     if previa:
         # Solo proyección: no persistir estados ni asumir abonos futuros.

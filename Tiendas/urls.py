@@ -1,7 +1,9 @@
 from django.urls import path
 from . import views
+from .orden_visita import recorrido_ruta
 
 urlpatterns = [
+    path('recorrido/t/<int:tienda_id>/', recorrido_ruta, name='recorrido_ruta'),
 
     
     ###TIENDA###
