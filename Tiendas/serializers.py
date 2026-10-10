@@ -158,6 +158,7 @@ class TiendaMembresiaListaSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'fecha_activacion', 'fecha_vencimiento', 'estado',
             'pre_activada_hasta', 'archivada', 'fecha_archivado',
+            'version', 'vencida_manualmente', 'vencimiento_manual_fecha', 'motivo',
             'tienda', 'membresia', 'ultima_actividad',
         ]
 

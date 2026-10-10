@@ -194,7 +194,7 @@ REST_FRAMEWORK = {
     # Por defecto TODO requiere autenticación. Los endpoints públicos
     # (login, register, telegram_webhook) usan @permission_classes([AllowAny]).
     'DEFAULT_PERMISSION_CLASSES': (
-        'rest_framework.permissions.IsAuthenticated',
+        'Tiendas.permission_suscripcion.IsAuthenticatedOperativo',
     ),
     # Throttling: solo se aplica donde se declara explícitamente (login y
     # register), no global, para no afectar a los cobradores en campo.

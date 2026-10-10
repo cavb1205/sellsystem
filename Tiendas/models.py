@@ -401,6 +401,12 @@ class Tienda_Membresia(models.Model):
     # Archivado: ruta inactiva mucho tiempo. Sale de métricas y listados, reversible.
     archivada = models.BooleanField(default=False, db_index=True)
     fecha_archivado = models.DateField(null=True, blank=True)
+    # Una corrección administrativa vence inmediatamente, sin inventar deuda
+    # ni depender del período de gracia de los vencimientos ordinarios.
+    vencida_manualmente = models.BooleanField(default=False)
+    vencimiento_manual_fecha = models.DateTimeField(null=True, blank=True)
+    motivo = models.CharField(max_length=500, blank=True)
+    version = models.PositiveIntegerField(default=0)
 
     def __str__(self):
         return str(self.tienda) + ' - ' + str(self.membresia)
@@ -489,10 +495,8 @@ class CuentaDestino(models.Model):
 
 
 class PagoMembresia(models.Model):
-    """Libro de ingresos por membresías. Un registro inmutable por cada renovación
-    cobrada, con el precio congelado al momento del pago. Se crea al confirmar una
-    SolicitudPago o al activar manualmente desde el panel root; se elimina si la
-    solicitud se revierte en conciliación."""
+    """Libro de ingresos con precio congelado. Las correcciones anulan el
+    registro conservando su identidad, monto y trazabilidad."""
     ORIGENES = [
         ('telegram', 'Confirmado vía Telegram'),
         ('panel', 'Confirmado en panel web'),
@@ -511,7 +515,34 @@ class PagoMembresia(models.Model):
     )
     registrado_por = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
     creado = models.DateTimeField(auto_now_add=True)
+    estado = models.CharField(max_length=10, default='vigente', choices=[
+        ('vigente', 'Vigente'), ('anulado', 'Anulado'),
+    ], db_index=True)
+    anulado_motivo = models.CharField(max_length=500, blank=True)
+    anulado_en = models.DateTimeField(null=True, blank=True)
+    anulado_por = models.ForeignKey(User, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='pagos_membresia_anulados')
 
     def __str__(self):
         nombre = self.tienda.nombre if self.tienda else (self.tienda_nombre or 'ruta eliminada')
         return f"{nombre} - {self.membresia.nombre} ({self.fecha}) ${self.monto}"
+
+
+class CambioSuscripcion(models.Model):
+    """Historial administrativo: no se borra al anular un ingreso."""
+    tienda = models.ForeignKey(Tienda, null=True, on_delete=models.SET_NULL)
+    tienda_nombre = models.CharField(max_length=200)
+    version = models.PositiveIntegerField()
+    accion = models.CharField(max_length=40)
+    motivo = models.CharField(max_length=500, blank=True)
+    solicitud_codigo = models.CharField(max_length=12, blank=True)
+    usuario = models.ForeignKey(User, null=True, on_delete=models.SET_NULL)
+    usuario_nombre = models.CharField(max_length=200, blank=True)
+    fecha = models.DateTimeField(default=timezone.now)
+    anterior = models.JSONField(default=dict)
+    nuevo = models.JSONField(default=dict)
+    pago = models.ForeignKey(PagoMembresia, null=True, blank=True, on_delete=models.PROTECT)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['tienda', 'version'],
+            name='unique_cambio_suscripcion_version')]

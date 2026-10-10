@@ -1,6 +1,7 @@
 from django.urls import path
 from . import views
 from .orden_visita import recorrido_ruta
+from .suscripciones import vencer_suscripcion
 
 urlpatterns = [
     path('recorrido/t/<int:tienda_id>/', recorrido_ruta, name='recorrido_ruta'),
@@ -64,6 +65,7 @@ urlpatterns = [
 
     # Drill-down de una ruta (contacto, pagos, actividad) — solo root
     path('<int:pk>/admin/detalle/', views.admin_detalle_ruta, name='admin_detalle_ruta'),
+    path('<int:pk>/admin/vencer/', vencer_suscripcion, name='vencer_suscripcion'),
 
     # Archivar / desarchivar una ruta (solo root)
     path('<int:pk>/archivar/', views.archivar_ruta, name='archivar_ruta'),

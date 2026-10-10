@@ -1,5 +1,6 @@
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.permissions import AllowAny
+from Tiendas.permission_suscripcion import IsAuthenticatedOperativo as IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
 
@@ -24,6 +25,7 @@ from Tiendas.alertas_operativas import rutas_del_usuario, usuario_alertas_config
 from Tiendas.fecha_operativa import fecha_operativa, validar_zona_horaria
 from Tiendas import telegram_bot
 from Tiendas import telegram_assistant
+from Tiendas.suscripciones import snapshot, registrar_cambio, anular_pago, pendientes
 from Tiendas.permissions import (
     requiere_acceso_tienda,
     usuario_puede_acceder_tienda,
@@ -157,20 +159,8 @@ def _actualizar_estados_membresias():
     países distintos y por eso un único ``timezone.localdate()`` del servidor
     no representa el mismo día para todas.
     """
-    for tm in Tienda_Membresia.objects.select_related('tienda').all():
-        hoy = fecha_operativa(tm.tienda)
-        if tm.estado == 'Pre-activada':
-            if tm.pre_activada_hasta and tm.pre_activada_hasta >= hoy:
-                continue
-            tm.estado = 'Pendiente Pago'
-            tm.pre_activada_hasta = None
-            tm.save(update_fields=['estado', 'pre_activada_hasta'])
-        elif tm.estado == 'Activa' and hoy >= tm.fecha_vencimiento + datetime.timedelta(days=1):
-            tm.estado = 'Pendiente Pago'
-            tm.save(update_fields=['estado'])
-        elif tm.estado == 'Pendiente Pago' and hoy >= tm.fecha_vencimiento + datetime.timedelta(days=2):
-            tm.estado = 'Vencida'
-            tm.save(update_fields=['estado'])
+    for tienda_id in Tienda_Membresia.objects.values_list('tienda_id', flat=True):
+        comprobar_estado_membresia(tienda_id)
 
 
 def extender_membresia(tienda_id, plan_nombre):
@@ -183,12 +173,15 @@ def extender_membresia(tienda_id, plan_nombre):
         raise ValueError(f'Plan de membresía no configurado: {plan_nombre}')
     dias = 30 if plan_nombre == 'Mensual' else 365
     hoy = fecha_operativa(tm.tienda)
-    base = max(tm.fecha_vencimiento, hoy)
+    base = hoy if tm.vencida_manualmente else max(tm.fecha_vencimiento, hoy)
     tm.membresia = membresia
     tm.fecha_activacion = hoy
     tm.fecha_vencimiento = base + datetime.timedelta(days=dias)
     tm.estado = 'Activa'
     tm.pre_activada_hasta = None
+    tm.vencida_manualmente = False
+    tm.vencimiento_manual_fecha = None
+    tm.motivo = ''
     # Si la ruta estaba archivada por inactividad, al pagar vuelve a estar visible
     tm.archivada = False
     tm.fecha_archivado = None
@@ -214,11 +207,12 @@ def _confirmar_solicitud(solicitud, revisor=None):
         if solicitud_db.estado != 'pendiente_confirmacion':
             raise ValueError('La solicitud ya no está disponible para confirmación.')
 
-        tm = Tienda_Membresia.objects.filter(tienda_id=solicitud_db.tienda_id).first()
+        tm = Tienda_Membresia.objects.select_for_update().get(tienda_id=solicitud_db.tienda_id)
         if not tm:
             raise ValueError('La ruta no tiene una membresía configurada.')
 
         fecha_vencimiento_previa = tm.fecha_vencimiento
+        anterior = snapshot(tm)
         tm = extender_membresia(solicitud_db.tienda_id, solicitud_db.membresia.nombre)
 
         solicitud_db.fecha_vencimiento_previa = fecha_vencimiento_previa
@@ -232,7 +226,7 @@ def _confirmar_solicitud(solicitud, revisor=None):
         ])
 
         # Registrar el ingreso en el libro de pagos (precio congelado al momento del cobro).
-        PagoMembresia.objects.get_or_create(
+        pago, _ = PagoMembresia.objects.get_or_create(
             solicitud=solicitud_db,
             defaults={
                 'tienda_id': solicitud_db.tienda_id,
@@ -244,6 +238,8 @@ def _confirmar_solicitud(solicitud, revisor=None):
                 'registrado_por': revisor,
             },
         )
+        registrar_cambio(tm, anterior, 'confirmacion_pago', revisor, pago=pago,
+            solicitud_codigo=solicitud_db.codigo)
         logger.info(
             'Solicitud de membresía %s confirmada (%s): tienda=%s vencimiento=%s',
             solicitud_db.codigo,
@@ -255,26 +251,58 @@ def _confirmar_solicitud(solicitud, revisor=None):
 
 
 def _revertir_solicitud(solicitud, motivo, revisor=None):
-    """Rechaza o revierte una solicitud. Si estaba confirmada, restaura el vencimiento previo."""
-    tm = Tienda_Membresia.objects.filter(tienda=solicitud.tienda).first()
-    era_confirmada = solicitud.estado == 'confirmada'
-    solicitud.estado = 'rechazada'
-    solicitud.motivo_rechazo = motivo
-    solicitud.revisada_por = revisor
-    solicitud.procesada = timezone.now()
-    solicitud.save()
-    if era_confirmada:
-        # El ingreso queda sin efecto — sacarlo del libro de pagos
-        PagoMembresia.objects.filter(solicitud=solicitud).delete()
-    if tm:
-        if era_confirmada and solicitud.fecha_vencimiento_previa:
-            tm.fecha_vencimiento = solicitud.fecha_vencimiento_previa
-        if tm.estado in ('Pre-activada', 'Activa'):
-            tm.estado = 'Pendiente Pago'
-            tm.pre_activada_hasta = None
-            tm.save()
-        else:
-            tm.save()
+    """Revertir sin borrar el ingreso ni sobrescribir una corrección posterior."""
+    with transaction.atomic():
+        actual = SolicitudPago.objects.select_for_update().get(pk=solicitud.pk)
+        if actual.estado not in ('pendiente_confirmacion', 'confirmada'):
+            raise ValueError('La solicitud ya no está disponible para revisión.')
+        tm = Tienda_Membresia.objects.select_for_update().select_related('tienda').filter(tienda=actual.tienda).first()
+        era_confirmada = actual.estado == 'confirmada'
+        pago = PagoMembresia.objects.select_for_update().filter(solicitud=actual, estado='vigente').first()
+        cambio_pago = pago.cambiosuscripcion_set.order_by('-version').first() if pago else None
+        if era_confirmada and tm and ((cambio_pago and cambio_pago.version != tm.version)
+            or (not cambio_pago and tm.version > 0)):
+            raise ValueError('La suscripción tuvo cambios posteriores. Revisa el detalle de la ruta antes de revertir este pago.')
+        anterior = snapshot(tm) if tm else None
+        actual.estado = 'rechazada'
+        actual.motivo_rechazo = str(motivo)[:500]
+        actual.revisada_por = revisor
+        actual.procesada = timezone.now()
+        actual.save()
+        if era_confirmada and pago:
+            anular_pago(pago, actual.motivo_rechazo, revisor)
+        if tm:
+            # No eliminar un vencimiento manual aplicado posteriormente.
+            if era_confirmada and not tm.vencida_manualmente and actual.fecha_vencimiento_previa:
+                tm.fecha_vencimiento = actual.fecha_vencimiento_previa
+            ultimo = tm.tienda.cambiosuscripcion_set.order_by('-version').first()
+            preactivacion_propia = (ultimo and ultimo.accion == 'comprobante_recibido'
+                and ultimo.solicitud_codigo == actual.codigo)
+            if tm.estado == 'Pre-activada' and not tm.vencida_manualmente and (
+                preactivacion_propia or (tm.version == 0 and not pendientes(tm).exists())):
+                tm.estado = 'Pendiente Pago'
+                tm.pre_activada_hasta = None
+            # Una confirmación posterior a un vencimiento manual puede
+            # revertirse exactamente gracias al snapshot de la confirmación.
+            if era_confirmada and cambio_pago:
+                previo = cambio_pago.anterior
+                tm.membresia_id = previo['membresia_id']
+                tm.fecha_activacion = datetime.date.fromisoformat(previo['fecha_activacion'])
+                tm.estado = 'Pendiente Pago' if previo['estado'] == 'Pre-activada' else previo['estado']
+                tm.fecha_vencimiento = datetime.date.fromisoformat(previo['fecha_vencimiento'])
+                tm.vencida_manualmente = previo['vencida_manualmente']
+                tm.vencimiento_manual_fecha = datetime.datetime.fromisoformat(previo['vencimiento_manual_fecha']) if previo['vencimiento_manual_fecha'] else None
+                tm.motivo = previo['motivo']
+                tm.pre_activada_hasta = None
+                tm.archivada = previo['archivada']
+                tm.fecha_archivado = datetime.date.fromisoformat(previo['fecha_archivado']) if previo['fecha_archivado'] else None
+            if era_confirmada or snapshot(tm) != anterior:
+                tm.save()
+                registrar_cambio(tm, anterior, 'reversion_pago', revisor, actual.motivo_rechazo, pago,
+                    solicitud_codigo=actual.codigo)
+        solicitud.estado = actual.estado
+        solicitud.procesada = actual.procesada
+        solicitud.motivo_rechazo = actual.motivo_rechazo
     return tm
 
 
@@ -286,7 +314,7 @@ def list_all_tiendas(request):
     '''obtenemos todas las tiendas'''
 
     user = request.user
-    if user.username == 'root':
+    if user.is_superuser:
         # Recalcular estados antes de listar — rutas inactivas pasan a Pendiente/Vencida automáticamente
         _actualizar_estados_membresias()
         vista_lista = request.GET.get('vista') == 'lista'
@@ -991,6 +1019,17 @@ def get_tienda_membresia(request):
         if tienda else None
     )
     if tienda_membresia:
+        if request.query_params.get('vista') == 'membresia':
+            # Snapshot liviano y estrictamente de lectura para sesiones
+            # abiertas: no recalcula cartera ni cambia estados por un GET.
+            tm = tienda_membresia
+            return Response({'id': tm.pk, 'fecha_activacion': tm.fecha_activacion,
+                'fecha_vencimiento': tm.fecha_vencimiento, 'estado': tm.estado,
+                'pre_activada_hasta': tm.pre_activada_hasta, 'archivada': tm.archivada,
+                'fecha_archivado': tm.fecha_archivado, 'version': tm.version,
+                'vencida_manualmente': tm.vencida_manualmente,
+                'vencimiento_manual_fecha': tm.vencimiento_manual_fecha, 'motivo': tm.motivo},
+                headers={'Cache-Control': 'no-store'})
         comprobar_estado_membresia(tienda.id)
         tienda_membresia.refresh_from_db()
         tienda_membresia.tienda._dashboard_metricas = _metricas_dashboard_tienda(tienda.id)
@@ -1017,6 +1056,15 @@ def get_tienda_membresia_admin(request, pk):
         .first()
     )
     if tienda_membresia:
+        if request.query_params.get('vista') == 'membresia':
+            tm = tienda_membresia
+            return Response({'id': tm.pk, 'fecha_activacion': tm.fecha_activacion,
+                'fecha_vencimiento': tm.fecha_vencimiento, 'estado': tm.estado,
+                'pre_activada_hasta': tm.pre_activada_hasta, 'archivada': tm.archivada,
+                'fecha_archivado': tm.fecha_archivado, 'version': tm.version,
+                'vencida_manualmente': tm.vencida_manualmente,
+                'vencimiento_manual_fecha': tm.vencimiento_manual_fecha, 'motivo': tm.motivo},
+                headers={'Cache-Control': 'no-store'})
         comprobar_estado_membresia(tienda.id)
         tienda_membresia.refresh_from_db()
         tienda_membresia.tienda._dashboard_metricas = _metricas_dashboard_tienda(tienda.id)
@@ -1620,49 +1668,60 @@ def reporte_utilidad_diario(request, date1, date2, tienda_id=None):
     return Response(filas, status=status.HTTP_200_OK)
 
 def _registrar_pago_manual(tienda_membresia, user):
-    """Registra en el libro de pagos una activación manual hecha por el root.
-    Idempotente por día: si ya hay un pago manual de esa tienda y plan hoy,
-    no duplica (evita doble-conteo al tocar el botón dos veces)."""
-    PagoMembresia.objects.get_or_create(
+    """Un ingreso por activación. La versión bloqueada evita reintentos."""
+    return PagoMembresia.objects.create(
         tienda=tienda_membresia.tienda,
         membresia=tienda_membresia.membresia,
         fecha=fecha_operativa(tienda_membresia.tienda),
         origen='manual',
-        defaults={
-            'tienda_nombre': tienda_membresia.tienda.nombre,
-            'monto': tienda_membresia.membresia.precio,
-            'registrado_por': user if getattr(user, 'is_authenticated', False) else None,
-        },
+        tienda_nombre=tienda_membresia.tienda.nombre,
+        monto=tienda_membresia.membresia.precio,
+        registrado_por=user if getattr(user, 'is_authenticated', False) else None,
     )
+
+
+def _activar_manual(request, pk, plan):
+    if not request.user.is_superuser:
+        return respuesta_sin_permiso()
+    if not isinstance(request.data, dict):
+        return Response({'error': 'Se espera un objeto JSON.'}, status=400)
+    expected = request.data.get('version')
+    if expected is not None and (type(expected) is not int or expected < 0):
+        return Response({'error': 'Versión de suscripción inválida.'}, status=400)
+    with transaction.atomic():
+        tm = Tienda_Membresia.objects.select_for_update().select_related('tienda').filter(pk=pk).first()
+        if tm is None:
+            return Response({'error': 'No se encontró la suscripción.'}, status=404)
+        if expected is not None and expected != tm.version:
+            return Response({'error': 'La suscripción cambió. Recarga antes de confirmar.',
+                'code': 'suscripcion_modificada'}, status=409)
+        # Compatibilidad con pantallas antiguas sin versión: un reintento del
+        # mismo día/plan no puede añadir meses sin otro ingreso identificado.
+        if expected is None and tm.estado == 'Activa' and not tm.vencida_manualmente and PagoMembresia.objects.filter(
+            tienda=tm.tienda, membresia__nombre=plan, fecha=fecha_operativa(tm.tienda),
+            origen='manual', estado='vigente',
+        ).exists():
+            return Response({'message': 'Esta activación manual ya está registrada.', 'version': tm.version})
+        anterior = snapshot(tm)
+        try:
+            tm = extender_membresia(tm.tienda_id, plan)
+        except ValueError as exc:
+            return Response({'error': str(exc)}, status=400)
+        pago = _registrar_pago_manual(tm, request.user)
+        registrar_cambio(tm, anterior, 'activacion_manual', request.user, pago=pago)
+    return Response({'message': f'Suscripción {plan} activa', 'version': tm.version,
+        'fecha_vencimiento': tm.fecha_vencimiento})
 
 
 @api_view(['POST'])
 def activar_membresia_mensual(request, pk):
     '''get store and activate membershi for a mounth + 30 days'''
-    if not request.user.is_superuser:
-        return respuesta_sin_permiso()
-    tienda = Tienda_Membresia.objects.filter(id=pk).first()
-    if tienda:
-        with transaction.atomic():
-            tienda = extender_membresia(tienda.tienda_id, 'Mensual')
-            _registrar_pago_manual(tienda, request.user)
-        return Response({'message':'Suscripción Mensual Activa'}, status=status.HTTP_200_OK)
-    else:
-        return Response({'message': 'No se encontró la tienda'}, status=status.HTTP_400_BAD_REQUEST)
+    return _activar_manual(request, pk, 'Mensual')
     
 @api_view(['POST'])
 def activar_membresia_ano(request, pk):
     '''get store and activate membershi for a year + 365 days'''
-    if not request.user.is_superuser:
-        return respuesta_sin_permiso()
-    tienda = Tienda_Membresia.objects.filter(id=pk).first()
-    if tienda:
-        with transaction.atomic():
-            tienda = extender_membresia(tienda.tienda_id, 'Anual')
-            _registrar_pago_manual(tienda, request.user)
-        return Response({'message':'Suscripción Anual Activa'}, status=status.HTTP_200_OK)
-    else:
-        return Response({'message': 'No se encontró la tienda'}, status=status.HTTP_400_BAD_REQUEST)
+    return _activar_manual(request, pk, 'Anual')
 
 ####### SOLICITUDES DE PAGO (membresías automáticas vía WhatsApp) ##########
 
@@ -1938,16 +1997,26 @@ def adjuntar_comprobante(request, codigo):
         return Response({'error': 'La ruta no tiene una membresía configurada.'}, status=status.HTTP_409_CONFLICT)
 
     with transaction.atomic():
+        solicitud = SolicitudPago.objects.select_for_update().get(pk=solicitud.pk)
+        if solicitud.estado != 'pendiente':
+            return Response({'error': 'Esta solicitud ya fue enviada o procesada.'}, status=409)
+        tm = Tienda_Membresia.objects.select_for_update().select_related('tienda').get(pk=tm.pk)
+        anterior = snapshot(tm)
         solicitud.comprobante.save(nombre, ContentFile(comprobante_bytes), save=False)
         solicitud.referencia_bancaria = referencia
-        tm.estado = 'Pre-activada'
-        tm.pre_activada_hasta = fecha_operativa(tm.tienda) + datetime.timedelta(days=3)
+        # Un comprobante no deshace por sí solo una corrección de root.
+        # Solo una aprobación o activación explícita restablece el acceso.
+        if not tm.vencida_manualmente:
+            tm.estado = 'Pre-activada'
+            tm.pre_activada_hasta = fecha_operativa(tm.tienda) + datetime.timedelta(days=3)
         # Si estaba archivada por inactividad, el pago la reactiva (deja de estar oculta)
         tm.archivada = False
         tm.fecha_archivado = None
         tm.save()
         solicitud.estado = 'pendiente_confirmacion'
         solicitud.save()
+        registrar_cambio(tm, anterior, 'comprobante_recibido', request.user,
+            solicitud_codigo=solicitud.codigo)
 
     # Notificar al admin por Telegram (no bloquea la respuesta si falla)
     message_id = telegram_bot.notificar_solicitud(solicitud, comprobante_bytes)
@@ -2071,7 +2140,11 @@ def telegram_webhook(request):
         if solicitud.estado != 'pendiente_confirmacion':
             telegram_bot.responder_callback(callback_id, 'La solicitud no está lista para revisión')
             return Response({'ok': True})
-        _revertir_solicitud(solicitud, 'Rechazado en revisión')
+        try:
+            _revertir_solicitud(solicitud, 'Rechazado en revisión')
+        except ValueError as exc:
+            telegram_bot.responder_callback(callback_id, str(exc))
+            return Response({'ok': True})
         telegram_bot.marcar_procesada(solicitud, 'rechazar', admin_nombre)
         telegram_bot.responder_callback(callback_id, f'❌ {codigo} rechazado')
     else:
@@ -2168,7 +2241,10 @@ def revisar_solicitud_admin(request, codigo):
         if solicitud.estado not in ('pendiente_confirmacion', 'confirmada'):
             return Response({'error': 'La solicitud no está disponible para revisión.'}, status=status.HTTP_409_CONFLICT)
         motivo = request.data.get('motivo', 'Rechazado en revisión manual')
-        tm = _revertir_solicitud(solicitud, motivo, revisor=request.user)
+        try:
+            tm = _revertir_solicitud(solicitud, motivo, revisor=request.user)
+        except ValueError as exc:
+            return Response({'error': str(exc)}, status=409)
         telegram_bot.marcar_procesada(solicitud, 'rechazar', admin_nombre)
 
     response_data = {'estado': solicitud.estado}
@@ -2177,10 +2253,12 @@ def revisar_solicitud_admin(request, codigo):
     return Response(response_data, status=status.HTTP_200_OK)
 
 
+@transaction.atomic
 def comprobar_estado_membresia(tienda_id):
     '''verificamos el estado de la membresia'''
     suscripcion_tienda = (
         Tienda_Membresia.objects
+        .select_for_update()
         .select_related('tienda')
         .filter(tienda_id=tienda_id)
         .first()
@@ -2189,6 +2267,8 @@ def comprobar_estado_membresia(tienda_id):
     # provocar un 500 al consultar recaudos o el dashboard.
     if not suscripcion_tienda:
         return None
+    if suscripcion_tienda.vencida_manualmente:
+        return None  # Login incluye este retorno en su respuesta JSON.
     hoy = fecha_operativa(suscripcion_tienda.tienda)
 
     # Pre-activada: acceso temporal mientras se revisa el comprobante
@@ -2198,7 +2278,7 @@ def comprobar_estado_membresia(tienda_id):
         # Período temporal expirado sin aprobación → degradar
         suscripcion_tienda.estado = 'Pendiente Pago'
         suscripcion_tienda.pre_activada_hasta = None
-        suscripcion_tienda.save()
+        suscripcion_tienda.save(update_fields=['estado', 'pre_activada_hasta'])
         return
 
     pendiente_pago = suscripcion_tienda.fecha_vencimiento + datetime.timedelta(days=1)
@@ -2207,11 +2287,11 @@ def comprobar_estado_membresia(tienda_id):
 
     if suscripcion_tienda.estado == 'Activa' and hoy >= pendiente_pago:
         suscripcion_tienda.estado = 'Pendiente Pago'
-        suscripcion_tienda.save()
+        suscripcion_tienda.save(update_fields=['estado'])
 
     if suscripcion_tienda.estado == 'Pendiente Pago' and hoy >= vencida:
         suscripcion_tienda.estado = 'Vencida'
-        suscripcion_tienda.save()
+        suscripcion_tienda.save(update_fields=['estado'])
 
 
 ####### INFORME DE INGRESOS POR MEMBRESÍAS (solo root) ##########
@@ -2231,7 +2311,7 @@ def ingresos_membresias(request):
         year = hoy.year
 
     pagos = PagoMembresia.objects.filter(
-        fecha__year=year
+        fecha__year=year, estado='vigente',
     ).select_related('tienda', 'membresia', 'registrado_por').order_by('-fecha', '-creado')
 
     por_mes = [
@@ -2266,7 +2346,7 @@ def ingresos_membresias(request):
             'codigo': p.solicitud.codigo if p.solicitud_id else None,
         })
 
-    total_anterior = PagoMembresia.objects.filter(
+    total_anterior = PagoMembresia.objects.filter(estado='vigente',
         fecha__year=year - 1
     ).aggregate(t=Sum('monto'))['t'] or 0
 
@@ -2316,14 +2396,14 @@ def admin_resumen(request):
     ).count()
 
     # Ingresos
-    ingresos_mes = PagoMembresia.objects.filter(fecha__gte=inicio_mes, fecha__lte=hoy).aggregate(t=Sum('monto'))['t'] or 0
-    ingresos_anio = PagoMembresia.objects.filter(fecha__year=hoy.year).aggregate(t=Sum('monto'))['t'] or 0
-    renovaciones_mes = PagoMembresia.objects.filter(fecha__gte=inicio_mes, fecha__lte=hoy).count()
+    ingresos_mes = PagoMembresia.objects.filter(estado='vigente', fecha__gte=inicio_mes, fecha__lte=hoy).aggregate(t=Sum('monto'))['t'] or 0
+    ingresos_anio = PagoMembresia.objects.filter(estado='vigente', fecha__year=hoy.year).aggregate(t=Sum('monto'))['t'] or 0
+    renovaciones_mes = PagoMembresia.objects.filter(estado='vigente', fecha__gte=inicio_mes, fecha__lte=hoy).count()
 
     # Mes anterior (para el % de crecimiento)
     fin_mes_ant = inicio_mes - datetime.timedelta(days=1)
     inicio_mes_ant = fin_mes_ant.replace(day=1)
-    ingresos_mes_anterior = PagoMembresia.objects.filter(
+    ingresos_mes_anterior = PagoMembresia.objects.filter(estado='vigente',
         fecha__gte=inicio_mes_ant, fecha__lte=fin_mes_ant
     ).aggregate(t=Sum('monto'))['t'] or 0
 
@@ -2339,7 +2419,7 @@ def admin_resumen(request):
             mm = 12
             yy -= 1
     for (y, m) in reversed(serie):
-        total = PagoMembresia.objects.filter(fecha__year=y, fecha__month=m).aggregate(t=Sum('monto'))['t'] or 0
+        total = PagoMembresia.objects.filter(estado='vigente', fecha__year=y, fecha__month=m).aggregate(t=Sum('monto'))['t'] or 0
         ingresos_6m.append({'label': MESES_ES[m - 1], 'anio': y, 'mes': m, 'total': float(total)})
 
     # Composición de la base activa por plan
@@ -2374,11 +2454,10 @@ def admin_resumen(request):
     # toda ruta nace en Prueba, así que convertida = tiene al menos un pago;
     # trial perdido = sigue en Prueba, vencida y sin pagos.
     todas = Tienda_Membresia.objects.all()
-    convertidas = todas.filter(tienda__pagos_membresia__isnull=False).distinct().count()
+    convertidas = todas.filter(tienda__pagos_membresia__estado='vigente').distinct().count()
     trials_perdidos = todas.filter(
         membresia__nombre='Prueba', estado='Vencida',
-        tienda__pagos_membresia__isnull=True,
-    ).count()
+    ).exclude(tienda__pagos_membresia__estado='vigente').count()
     base_conv = convertidas + trials_perdidos
     conversion_trial = round(convertidas * 100.0 / base_conv) if base_conv else None
 
@@ -2457,6 +2536,10 @@ def admin_detalle_ruta(request, pk):
                 .select_related('membresia', 'registrado_por', 'solicitud')
                 .order_by('-fecha', '-creado'))
     pagos = [{
+        'id': p.pk,
+        'estado': p.estado,
+        'anulado_motivo': p.anulado_motivo,
+        'anulado_en': p.anulado_en,
         'fecha': p.fecha,
         'monto': float(p.monto),
         'plan': p.membresia.nombre,
@@ -2483,6 +2566,11 @@ def admin_detalle_ruta(request, pk):
             'ultimo_login': admin_user.last_login,
         },
         'membresia': {
+            'id': tm.pk if tm else None,
+            'version': tm.version if tm else None,
+            'vencida_manualmente': tm.vencida_manualmente if tm else False,
+            'vencimiento_manual_fecha': tm.vencimiento_manual_fecha if tm else None,
+            'motivo': tm.motivo if tm else '',
             'plan': tm.membresia.nombre if tm else None,
             'estado': tm.estado if tm else None,
             'fecha_activacion': tm.fecha_activacion if tm else None,
@@ -2495,5 +2583,12 @@ def admin_detalle_ruta(request, pk):
             'ventas_activas': ventas_activas,
         },
         'pagos': pagos,
-        'total_pagado': sum(p['monto'] for p in pagos),
+        'total_pagado': sum(p['monto'] for p in pagos if p['estado'] == 'vigente'),
+        'solicitudes_pendientes': [{
+            'codigo': s.codigo, 'estado': s.estado, 'plan': s.membresia.nombre, 'fecha': s.creada,
+        } for s in pendientes(tm).select_related('membresia').order_by('-creada')] if tm else [],
+        'historial_suscripcion': [{
+            'accion': c.accion, 'motivo': c.motivo, 'usuario': c.usuario_nombre,
+            'fecha': c.fecha, 'anterior': c.anterior, 'nuevo': c.nuevo, 'pago_id': c.pago_id,
+        } for c in tienda.cambiosuscripcion_set.order_by('-version')[:30]],
     })

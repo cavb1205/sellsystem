@@ -17,7 +17,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 PASSWORD_HASHERS = ['django.contrib.auth.hashers.MD5PasswordHasher']
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': ['rest_framework.authentication.SessionAuthentication'],
-    'DEFAULT_PERMISSION_CLASSES': ['rest_framework.permissions.IsAuthenticated'],
+    'DEFAULT_PERMISSION_CLASSES': ['Tiendas.permission_suscripcion.IsAuthenticatedOperativo'],
 }
 TELEGRAM_CLIENTES_ENABLED = False
 TELEGRAM_CLIENTES_DELIVERY_ENABLED = False

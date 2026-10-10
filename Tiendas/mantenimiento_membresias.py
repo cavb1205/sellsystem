@@ -74,7 +74,7 @@ class Command(BaseCommand):
         # 2a. Rutas recién bloqueadas por impago (Activa/Pendiente → Vencida)
         recien_bloqueadas = (
             Tienda_Membresia.objects
-            .filter(estado='Vencida', archivada=False)
+            .filter(estado='Vencida', archivada=False, vencida_manualmente=False)
             .exclude(id__in=ids_vencidas_antes)
             .select_related('tienda', 'tienda__administrador')
         )
@@ -92,12 +92,12 @@ class Command(BaseCommand):
         if ids_trial_activo_antes:
             trials_expirados = (
                 Tienda_Membresia.objects
-                .filter(id__in=ids_trial_activo_antes)
+                .filter(id__in=ids_trial_activo_antes, vencida_manualmente=False)
                 .exclude(estado='Activa')
                 .select_related('tienda', 'tienda__administrador')
             )
             for tm in trials_expirados:
-                if PagoMembresia.objects.filter(tienda=tm.tienda).exists():
+                if PagoMembresia.objects.filter(tienda=tm.tienda, estado='vigente').exists():
                     continue  # sí convirtió en algún momento
                 admin = tm.tienda.administrador
                 telegram_bot.notificar_trial_sin_convertir(
@@ -156,9 +156,9 @@ class Command(BaseCommand):
             ).count(),
             'bloqueadas': n_bloqueadas,
             'trials_perdidos': n_trials,
-            'ingreso_ayer': PagoMembresia.objects.filter(fecha=ayer).aggregate(
+            'ingreso_ayer': PagoMembresia.objects.filter(estado='vigente', fecha=ayer).aggregate(
                 t=Sum('monto'))['t'] or 0,
-            'ingreso_semana': PagoMembresia.objects.filter(
+            'ingreso_semana': PagoMembresia.objects.filter(estado='vigente',
                 fecha__gte=hoy - datetime.timedelta(days=7)).aggregate(
                 t=Sum('monto'))['t'] or 0,
         }
