@@ -3,6 +3,7 @@ from rest_framework import serializers
 from .models import Tienda, Cierre_Caja, MovimientoCaja, Tienda_Membresia, Membresia, Tienda_Administrador, SolicitudPago, CuentaDestino
 from Trabajadores.serializers import UserSerializer, PerfilSerializer
 from Tiendas.fecha_operativa import validar_zona_horaria
+from Tiendas.seguridad_root import puede_eliminar_desde_lista
 
 
 class TiendaCreateSerializer(serializers.ModelSerializer):
@@ -152,6 +153,7 @@ class TiendaMembresiaListaSerializer(serializers.ModelSerializer):
     tienda = serializers.SerializerMethodField()
     membresia = MembresiaSerializer(read_only=True)
     ultima_actividad = serializers.SerializerMethodField()
+    puede_eliminar = serializers.SerializerMethodField()
 
     class Meta:
         model = Tienda_Membresia
@@ -159,7 +161,7 @@ class TiendaMembresiaListaSerializer(serializers.ModelSerializer):
             'id', 'fecha_activacion', 'fecha_vencimiento', 'estado',
             'pre_activada_hasta', 'archivada', 'fecha_archivado',
             'version', 'vencida_manualmente', 'vencimiento_manual_fecha', 'motivo',
-            'tienda', 'membresia', 'ultima_actividad',
+            'tienda', 'membresia', 'ultima_actividad', 'puede_eliminar',
         ]
 
     def get_tienda(self, obj):
@@ -173,10 +175,14 @@ class TiendaMembresiaListaSerializer(serializers.ModelSerializer):
                               getattr(obj, '_ult_cierre', None)) if f]
         return max(fechas) if fechas else None
 
+    def get_puede_eliminar(self, obj):
+        return puede_eliminar_desde_lista(obj)
+
 
 class SolicitudPagoSerializer(serializers.ModelSerializer):
     plan = serializers.CharField(source='membresia.nombre', read_only=True)
-    monto_plan = serializers.DecimalField(source='membresia.precio', max_digits=12, decimal_places=0, read_only=True)
+    monto_plan = serializers.DecimalField(source='monto_acordado', max_digits=10, decimal_places=0, read_only=True, allow_null=True)
+    requiere_revision_monto = serializers.SerializerMethodField()
     tienda_nombre = serializers.CharField(source='tienda.nombre', read_only=True)
     tienda_id = serializers.IntegerField(source='tienda.id', read_only=True)
     solicitante = serializers.SerializerMethodField()
@@ -186,7 +192,7 @@ class SolicitudPagoSerializer(serializers.ModelSerializer):
     class Meta:
         model = SolicitudPago
         fields = [
-            'id', 'codigo', 'estado', 'plan', 'monto_plan',
+            'id', 'codigo', 'estado', 'plan', 'monto_plan', 'requiere_revision_monto',
             'tienda_nombre', 'tienda_id',
             'solicitante', 'revisor', 'tiene_comprobante',
             'monto_detectado', 'motivo_rechazo',
@@ -198,6 +204,9 @@ class SolicitudPagoSerializer(serializers.ModelSerializer):
         if not user:
             return None
         return user.get_full_name() or user.username
+
+    def get_requiere_revision_monto(self, obj):
+        return obj.monto_acordado is None
 
     def get_solicitante(self, obj):
         return self._nombre_usuario(obj.solicitada_por)

@@ -6,6 +6,7 @@ from rest_framework import status
 
 import datetime
 import logging
+import re
 from itertools import chain
 
 from django.conf import settings
@@ -26,6 +27,7 @@ from Tiendas.fecha_operativa import fecha_operativa, validar_zona_horaria
 from Tiendas import telegram_bot
 from Tiendas import telegram_assistant
 from Tiendas.suscripciones import snapshot, registrar_cambio, anular_pago, pendientes
+from Tiendas.seguridad_root import anotar_historial_ruta, tiene_historial_protegido
 from Tiendas.permissions import (
     requiere_acceso_tienda,
     usuario_puede_acceder_tienda,
@@ -189,7 +191,7 @@ def extender_membresia(tienda_id, plan_nombre):
     return tm
 
 
-def _confirmar_solicitud(solicitud, revisor=None):
+def _confirmar_solicitud(solicitud, revisor=None, monto_confirmado=None):
     """Confirma una solicitud y extiende la membresía. Guarda el vencimiento previo
     para poder revertir con exactitud. revisor puede ser None (confirmado vía Telegram)."""
     # La aprobación, la activación y el ingreso deben ser una sola operación.
@@ -206,6 +208,12 @@ def _confirmar_solicitud(solicitud, revisor=None):
             return Tienda_Membresia.objects.select_for_update().get(tienda_id=solicitud_db.tienda_id)
         if solicitud_db.estado != 'pendiente_confirmacion':
             raise ValueError('La solicitud ya no está disponible para confirmación.')
+        if solicitud_db.monto_acordado is None:
+            if not revisor or not revisor.is_superuser or monto_confirmado is None:
+                raise ValueError('Solicitud anterior sin monto verificable. Revisa el comprobante y confirma su importe desde el panel root.')
+            solicitud_db.monto_acordado = _precio_entero(monto_confirmado)
+        elif monto_confirmado is not None and _precio_entero(monto_confirmado) != solicitud_db.monto_acordado:
+            raise ValueError('El importe no coincide con el precio acordado de la solicitud.')
 
         tm = Tienda_Membresia.objects.select_for_update().get(tienda_id=solicitud_db.tienda_id)
         if not tm:
@@ -223,6 +231,7 @@ def _confirmar_solicitud(solicitud, revisor=None):
         solicitud_db.save(update_fields=[
             'fecha_vencimiento_previa', 'estado', 'motivo_rechazo',
             'revisada_por', 'procesada',
+            'monto_acordado',
         ])
 
         # Registrar el ingreso en el libro de pagos (precio congelado al momento del cobro).
@@ -232,7 +241,7 @@ def _confirmar_solicitud(solicitud, revisor=None):
                 'tienda_id': solicitud_db.tienda_id,
                 'tienda_nombre': solicitud_db.tienda.nombre,
                 'membresia': solicitud_db.membresia,
-                'monto': solicitud_db.membresia.precio,
+                'monto': solicitud_db.monto_acordado,
                 'fecha': fecha_operativa(solicitud_db.tienda),
                 'origen': 'panel' if revisor else 'telegram',
                 'registrado_por': revisor,
@@ -344,6 +353,7 @@ def list_all_tiendas(request):
                 _cantidad_clientes=Subquery(cantidad_clientes),
                 _cantidad_ventas=Subquery(cantidad_ventas),
             )
+            tiendas = anotar_historial_ruta(tiendas)
         else:
             # Compatibilidad del endpoint histórico para consumidores externos.
             tiendas = tiendas.annotate(
@@ -497,36 +507,29 @@ def post_tienda(request):
 
 
 @api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
 def delete_tienda(request, pk):
-    if not request.user.is_superuser:
-        return respuesta_sin_permiso()
-    tienda = Tienda.objects.filter(id=pk).first()
-    if tienda:
-        tienda.delete()
-        return Response({'message': 'Tienda eliminada correctamente'}, status=status.HTTP_200_OK)
-    return Response({'message': 'No se encontró la tienda'}, status=status.HTTP_400_BAD_REQUEST)
+    return _eliminar_ruta_protegida(request, pk)
 
 
 @api_view(['DELETE'])
 @permission_classes([IsAuthenticated])
 def delete_tienda_root(request, pk):
-    '''Elimina una tienda — solo root, solo si está vacía (0 clientes y 0 ventas).
-    Las rutas con datos NO se pueden eliminar (se archivan): preservamos la
-    integridad de los datos financieros de clientes.'''
-    if request.user.username != 'root':
-        return Response({'error': 'Solo el usuario root puede eliminar rutas'},
-                        status=status.HTTP_403_FORBIDDEN)
-    tienda = Tienda.objects.filter(id=pk).first()
-    if not tienda:
-        return Response({'error': 'No se encontró la ruta'}, status=status.HTTP_404_NOT_FOUND)
-    clientes = tienda.cliente_set.count()
-    ventas = tienda.venta_set.count()
-    if clientes > 0 or ventas > 0:
-        return Response({
-            'error': f'La ruta tiene {clientes} clientes y {ventas} ventas. No se puede eliminar para proteger los datos.'
-        }, status=status.HTTP_409_CONFLICT)
-    nombre = tienda.nombre
-    tienda.delete()
+    return _eliminar_ruta_protegida(request, pk)
+
+
+def _eliminar_ruta_protegida(request, pk):
+    if not request.user.is_superuser:
+        return respuesta_sin_permiso()
+    with transaction.atomic():
+        tienda = Tienda.objects.select_for_update().filter(pk=pk).first()
+        if tienda is None:
+            return Response({'error': 'No se encontró la ruta'}, status=404)
+        if tiene_historial_protegido(tienda):
+            return Response({'error': 'La ruta tiene saldo o historial operativo, financiero o de suscripción. Archívala para conservar los datos.',
+                'code': 'ruta_con_historial'}, status=409)
+        nombre = tienda.nombre
+        tienda.delete()
     return Response({'message': f'Ruta "{nombre}" eliminada'}, status=status.HTTP_200_OK)
 
 @api_view(['DELETE'])
@@ -1796,7 +1799,8 @@ def _datos_solicitud_pago(solicitud):
     return {
         'codigo': solicitud.codigo,
         'expira': solicitud.expira,
-        'monto': str(solicitud.membresia.precio),
+        'monto': str(solicitud.monto_acordado) if solicitud.monto_acordado is not None else None,
+        'requiere_revision_monto': solicitud.monto_acordado is None,
         'plan': solicitud.membresia.nombre,
         'estado': solicitud.estado,
         'motivo_rechazo': solicitud.motivo_rechazo,
@@ -1846,13 +1850,12 @@ def solicitar_pago(request):
     codigo = _generar_codigo_solicitud(membresia.nombre)
     expira = timezone.now() + datetime.timedelta(hours=24)
 
-    solicitud = SolicitudPago.objects.create(
-        tienda=tienda,
-        membresia=membresia,
-        codigo=codigo,
-        expira=expira,
-        solicitada_por=request.user,
-    )
+    with transaction.atomic():
+        membresia = Membresia.objects.select_for_update().get(pk=membresia.pk)
+        solicitud = SolicitudPago.objects.create(
+            tienda=tienda, membresia=membresia, monto_acordado=membresia.precio,
+            codigo=codigo, expira=expira, solicitada_por=request.user,
+        )
 
     return Response(_datos_solicitud_pago(solicitud), status=status.HTTP_201_CREATED)
 
@@ -1932,27 +1935,46 @@ def planes(request):
         membresias = Membresia.objects.all().order_by('id')
         return Response(MembresiaSerializer(membresias, many=True).data, status=status.HTTP_200_OK)
 
-    # PUT: espera [{"id": 1, "precio": 12000}, ...] — actualiza solo el precio
-    actualizaciones = request.data if isinstance(request.data, list) else request.data.get('planes', [])
-    if not isinstance(actualizaciones, list):
+    # PUT: [{"id": 1, "precio": 12000, "version": 0}, ...], todo o nada.
+    actualizaciones = request.data if isinstance(request.data, list) else request.data.get('planes') if isinstance(request.data, dict) else None
+    if not isinstance(actualizaciones, list) or not actualizaciones:
         return Response({'error': 'Se espera una lista de planes'}, status=status.HTTP_400_BAD_REQUEST)
-
+    validados = {}
     for item in actualizaciones:
-        plan = Membresia.objects.filter(id=item.get('id')).first()
-        if not plan:
-            continue
-        precio = item.get('precio')
+        if not isinstance(item, dict) or type(item.get('id')) is not int or item['id'] <= 0:
+            return Response({'error': 'Plan inválido.'}, status=400)
+        if item['id'] in validados:
+            return Response({'error': 'No repitas un plan en la actualización.'}, status=400)
+        version = item.get('version')
+        if type(version) is not int or version < 0:
+            return Response({'error': 'Recarga los planes para obtener su versión.'}, status=400)
         try:
-            precio = int(precio)
-        except (TypeError, ValueError):
-            return Response({'error': f'Precio inválido para el plan {item.get("id")}'}, status=status.HTTP_400_BAD_REQUEST)
-        if precio < 0:
-            return Response({'error': 'El precio no puede ser negativo'}, status=status.HTTP_400_BAD_REQUEST)
-        plan.precio = precio
-        plan.save(update_fields=['precio'])
+            precio = _precio_entero(item.get('precio'))
+        except ValueError as exc:
+            return Response({'error': str(exc)}, status=400)
+        validados[item['id']] = (precio, version)
+    with transaction.atomic():
+        registros = list(Membresia.objects.select_for_update().filter(pk__in=validados).order_by('pk'))
+        if len(registros) != len(validados):
+            return Response({'error': 'Uno de los planes no existe.'}, status=404)
+        if any(plan.version != validados[plan.pk][1] for plan in registros):
+            return Response({'error': 'Los precios cambiaron en otra sesión. Recarga y revisa antes de guardar.',
+                'code': 'planes_modificados'}, status=409)
+        for plan in registros:
+            precio = validados[plan.pk][0]
+            if plan.precio != precio:
+                plan.precio = precio
+                plan.version += 1
+                plan.save(update_fields=['precio', 'version'])
 
     membresias = Membresia.objects.all().order_by('id')
     return Response(MembresiaSerializer(membresias, many=True).data, status=status.HTTP_200_OK)
+
+
+def _precio_entero(value):
+    if type(value) not in (str, int) or not re.fullmatch(r'[0-9]{1,10}', str(value)):
+        raise ValueError('El importe debe ser un entero entre 0 y 9.999.999.999, sin decimales.')
+    return int(value)
 
 
 @api_view(['POST'])
@@ -2231,7 +2253,7 @@ def revisar_solicitud_admin(request, codigo):
         if solicitud.estado != 'pendiente_confirmacion':
             return Response({'error': 'Solo se pueden confirmar solicitudes con comprobante enviado.'}, status=status.HTTP_409_CONFLICT)
         try:
-            tm = _confirmar_solicitud(solicitud, revisor=request.user)
+            tm = _confirmar_solicitud(solicitud, revisor=request.user, monto_confirmado=request.data.get('monto_confirmado'))
         except ValueError as exc:
             logger.warning('No se pudo confirmar %s desde el panel: %s', codigo, exc)
             return Response({'error': str(exc)}, status=status.HTTP_409_CONFLICT)
@@ -2489,17 +2511,30 @@ def admin_resumen(request):
 @permission_classes([IsAuthenticated])
 def archivar_ruta(request, pk):
     """Archiva o desarchiva una ruta (Tienda_Membresia). Solo root.
-    Body: {"archivar": true|false}. El archivado es reversible y no borra datos."""
+    Body: {"archivar": true|false, "version": 0}. Reversible, auditado y sin borrar datos."""
     if not request.user.is_superuser:
         return Response({'error': 'forbidden'}, status=403)
-    tm = Tienda_Membresia.objects.filter(id=pk).first()
-    if not tm:
-        return Response({'error': 'Ruta no encontrada'}, status=status.HTTP_404_NOT_FOUND)
-    archivar = request.data.get('archivar', True)
-    tm.archivada = bool(archivar)
-    tm.fecha_archivado = fecha_operativa(tm.tienda) if tm.archivada else None
-    tm.save(update_fields=['archivada', 'fecha_archivado'])
-    return Response({'archivada': tm.archivada, 'fecha_archivado': str(tm.fecha_archivado) if tm.fecha_archivado else None}, status=status.HTTP_200_OK)
+    data = request.data
+    if not isinstance(data, dict) or type(data.get('archivar')) is not bool:
+        return Response({'error': 'archivar debe ser verdadero o falso.'}, status=400)
+    version = data.get('version')
+    if type(version) is not int or version < 0:
+        return Response({'error': 'Recarga la ruta para obtener su versión.'}, status=400)
+    with transaction.atomic():
+        tm = Tienda_Membresia.objects.select_for_update().select_related('tienda').filter(pk=pk).first()
+        if not tm:
+            return Response({'error': 'Ruta no encontrada'}, status=404)
+        if tm.version != version:
+            return Response({'error': 'La suscripción cambió. Recarga antes de archivar o restaurar.',
+                'code': 'suscripcion_modificada'}, status=409)
+        if tm.archivada != data['archivar']:
+            anterior = snapshot(tm)
+            tm.archivada = data['archivar']
+            tm.fecha_archivado = fecha_operativa(tm.tienda) if tm.archivada else None
+            tm.save(update_fields=['archivada', 'fecha_archivado'])
+            registrar_cambio(tm, anterior, 'archivado' if tm.archivada else 'restauracion', request.user)
+    return Response({'archivada': tm.archivada, 'fecha_archivado': str(tm.fecha_archivado) if tm.fecha_archivado else None,
+        'version': tm.version}, status=200)
 
 
 

@@ -377,6 +377,7 @@ class Membresia(models.Model):
     )
     nombre = models.CharField(max_length=100, choices=opciones_membresia)
     precio = models.DecimalField( max_digits=10 ,decimal_places=0, default=0)
+    version = models.PositiveIntegerField(default=0)
     
 
     def __str__(self):
@@ -434,6 +435,8 @@ class SolicitudPago(models.Model):
     ]
     tienda = models.ForeignKey(Tienda, on_delete=models.CASCADE, related_name='solicitudes_pago')
     membresia = models.ForeignKey(Membresia, on_delete=models.PROTECT)
+    # NULL solo en solicitudes anteriores que no tienen un importe verificable.
+    monto_acordado = models.DecimalField(max_digits=10, decimal_places=0, null=True, blank=True)
     codigo = models.CharField(max_length=12, unique=True, db_index=True)
     estado = models.CharField(max_length=25, choices=ESTADOS, default='pendiente')
 
@@ -470,6 +473,11 @@ class SolicitudPago(models.Model):
 
     def esta_vigente(self):
         return self.estado == 'pendiente' and timezone.now() < self.expira
+
+    def save(self, *args, **kwargs):
+        if self._state.adding and self.monto_acordado is None:
+            self.monto_acordado = self.membresia.precio
+        return super().save(*args, **kwargs)
 
 
 class CuentaDestino(models.Model):
