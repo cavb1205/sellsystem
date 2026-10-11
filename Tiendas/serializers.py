@@ -134,6 +134,7 @@ class TiendaListaSerializer(serializers.ModelSerializer):
     """Datos administrativos mínimos para el listado de rutas."""
     administrador = serializers.SerializerMethodField()
     administrador_id = serializers.IntegerField(read_only=True)
+    administrador_usuario = serializers.CharField(source='administrador.username', read_only=True)
     caja = serializers.DecimalField(
         source='caja_inicial', max_digits=10, decimal_places=2, read_only=True,
     )
@@ -141,12 +142,12 @@ class TiendaListaSerializer(serializers.ModelSerializer):
         model = Tienda
         fields = [
             'id', 'nombre', 'telefono', 'prefijo_telefono', 'fecha_registro',
-            'administrador', 'administrador_id', 'caja', 'estado',
+            'administrador', 'administrador_id', 'administrador_usuario', 'caja', 'estado',
             'cupo_minimo_nuevo', 'zona_horaria',
         ]
 
     def get_administrador(self, obj):
-        return obj.administrador.first_name
+        return obj.administrador.get_full_name() or obj.administrador.username
 
 
 class TiendaMembresiaListaSerializer(serializers.ModelSerializer):
@@ -181,6 +182,9 @@ class TiendaMembresiaListaSerializer(serializers.ModelSerializer):
 
 
 class SolicitudPagoSerializer(serializers.ModelSerializer):
+    administrador = serializers.SerializerMethodField()
+    administrador_usuario = serializers.CharField(source='tienda.administrador.username', read_only=True)
+    administrador_id = serializers.IntegerField(source='tienda.administrador_id', read_only=True)
     plan = serializers.CharField(source='membresia.nombre', read_only=True)
     monto_plan = serializers.DecimalField(source='monto_acordado', max_digits=10, decimal_places=0, read_only=True, allow_null=True)
     requiere_revision_monto = serializers.SerializerMethodField()
@@ -196,7 +200,7 @@ class SolicitudPagoSerializer(serializers.ModelSerializer):
         model = SolicitudPago
         fields = [
             'id', 'codigo', 'estado', 'plan', 'monto_plan', 'requiere_revision_monto',
-            'tienda_nombre', 'tienda_id',
+            'tienda_nombre', 'tienda_id', 'administrador', 'administrador_usuario', 'administrador_id',
             'solicitante', 'revisor', 'tiene_comprobante',
             'monto_detectado', 'motivo_rechazo',
             'confianza_ia', 'referencia_bancaria',
@@ -209,6 +213,9 @@ class SolicitudPagoSerializer(serializers.ModelSerializer):
         if not user:
             return None
         return user.get_full_name() or user.username
+
+    def get_administrador(self, obj):
+        return self._nombre_usuario(obj.tienda.administrador)
 
     def get_requiere_revision_monto(self, obj):
         return obj.monto_acordado is None

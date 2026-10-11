@@ -163,8 +163,17 @@ def _actualizar_estados_membresias():
     países distintos y por eso un único ``timezone.localdate()`` del servidor
     no representa el mismo día para todas.
     """
-    for tienda_id in Tienda_Membresia.objects.values_list('tienda_id', flat=True):
-        comprobar_estado_membresia(tienda_id)
+    # Una lectura agrupada; solo las candidatas se recalculan bajo su bloqueo.
+    # La revisión bajo bloqueo sigue siendo la autoridad ante renovaciones concurrentes.
+    for tm in Tienda_Membresia.objects.select_related('tienda').all():
+        if tm.vencida_manualmente:
+            continue
+        hoy = fecha_operativa(tm.tienda)
+        temporal_vencida = tm.estado == 'Pre-activada' and (not tm.pre_activada_hasta or tm.pre_activada_hasta < hoy)
+        normal_vencida = (tm.estado == 'Activa' and hoy >= tm.fecha_vencimiento + datetime.timedelta(days=1)
+            or tm.estado == 'Pendiente Pago' and hoy >= tm.fecha_vencimiento + datetime.timedelta(days=2))
+        if temporal_vencida or normal_vencida:
+            comprobar_estado_membresia(tm.tienda_id)
 
 
 def extender_membresia(tienda_id, plan_nombre):
@@ -1808,8 +1817,10 @@ def _normalizar_solicitud_pago(solicitud):
 
 
 def _normalizar_pendientes_revision():
-    for solicitud in SolicitudPago.objects.filter(estado='pendiente_confirmacion').select_related('tienda'):
-        _normalizar_solicitud_pago(solicitud)
+    for solicitud in SolicitudPago.objects.filter(estado='pendiente_confirmacion').select_related('tienda__tienda_membresia'):
+        tm = getattr(solicitud.tienda, 'tienda_membresia', None)
+        if _solicitud_fuera_plazo(solicitud, tm):
+            _marcar_solicitud_expirada(solicitud)
 
 
 def _datos_solicitud_pago(solicitud):
@@ -2277,13 +2288,13 @@ def listar_solicitudes_revision(request):
     corte = timezone.now() - datetime.timedelta(days=dias)
     pendientes = SolicitudPago.objects.filter(
         estado='pendiente_confirmacion'
-    ).select_related('tienda', 'membresia', 'solicitada_por').order_by('-creada')
+    ).select_related('tienda__administrador', 'tienda__tienda_membresia', 'membresia', 'solicitada_por').order_by('-creada')
     confirmadas = SolicitudPago.objects.filter(
         estado='confirmada', procesada__gte=corte
-    ).select_related('tienda', 'membresia', 'solicitada_por', 'revisada_por').order_by('-procesada')
+    ).select_related('tienda__administrador', 'tienda__tienda_membresia', 'membresia', 'solicitada_por', 'revisada_por').order_by('-procesada')
     vencidas = SolicitudPago.objects.filter(estado='expirada', procesada__gte=corte)
-    vencidas = vencidas.exclude(comprobante='').exclude(comprobante__isnull=True).select_related('tienda', 'membresia', 'solicitada_por').order_by('-procesada')
-    revisadas = SolicitudPago.objects.filter(estado='rechazada', procesada__gte=corte).select_related('tienda', 'membresia', 'solicitada_por', 'revisada_por').order_by('-procesada')
+    vencidas = vencidas.exclude(comprobante='').exclude(comprobante__isnull=True).select_related('tienda__administrador', 'tienda__tienda_membresia', 'membresia', 'solicitada_por').order_by('-procesada')
+    revisadas = SolicitudPago.objects.filter(estado='rechazada', procesada__gte=corte).select_related('tienda__administrador', 'tienda__tienda_membresia', 'membresia', 'solicitada_por', 'revisada_por').order_by('-procesada')
 
     return Response({
         'pendientes': SolicitudPagoSerializer(pendientes, many=True).data,
@@ -2425,14 +2436,16 @@ def ingresos_membresias(request):
         return Response({'error': 'forbidden'}, status=403)
 
     hoy = timezone.localdate()
+    from Tiendas.root_metricas import comparar_ledger, periodos_anio
     try:
         year = int(request.GET.get('year', hoy.year))
+        periodos = periodos_anio(year, hoy)
     except (TypeError, ValueError):
-        year = hoy.year
+        return Response({'error': 'Selecciona un año válido, no posterior al actual.'}, status=400)
 
     pagos = PagoMembresia.objects.filter(
-        fecha__year=year, estado='vigente',
-    ).select_related('tienda', 'membresia', 'registrado_por').order_by('-fecha', '-creado')
+        fecha__year=year, fecha__lte=hoy,
+    ).select_related('tienda__administrador', 'membresia', 'registrado_por', 'solicitud').order_by('-fecha', '-creado')
 
     por_mes = [
         {'mes': m, 'total': 0, 'cantidad': 0,
@@ -2441,9 +2454,20 @@ def ingresos_membresias(request):
         for m in range(1, 13)
     ]
     detalle = []
+    anulados = []
     total_anual = 0
 
     for p in pagos:
+        admin = p.tienda.administrador if p.tienda else None
+        fila = {'id': p.id, 'tienda': p.tienda.nombre if p.tienda else (p.tienda_nombre or 'Ruta eliminada'),
+            'tienda_id': p.tienda_id, 'administrador': (admin.get_full_name() or admin.username) if admin else None,
+            'administrador_usuario': admin.username if admin else None, 'administrador_id': admin.pk if admin else None,
+            'plan': p.membresia.nombre, 'monto': float(p.monto), 'fecha': str(p.fecha), 'origen': p.origen,
+            'codigo': p.solicitud.codigo if p.solicitud_id else None, 'estado': p.estado,
+            'motivo_anulacion': p.anulado_motivo, 'anulado_en': p.anulado_en}
+        if p.estado == 'anulado':
+            anulados.append(fila)
+            continue
         mes = por_mes[p.fecha.month - 1]
         monto = float(p.monto)
         mes['total'] += monto
@@ -2455,22 +2479,13 @@ def ingresos_membresias(request):
             mes['mensuales'] += 1
             mes['monto_mensuales'] += monto
         total_anual += monto
-        detalle.append({
-            'id': p.id,
-            'tienda': p.tienda.nombre if p.tienda else (p.tienda_nombre or 'Ruta eliminada'),
-            'tienda_id': p.tienda_id,
-            'plan': p.membresia.nombre,
-            'monto': monto,
-            'fecha': str(p.fecha),
-            'origen': p.origen,
-            'codigo': p.solicitud.codigo if p.solicitud_id else None,
-        })
+        detalle.append(fila)
 
     total_anterior = PagoMembresia.objects.filter(estado='vigente',
         fecha__year=year - 1
     ).aggregate(t=Sum('monto'))['t'] or 0
 
-    anios = sorted({d.year for d in PagoMembresia.objects.dates('fecha', 'year')} | {hoy.year}, reverse=True)
+    anios = sorted({d.year for d in PagoMembresia.objects.filter(fecha__lte=hoy).dates('fecha', 'year')} | {hoy.year}, reverse=True)
 
     return Response({
         'year': year,
@@ -2479,132 +2494,24 @@ def ingresos_membresias(request):
         'total_anio_anterior': float(total_anterior),
         'por_mes': por_mes,
         'pagos': detalle,
+        'pagos_anulados': anulados,
+        'fecha_corte': str(hoy),
+        'comparacion_anual': comparar_ledger(periodos),
     }, status=status.HTTP_200_OK)
 
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def admin_resumen(request):
-    """Panel de administración del root: KPIs globales del negocio en una sola
-    respuesta (rutas por estado, ingresos del mes/año, MRR estimado, conciliación
-    pendiente y próximas a vencer). Solo superusuarios."""
+    """Indicadores globales root, sin recalcular precios históricos."""
     if not request.user.is_superuser:
         return Response({'error': 'forbidden'}, status=403)
-
-    # Las pendientes de conciliación usan la misma regla que web/Telegram.
     _normalizar_pendientes_revision()
-    # Recalcular estados para que los conteos reflejen la realidad de hoy
     _actualizar_estados_membresias()
-
-    hoy = timezone.localdate()
-    inicio_mes = hoy.replace(day=1)
-
-    # Rutas por estado (las archivadas no cuentan en las métricas activas)
-    qs = Tienda_Membresia.objects.filter(archivada=False)
-    rutas = {
-        'total': qs.count(),
-        'activas': qs.filter(estado='Activa').count(),
-        'pendientes': qs.filter(estado='Pendiente Pago').count(),
-        'vencidas': qs.filter(estado='Vencida').count(),
-        'preactivadas': qs.filter(estado='Pre-activada').count(),
-        'archivadas': Tienda_Membresia.objects.filter(archivada=True).count(),
-    }
-
-    # Próximas a vencer: activas que vencen en los próximos 3 días (incluido hoy)
-    por_vencer = qs.filter(
-        estado='Activa',
-        fecha_vencimiento__gte=hoy,
-        fecha_vencimiento__lte=hoy + datetime.timedelta(days=3),
-    ).count()
-
-    # Ingresos
-    ingresos_mes = PagoMembresia.objects.filter(estado='vigente', fecha__gte=inicio_mes, fecha__lte=hoy).aggregate(t=Sum('monto'))['t'] or 0
-    ingresos_anio = PagoMembresia.objects.filter(estado='vigente', fecha__year=hoy.year).aggregate(t=Sum('monto'))['t'] or 0
-    renovaciones_mes = PagoMembresia.objects.filter(estado='vigente', fecha__gte=inicio_mes, fecha__lte=hoy).count()
-
-    # Mes anterior (para el % de crecimiento)
-    fin_mes_ant = inicio_mes - datetime.timedelta(days=1)
-    inicio_mes_ant = fin_mes_ant.replace(day=1)
-    ingresos_mes_anterior = PagoMembresia.objects.filter(estado='vigente',
-        fecha__gte=inicio_mes_ant, fecha__lte=fin_mes_ant
-    ).aggregate(t=Sum('monto'))['t'] or 0
-
-    # Tendencia: ingresos de los últimos 6 meses (incluido el actual)
-    MESES_ES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
-    ingresos_6m = []
-    yy, mm = hoy.year, hoy.month
-    serie = []
-    for _ in range(6):
-        serie.append((yy, mm))
-        mm -= 1
-        if mm == 0:
-            mm = 12
-            yy -= 1
-    for (y, m) in reversed(serie):
-        total = PagoMembresia.objects.filter(estado='vigente', fecha__year=y, fecha__month=m).aggregate(t=Sum('monto'))['t'] or 0
-        ingresos_6m.append({'label': MESES_ES[m - 1], 'anio': y, 'mes': m, 'total': float(total)})
-
-    # Composición de la base activa por plan
-    distribucion_plan = dict(
-        qs.filter(estado='Activa').values_list('membresia__nombre').annotate(n=Count('id'))
-    )
-
-    # Crecimiento: nuevas rutas registradas este mes
-    nuevas_rutas_mes = Tienda.objects.filter(
-        fecha_registro__year=hoy.year, fecha_registro__month=hoy.month
-    ).count()
-
-    # MRR estimado: mensuales activas a precio mensual + anuales activas prorrateadas /12
-    precio_mensual = (Membresia.objects.filter(nombre='Mensual').values_list('precio', flat=True).first()) or 0
-    precio_anual = (Membresia.objects.filter(nombre='Anual').values_list('precio', flat=True).first()) or 0
-    mensuales_activas = qs.filter(estado='Activa', membresia__nombre='Mensual').count()
-    anuales_activas = qs.filter(estado='Activa', membresia__nombre='Anual').count()
-    mrr_estimado = float(precio_mensual) * mensuales_activas + (float(precio_anual) / 12.0) * anuales_activas
-
-    # Conciliación pendiente
-    conciliacion_pendiente = SolicitudPago.objects.filter(estado='pendiente_confirmacion').count()
-
-    # ── Retención y conversión ──────────────────────────────────────
-    # Churn: rutas que se bloquearon este mes (el bloqueo ocurre en vencimiento+2d)
-    bloqueadas_mes = qs.filter(
-        estado='Vencida',
-        fecha_vencimiento__gte=inicio_mes - datetime.timedelta(days=2),
-        fecha_vencimiento__lte=hoy - datetime.timedelta(days=2),
-    ).count()
-
-    # Conversión trial→pago (histórica, incluye archivadas):
-    # toda ruta nace en Prueba, así que convertida = tiene al menos un pago;
-    # trial perdido = sigue en Prueba, vencida y sin pagos.
-    todas = Tienda_Membresia.objects.all()
-    convertidas = todas.filter(tienda__pagos_membresia__estado='vigente').distinct().count()
-    trials_perdidos = todas.filter(
-        membresia__nombre='Prueba', estado='Vencida',
-    ).exclude(tienda__pagos_membresia__estado='vigente').count()
-    base_conv = convertidas + trials_perdidos
-    conversion_trial = round(convertidas * 100.0 / base_conv) if base_conv else None
-
-    # Trials en curso: en Prueba y aún no bloqueados
-    trials_en_curso = qs.filter(membresia__nombre='Prueba').exclude(estado='Vencida').count()
-
-    return Response({
-        'rutas': rutas,
-        'por_vencer': por_vencer,
-        'ingresos_mes': float(ingresos_mes),
-        'ingresos_anio': float(ingresos_anio),
-        'ingresos_mes_anterior': float(ingresos_mes_anterior),
-        'renovaciones_mes': renovaciones_mes,
-        'mrr_estimado': round(mrr_estimado),
-        'conciliacion_pendiente': conciliacion_pendiente,
-        'ingresos_6m': ingresos_6m,
-        'distribucion_plan': distribucion_plan,
-        'nuevas_rutas_mes': nuevas_rutas_mes,
-        'retencion': {
-            'bloqueadas_mes': bloqueadas_mes,
-            'conversion_trial': conversion_trial,   # % histórico o null sin datos
-            'trials_en_curso': trials_en_curso,
-            'trials_perdidos': trials_perdidos,
-        },
-    }, status=status.HTTP_200_OK)
+    from Tiendas.root_metricas import resumen_root
+    response = Response(resumen_root(timezone.localdate()), status=200)
+    response['Cache-Control'] = 'no-store'
+    return response
 
 
 @api_view(['POST'])

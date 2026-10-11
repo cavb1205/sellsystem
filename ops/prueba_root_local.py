@@ -4,7 +4,7 @@ import json
 import os
 import sys
 import tempfile
-from datetime import timedelta
+from datetime import date, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -54,6 +54,19 @@ if os.environ.get('ROOT_ETAPA2') == '1':
         codigo='MM-TARDIO',estado='pendiente_confirmacion',expira=legacy.expira,
         comprobante=legacy.comprobante.name,cuenta_acordada=snapshot_cuenta(CuentaDestino.get()))
     SolicitudPago.objects.filter(pk=tardio.pk).update(creada=timezone.now()-timedelta(days=5))
+
+if os.environ.get('ROOT_ETAPA3') == '1':
+    caso.admin.first_name='Cámilo';caso.admin.last_name='Pérez';caso.admin.save()
+    vacia.nombre='=1+1';vacia.save()
+    Tienda.objects.filter(pk=caso.ruta.pk).update(fecha_registro=date(2026,9,1))
+    Tienda.objects.filter(pk=caso.otra.pk).update(fecha_registro=date(2026,10,1))
+    for fecha,monto in ((date(2026,9,20),6000),(date(2026,9,30),90000),
+        (date(2025,10,9),6000),(date(2025,12,30),90000),(date(2026,10,11),80000)):
+        PagoMembresia.objects.create(tienda=caso.ruta,membresia=caso.mensual,fecha=fecha,monto=monto,origen='manual')
+    revertida=SolicitudPago.objects.create(tienda=caso.otra,membresia=caso.mensual,codigo='MM-ANULADO',
+        estado='rechazada',procesada=timezone.now(),expira=legacy.expira,motivo_revision='Ingreso ficticio anulado')
+    PagoMembresia.objects.create(tienda=caso.otra,membresia=caso.mensual,fecha=date(2026,10,9),monto=7000,
+        origen='panel',solicitud=revertida,estado='anulado',anulado_motivo='Ingreso ficticio anulado')
 
 
 class Handler(BaseHTTPRequestHandler):
