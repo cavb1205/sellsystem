@@ -28,6 +28,8 @@ from Tiendas import telegram_bot
 from Tiendas import telegram_assistant
 from Tiendas.suscripciones import snapshot, registrar_cambio, anular_pago, pendientes
 from Tiendas.seguridad_root import anotar_historial_ruta, tiene_historial_protegido
+from Tiendas.configuracion_root import (CAMPOS_CUENTA, snapshot_cuenta, cuenta_completa,
+    motivo_configuracion, registrar_configuracion, historial_configuracion)
 from Tiendas.permissions import (
     requiere_acceso_tienda,
     usuario_puede_acceder_tienda,
@@ -191,9 +193,12 @@ def extender_membresia(tienda_id, plan_nombre):
     return tm
 
 
-def _confirmar_solicitud(solicitud, revisor=None, monto_confirmado=None):
+def _confirmar_solicitud(solicitud, revisor=None, monto_confirmado=None,
+        permitir_expirada=False, motivo_excepcion=''):
     """Confirma una solicitud y extiende la membresía. Guarda el vencimiento previo
     para poder revertir con exactitud. revisor puede ser None (confirmado vía Telegram)."""
+    # La misma normalización se aplica en web, Telegram y llamadas internas.
+    _normalizar_solicitud_pago(solicitud)
     # La aprobación, la activación y el ingreso deben ser una sola operación.
     # Antes se guardaba la solicitud como confirmada antes de extender la ruta;
     # si algo fallaba después, quedaban estados incompatibles.
@@ -206,7 +211,16 @@ def _confirmar_solicitud(solicitud, revisor=None, monto_confirmado=None):
         )
         if solicitud_db.estado == 'confirmada':
             return Tienda_Membresia.objects.select_for_update().get(tienda_id=solicitud_db.tienda_id)
-        if solicitud_db.estado != 'pendiente_confirmacion':
+        tm = Tienda_Membresia.objects.select_for_update().select_related('tienda').filter(tienda_id=solicitud_db.tienda_id).first()
+        if tm is None:
+            raise ValueError('La ruta no tiene una membresía configurada.')
+        # El plazo puede vencer mientras se espera el bloqueo de otra sesión.
+        fuera_plazo = solicitud_db.estado == 'expirada' or _solicitud_fuera_plazo(solicitud_db, tm)
+        if fuera_plazo and not (permitir_expirada is True and revisor and revisor.is_superuser
+                and solicitud_db.comprobante and isinstance(motivo_excepcion, str)
+                and 5 <= len(motivo_excepcion.strip()) <= 500):
+            raise ValueError('Solicitud expirada. Para confirmar este comprobante usa la excepción con motivo en el panel root.')
+        if solicitud_db.estado != 'pendiente_confirmacion' and not fuera_plazo:
             raise ValueError('La solicitud ya no está disponible para confirmación.')
         if solicitud_db.monto_acordado is None:
             if not revisor or not revisor.is_superuser or monto_confirmado is None:
@@ -214,10 +228,6 @@ def _confirmar_solicitud(solicitud, revisor=None, monto_confirmado=None):
             solicitud_db.monto_acordado = _precio_entero(monto_confirmado)
         elif monto_confirmado is not None and _precio_entero(monto_confirmado) != solicitud_db.monto_acordado:
             raise ValueError('El importe no coincide con el precio acordado de la solicitud.')
-
-        tm = Tienda_Membresia.objects.select_for_update().get(tienda_id=solicitud_db.tienda_id)
-        if not tm:
-            raise ValueError('La ruta no tiene una membresía configurada.')
 
         fecha_vencimiento_previa = tm.fecha_vencimiento
         anterior = snapshot(tm)
@@ -228,10 +238,13 @@ def _confirmar_solicitud(solicitud, revisor=None, monto_confirmado=None):
         solicitud_db.motivo_rechazo = ''
         solicitud_db.revisada_por = revisor
         solicitud_db.procesada = timezone.now()
+        solicitud_db.confirmada_fuera_plazo = fuera_plazo
+        solicitud_db.motivo_revision = motivo_excepcion.strip() if fuera_plazo else ''
         solicitud_db.save(update_fields=[
             'fecha_vencimiento_previa', 'estado', 'motivo_rechazo',
             'revisada_por', 'procesada',
             'monto_acordado',
+            'confirmada_fuera_plazo', 'motivo_revision',
         ])
 
         # Registrar el ingreso en el libro de pagos (precio congelado al momento del cobro).
@@ -247,7 +260,8 @@ def _confirmar_solicitud(solicitud, revisor=None, monto_confirmado=None):
                 'registrado_por': revisor,
             },
         )
-        registrar_cambio(tm, anterior, 'confirmacion_pago', revisor, pago=pago,
+        registrar_cambio(tm, anterior, 'confirmacion_fuera_plazo' if fuera_plazo else 'confirmacion_pago',
+            revisor, solicitud_db.motivo_revision, pago=pago,
             solicitud_codigo=solicitud_db.codigo)
         logger.info(
             'Solicitud de membresía %s confirmada (%s): tienda=%s vencimiento=%s',
@@ -275,6 +289,7 @@ def _revertir_solicitud(solicitud, motivo, revisor=None):
         anterior = snapshot(tm) if tm else None
         actual.estado = 'rechazada'
         actual.motivo_rechazo = str(motivo)[:500]
+        actual.motivo_revision = actual.motivo_rechazo
         actual.revisada_por = revisor
         actual.procesada = timezone.now()
         actual.save()
@@ -307,7 +322,7 @@ def _revertir_solicitud(solicitud, motivo, revisor=None):
                 tm.fecha_archivado = datetime.date.fromisoformat(previo['fecha_archivado']) if previo['fecha_archivado'] else None
             if era_confirmada or snapshot(tm) != anterior:
                 tm.save()
-                registrar_cambio(tm, anterior, 'reversion_pago', revisor, actual.motivo_rechazo, pago,
+                registrar_cambio(tm, anterior, 'reversion_pago' if era_confirmada else 'rechazo_pago', revisor, actual.motivo_rechazo, pago,
                     solicitud_codigo=actual.codigo)
         solicitud.estado = actual.estado
         solicitud.procesada = actual.procesada
@@ -324,6 +339,7 @@ def list_all_tiendas(request):
 
     user = request.user
     if user.is_superuser:
+        _normalizar_pendientes_revision()
         # Recalcular estados antes de listar — rutas inactivas pasan a Pendiente/Vencida automáticamente
         _actualizar_estados_membresias()
         vista_lista = request.GET.get('vista') == 'lista'
@@ -367,7 +383,7 @@ def list_all_tiendas(request):
             )
             serializer = serializer_class(tiendas, many=True)
             return Response(serializer.data, status=status.HTTP_200_OK)
-        return Response({'message': 'No se han creado tiendas'}, status=status.HTTP_200_OK)
+        return Response([] if vista_lista else {'message': 'No se han creado tiendas'}, status=status.HTTP_200_OK)
     else:
         return Response({'message': 'No tiene permisos para acceder a esta vista'}, status=status.HTTP_200_OK)
 
@@ -1749,10 +1765,15 @@ def _marcar_solicitud_expirada(solicitud):
             .filter(tienda_id=solicitud_db.tienda_id)
             .first()
         )
-        if tm and tm.estado == 'Pre-activada':
+        ultimo = tm.tienda.cambiosuscripcion_set.order_by('-version').first() if tm else None
+        preactivacion_propia = ultimo and ultimo.accion == 'comprobante_recibido' and ultimo.solicitud_codigo == solicitud_db.codigo
+        if tm and tm.estado == 'Pre-activada' and (preactivacion_propia
+                or (tm.version == 0 and not pendientes(tm).exclude(pk=solicitud_db.pk).exists())):
+            anterior = snapshot(tm)
             tm.estado = 'Pendiente Pago'
             tm.pre_activada_hasta = None
             tm.save(update_fields=['estado', 'pre_activada_hasta'])
+            registrar_cambio(tm, anterior, 'solicitud_expirada', solicitud_codigo=solicitud_db.codigo)
 
         solicitud.estado = solicitud_db.estado
         solicitud.procesada = solicitud_db.procesada
@@ -1763,30 +1784,32 @@ def _marcar_solicitud_expirada(solicitud):
     return True
 
 
+def _solicitud_fuera_plazo(solicitud, tm=None):
+    ahora = timezone.now()
+    if solicitud.estado == 'pendiente':
+        return ahora >= solicitud.expira
+    if solicitud.estado != 'pendiente_confirmacion':
+        return False
+    return ahora >= solicitud.creada + datetime.timedelta(days=3) or bool(
+        tm and tm.estado == 'Pre-activada' and tm.pre_activada_hasta
+        and fecha_operativa(tm.tienda) > tm.pre_activada_hasta)
+
+
 def _normalizar_solicitud_pago(solicitud):
     """Expira solicitudes desde cualquier endpoint, no solo desde el cron.
 
     Esto evita que un código vencido pueda volver a preactivar una ruta si el
     mantenimiento diario todavía no ha corrido.
     """
-    ahora = timezone.now()
-
-    if solicitud.estado == 'pendiente' and ahora >= solicitud.expira:
+    tm = Tienda_Membresia.objects.select_related('tienda').filter(tienda_id=solicitud.tienda_id).first() if solicitud.estado == 'pendiente_confirmacion' else None
+    if _solicitud_fuera_plazo(solicitud, tm):
         _marcar_solicitud_expirada(solicitud)
-        return solicitud
-
-    if solicitud.estado == 'pendiente_confirmacion':
-        limite = solicitud.creada + datetime.timedelta(days=3)
-        tm = Tienda_Membresia.objects.filter(tienda_id=solicitud.tienda_id).first()
-        preactivacion_vencida = (
-            tm and tm.estado == 'Pre-activada'
-            and tm.pre_activada_hasta
-            and fecha_operativa(tm.tienda) > tm.pre_activada_hasta
-        )
-        if ahora >= limite or preactivacion_vencida:
-            _marcar_solicitud_expirada(solicitud)
-
     return solicitud
+
+
+def _normalizar_pendientes_revision():
+    for solicitud in SolicitudPago.objects.filter(estado='pendiente_confirmacion').select_related('tienda'):
+        _normalizar_solicitud_pago(solicitud)
 
 
 def _datos_solicitud_pago(solicitud):
@@ -1805,7 +1828,8 @@ def _datos_solicitud_pago(solicitud):
         'estado': solicitud.estado,
         'motivo_rechazo': solicitud.motivo_rechazo,
         'wa_link': f"https://wa.me/{numero_soporte}?text={texto_wa.replace(' ', '%20')}" if numero_soporte else '',
-        'cuenta': CuentaDestinoSerializer(CuentaDestino.get()).data,
+        'cuenta': solicitud.cuenta_acordada or None,
+        'cuenta_historica_verificable': bool(solicitud.cuenta_acordada),
     }
 
 @api_view(['POST'])
@@ -1851,10 +1875,15 @@ def solicitar_pago(request):
     expira = timezone.now() + datetime.timedelta(hours=24)
 
     with transaction.atomic():
+        cuenta = CuentaDestino.get()
+        cuenta = CuentaDestino.objects.select_for_update().get(pk=cuenta.pk)
+        if not cuenta_completa(cuenta):
+            return Response({'error': 'Los datos bancarios aún no están completos. Contacta con soporte antes de transferir.'}, status=409)
         membresia = Membresia.objects.select_for_update().get(pk=membresia.pk)
         solicitud = SolicitudPago.objects.create(
             tienda=tienda, membresia=membresia, monto_acordado=membresia.precio,
             codigo=codigo, expira=expira, solicitada_por=request.user,
+            cuenta_acordada=snapshot_cuenta(cuenta),
         )
 
     return Response(_datos_solicitud_pago(solicitud), status=status.HTTP_201_CREATED)
@@ -1912,13 +1941,43 @@ def cuenta_destino(request):
 
     cuenta = CuentaDestino.get()
     if request.method == 'GET':
-        return Response(CuentaDestinoSerializer(cuenta).data, status=status.HTTP_200_OK)
+        return Response({**CuentaDestinoSerializer(cuenta).data,
+            'configurada': bool(cuenta_completa(cuenta)), 'historial': historial_configuracion('cuenta')})
 
-    serializer = CuentaDestinoSerializer(cuenta, data=request.data, partial=True)
-    if serializer.is_valid():
-        serializer.save()
-        return Response(serializer.data, status=status.HTTP_200_OK)
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    data = request.data
+    if not isinstance(data, dict) or type(data.get('version')) is not int or data['version'] < 0:
+        return Response({'error': 'Recarga la cuenta para obtener una versión válida.'}, status=400)
+    try:
+        motivo = motivo_configuracion(data)
+    except ValueError as exc:
+        return Response({'error': str(exc)}, status=400)
+    if any(not isinstance(data.get(key), str) or not 1 <= len(data[key].strip()) <= 100 for key in CAMPOS_CUENTA):
+        return Response({'error': 'Completa banco, número, titular y tipo de cuenta (máximo 100 caracteres por campo).'}, status=400)
+    with transaction.atomic():
+        cuenta = CuentaDestino.objects.select_for_update().get(pk=cuenta.pk)
+        if cuenta.version != data['version']:
+            return Response({'error': 'La cuenta cambió en otra sesión. Recarga y revisa antes de guardar.',
+                'code': 'cuenta_modificada'}, status=409)
+        anterior = snapshot_cuenta(cuenta)
+        for key in CAMPOS_CUENTA:
+            setattr(cuenta, key, data[key].strip())
+        if snapshot_cuenta(cuenta) != anterior:
+            cuenta.version += 1
+            cuenta.save()
+            registrar_configuracion('cuenta', anterior, snapshot_cuenta(cuenta), request.user, motivo)
+    return Response({**CuentaDestinoSerializer(cuenta).data, 'configurada': True,
+        'historial': historial_configuracion('cuenta')})
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def configuracion_historial(request):
+    if not request.user.is_superuser:
+        return respuesta_sin_permiso()
+    tipo = request.GET.get('tipo')
+    if tipo not in ('cuenta', 'planes'):
+        return Response({'error': 'tipo debe ser cuenta o planes.'}, status=400)
+    return Response(historial_configuracion(tipo))
 
 
 @api_view(['GET', 'PUT'])
@@ -1939,6 +1998,10 @@ def planes(request):
     actualizaciones = request.data if isinstance(request.data, list) else request.data.get('planes') if isinstance(request.data, dict) else None
     if not isinstance(actualizaciones, list) or not actualizaciones:
         return Response({'error': 'Se espera una lista de planes'}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        motivo = motivo_configuracion(request.data if isinstance(request.data, dict) else {})
+    except ValueError as exc:
+        return Response({'error': str(exc)}, status=400)
     validados = {}
     for item in actualizaciones:
         if not isinstance(item, dict) or type(item.get('id')) is not int or item['id'] <= 0:
@@ -1960,12 +2023,16 @@ def planes(request):
         if any(plan.version != validados[plan.pk][1] for plan in registros):
             return Response({'error': 'Los precios cambiaron en otra sesión. Recarga y revisa antes de guardar.',
                 'code': 'planes_modificados'}, status=409)
+        anterior = {str(plan.pk): {'nombre': plan.nombre, 'precio': str(plan.precio), 'version': plan.version} for plan in registros}
         for plan in registros:
             precio = validados[plan.pk][0]
             if plan.precio != precio:
                 plan.precio = precio
                 plan.version += 1
                 plan.save(update_fields=['precio', 'version'])
+        nuevo = {str(plan.pk): {'nombre': plan.nombre, 'precio': str(plan.precio), 'version': plan.version} for plan in registros}
+        if nuevo != anterior:
+            registrar_configuracion('planes', anterior, nuevo, request.user, motivo)
 
     membresias = Membresia.objects.all().order_by('id')
     return Response(MembresiaSerializer(membresias, many=True).data, status=status.HTTP_200_OK)
@@ -2200,17 +2267,30 @@ def listar_solicitudes_revision(request):
     if not request.user.is_superuser:
         return Response({'error': 'forbidden'}, status=403)
 
-    corte = timezone.now() - datetime.timedelta(days=30)
+    try:
+        dias = int(request.GET.get('dias', 30))
+        if dias not in (30, 90, 365):
+            raise ValueError()
+    except (TypeError, ValueError):
+        return Response({'error': 'dias debe ser 30, 90 o 365.'}, status=400)
+    _normalizar_pendientes_revision()
+    corte = timezone.now() - datetime.timedelta(days=dias)
     pendientes = SolicitudPago.objects.filter(
         estado='pendiente_confirmacion'
     ).select_related('tienda', 'membresia', 'solicitada_por').order_by('-creada')
     confirmadas = SolicitudPago.objects.filter(
         estado='confirmada', procesada__gte=corte
     ).select_related('tienda', 'membresia', 'solicitada_por', 'revisada_por').order_by('-procesada')
+    vencidas = SolicitudPago.objects.filter(estado='expirada', procesada__gte=corte)
+    vencidas = vencidas.exclude(comprobante='').exclude(comprobante__isnull=True).select_related('tienda', 'membresia', 'solicitada_por').order_by('-procesada')
+    revisadas = SolicitudPago.objects.filter(estado='rechazada', procesada__gte=corte).select_related('tienda', 'membresia', 'solicitada_por', 'revisada_por').order_by('-procesada')
 
     return Response({
         'pendientes': SolicitudPagoSerializer(pendientes, many=True).data,
         'confirmadas': SolicitudPagoSerializer(confirmadas, many=True).data,
+        'vencidas': SolicitudPagoSerializer(vencidas, many=True).data,
+        'revisadas': SolicitudPagoSerializer(revisadas, many=True).data,
+        'dias': dias,
     })
 
 
@@ -2234,35 +2314,49 @@ def revisar_solicitud_admin(request, codigo):
     if not request.user.is_superuser:
         return Response({'error': 'forbidden'}, status=403)
 
+    if not isinstance(request.data, dict):
+        return Response({'error': 'Se espera un objeto JSON.'}, status=400)
+    resultado = request.data.get('resultado')
+    if resultado not in ('confirmar', 'rechazar', 'revertir'):
+        return Response({'error': 'resultado debe ser confirmar, rechazar o revertir'}, status=400)
+    permitir_expirada = request.data.get('confirmar_expirada', False)
+    if type(permitir_expirada) is not bool:
+        return Response({'error': 'confirmar_expirada debe ser verdadero o falso.'}, status=400)
+    motivo = request.data.get('motivo', '')
+    if resultado != 'confirmar' or permitir_expirada:
+        if not isinstance(motivo, str) or not 5 <= len(motivo.strip()) <= 500:
+            return Response({'error': 'Escribe un motivo de entre 5 y 500 caracteres.'}, status=400)
+
     solicitud = SolicitudPago.objects.filter(codigo=codigo).first()
     if not solicitud:
         return Response({'error': 'Solicitud no encontrada'}, status=status.HTTP_404_NOT_FOUND)
 
-    if solicitud.estado in ('rechazada', 'expirada'):
+    _normalizar_solicitud_pago(solicitud)
+    if solicitud.estado == 'rechazada':
         return Response({'estado': solicitud.estado, 'message': 'Ya procesada'}, status=status.HTTP_409_CONFLICT)
-
-    resultado = request.data.get('resultado')
-    if resultado not in ('confirmar', 'rechazar'):
-        return Response({'error': 'resultado debe ser confirmar o rechazar'}, status=status.HTTP_400_BAD_REQUEST)
 
     admin_nombre = request.user.get_full_name() or request.user.username
 
     if resultado == 'confirmar':
         if solicitud.estado == 'confirmada':
             return Response({'estado': 'confirmada', 'message': 'Ya confirmada'}, status=status.HTTP_409_CONFLICT)
-        if solicitud.estado != 'pendiente_confirmacion':
+        if solicitud.estado != 'pendiente_confirmacion' and not (solicitud.estado == 'expirada' and permitir_expirada):
             return Response({'error': 'Solo se pueden confirmar solicitudes con comprobante enviado.'}, status=status.HTTP_409_CONFLICT)
         try:
-            tm = _confirmar_solicitud(solicitud, revisor=request.user, monto_confirmado=request.data.get('monto_confirmado'))
+            tm = _confirmar_solicitud(solicitud, revisor=request.user,
+                monto_confirmado=request.data.get('monto_confirmado'),
+                permitir_expirada=permitir_expirada, motivo_excepcion=motivo)
         except ValueError as exc:
             logger.warning('No se pudo confirmar %s desde el panel: %s', codigo, exc)
             return Response({'error': str(exc)}, status=status.HTTP_409_CONFLICT)
         solicitud.refresh_from_db()
         telegram_bot.marcar_procesada(solicitud, 'confirmar', admin_nombre)
-    else:  # rechazar — sirve también para revertir una confirmada en la conciliación
+    else:
         if solicitud.estado not in ('pendiente_confirmacion', 'confirmada'):
             return Response({'error': 'La solicitud no está disponible para revisión.'}, status=status.HTTP_409_CONFLICT)
-        motivo = request.data.get('motivo', 'Rechazado en revisión manual')
+        if resultado == 'revertir' and solicitud.estado != 'confirmada':
+            return Response({'error': 'Solo se puede revertir un pago confirmado.'}, status=409)
+        era_confirmada = solicitud.estado == 'confirmada'
         try:
             tm = _revertir_solicitud(solicitud, motivo, revisor=request.user)
         except ValueError as exc:
@@ -2272,6 +2366,10 @@ def revisar_solicitud_admin(request, codigo):
     response_data = {'estado': solicitud.estado}
     if tm:
         response_data['fecha_vencimiento'] = str(tm.fecha_vencimiento)
+        response_data['estado_membresia'] = tm.estado
+    response_data['accion'] = 'confirmar' if resultado == 'confirmar' else 'revertir' if era_confirmada else 'rechazar'
+    response_data['message'] = {'confirmar': 'Pago confirmado.', 'revertir': 'Ingreso anulado y suscripción restaurada; no se realizó un reembolso.',
+        'rechazar': 'Comprobante rechazado; no se registró un ingreso.'}[response_data['accion']]
     return Response(response_data, status=status.HTTP_200_OK)
 
 
@@ -2393,6 +2491,8 @@ def admin_resumen(request):
     if not request.user.is_superuser:
         return Response({'error': 'forbidden'}, status=403)
 
+    # Las pendientes de conciliación usan la misma regla que web/Telegram.
+    _normalizar_pendientes_revision()
     # Recalcular estados para que los conteos reflejen la realidad de hoy
     _actualizar_estados_membresias()
 

@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import tempfile
+from datetime import timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -14,11 +15,13 @@ from django.conf import settings
 from django.core.management import call_command
 from django.core.files.base import ContentFile
 from django.db import connection
+from django.utils import timezone
 from PIL import Image
 from rest_framework.test import APIClient
 from Tiendas.test_suscripciones import SuscripcionesTests
 from Tiendas.models import (Tienda, Tienda_Membresia, SolicitudPago,
-    PagoMembresia, CambioSuscripcion, Membresia)
+    PagoMembresia, CambioSuscripcion, Membresia, CuentaDestino, CambioConfiguracionRoot)
+from Tiendas.configuracion_root import snapshot_cuenta
 from Tiendas.serializers import TiendaMembresiaSerializer
 from Ventas.test_reporte_historico import completar_esquema_legacy_de_pruebas
 settings.ROOT_URLCONF = 'Tiendas.test_suscripciones'
@@ -37,6 +40,21 @@ buf=io.BytesIO();Image.new('RGB',(180,100),'white').save(buf,format='JPEG')
 legacy.comprobante.save('ficticio.jpg',ContentFile(buf.getvalue()))
 SolicitudPago.objects.filter(pk=legacy.pk).update(monto_acordado=None)
 
+if os.environ.get('ROOT_ETAPA2') == '1':
+    temporal=Tienda.objects.create(nombre='Ruta temporal',administrador=caso.admin)
+    Tienda_Membresia.objects.create(tienda=temporal,membresia=caso.mensual,
+        estado='Pre-activada',fecha_activacion=caso.tm.fecha_activacion,
+        fecha_vencimiento=caso.tm.fecha_activacion-timedelta(days=10),
+        pre_activada_hasta=timezone.localdate()+timedelta(days=3))
+    for index in range(8):
+        t=Tienda.objects.create(nombre=f'Ruta ficticia {index}',administrador=caso.admin)
+        Tienda_Membresia.objects.create(tienda=t,membresia=caso.mensual,
+            fecha_activacion=caso.tm.fecha_activacion,fecha_vencimiento=caso.tm.fecha_vencimiento)
+    tardio=SolicitudPago.objects.create(tienda=caso.otra,membresia=caso.mensual,
+        codigo='MM-TARDIO',estado='pendiente_confirmacion',expira=legacy.expira,
+        comprobante=legacy.comprobante.name,cuenta_acordada=snapshot_cuenta(CuentaDestino.get()))
+    SolicitudPago.objects.filter(pk=tardio.pk).update(creada=timezone.now()-timedelta(days=5))
+
 
 class Handler(BaseHTTPRequestHandler):
     def ejecutar(self):
@@ -47,7 +65,10 @@ class Handler(BaseHTTPRequestHandler):
                 'archivada':caso.tm.archivada,'version':caso.tm.version,
                 'planes':list(Membresia.objects.values('id','precio','version')),
                 'pagos':list(PagoMembresia.objects.values('monto','estado','solicitud_id')),
-                'cambios':list(CambioSuscripcion.objects.values('accion','version'))})
+                'cambios':list(CambioSuscripcion.objects.values('accion','version')),
+                'cuenta':snapshot_cuenta(CuentaDestino.get()),
+                'configuracion':list(CambioConfiguracionRoot.objects.values('tipo','motivo','usuario_nombre')),
+                'solicitudes':list(SolicitudPago.objects.values('codigo','estado','confirmada_fuera_plazo','motivo_revision','cuenta_acordada'))})
         if self.path.startswith('/__sesion/'):
             role=self.path.rsplit('/',1)[-1];user={'root':caso.root,'admin':caso.admin,'worker':caso.worker}[role]
             return self.json(200,{'user':{'id':user.pk,'username':user.username,'is_staff':user.is_staff,'is_superuser':user.is_superuser},

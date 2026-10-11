@@ -437,6 +437,9 @@ class SolicitudPago(models.Model):
     membresia = models.ForeignKey(Membresia, on_delete=models.PROTECT)
     # NULL solo en solicitudes anteriores que no tienen un importe verificable.
     monto_acordado = models.DecimalField(max_digits=10, decimal_places=0, null=True, blank=True)
+    cuenta_acordada = models.JSONField(default=dict, blank=True)
+    confirmada_fuera_plazo = models.BooleanField(default=False)
+    motivo_revision = models.CharField(max_length=500, blank=True)
     codigo = models.CharField(max_length=12, unique=True, db_index=True)
     estado = models.CharField(max_length=25, choices=ESTADOS, default='pendiente')
 
@@ -488,6 +491,7 @@ class CuentaDestino(models.Model):
     titular = models.CharField(max_length=100, blank=True)
     tipo = models.CharField(max_length=100, blank=True)
     actualizada = models.DateTimeField(auto_now=True)
+    version = models.PositiveIntegerField(default=0)
 
     def save(self, *args, **kwargs):
         self.pk = 1
@@ -500,6 +504,17 @@ class CuentaDestino(models.Model):
 
     def __str__(self):
         return f"{self.banco} - {self.numero}"
+
+
+class CambioConfiguracionRoot(models.Model):
+    """Bitácora privada: conserva actor y valores antes/después de cuenta/tarifas."""
+    tipo = models.CharField(max_length=10, choices=[('cuenta', 'Cuenta bancaria'), ('planes', 'Tarifas')])
+    usuario = models.ForeignKey(User, null=True, on_delete=models.SET_NULL)
+    usuario_nombre = models.CharField(max_length=200)
+    motivo = models.CharField(max_length=500)
+    fecha = models.DateTimeField(default=timezone.now)
+    anterior = models.JSONField(default=dict)
+    nuevo = models.JSONField(default=dict)
 
 
 class PagoMembresia(models.Model):

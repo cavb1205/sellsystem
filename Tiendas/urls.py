@@ -53,6 +53,7 @@ urlpatterns = [
     path('solicitud/<str:codigo>/revisar/', views.revisar_solicitud_admin, name='revisar_solicitud_admin'),
     path('solicitud/<str:codigo>/comprobante/ver/', views.ver_comprobante, name='ver_comprobante'),
     path('cuenta-destino/', views.cuenta_destino, name='cuenta_destino'),
+    path('configuracion/historial/', views.configuracion_historial, name='configuracion_historial'),
 
     # Informe de ingresos por membresías (solo root)
     path('ingresos/', views.ingresos_membresias, name='ingresos_membresias'),

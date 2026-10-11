@@ -186,7 +186,7 @@ class RootIntegridadTests(TestCase):
         s=self.solicitud();_confirmar_solicitud(s,self.root)
         self.tm.refresh_from_db()
         self.assertEqual(self.api.post(f'/tiendas/{self.tm.pk}/archivar/',{'archivar':True,'version':self.tm.version},format='json').status_code,200)
-        r=self.api.post(f'/tiendas/solicitud/{s.codigo}/revisar/',{'resultado':'rechazar'},format='json')
+        r=self.api.post(f'/tiendas/solicitud/{s.codigo}/revisar/',{'resultado':'rechazar','motivo':'Comprobante incorrecto'},format='json')
         self.assertEqual(r.status_code,409,r.data)
         self.tm.refresh_from_db();self.assertTrue(self.tm.archivada)
         self.assertEqual(PagoMembresia.objects.get(solicitud=s).estado,'vigente')

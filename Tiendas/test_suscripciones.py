@@ -12,7 +12,7 @@ from rest_framework.test import APIRequestFactory
 from Clientes.models import Cliente
 from Recaudos.models import Recaudo
 from Tiendas.models import (Tienda, Tienda_Membresia, Tienda_Administrador, Membresia,
-    PagoMembresia, CambioSuscripcion, SolicitudPago, MovimientoCaja)
+    PagoMembresia, CambioSuscripcion, SolicitudPago, MovimientoCaja, CuentaDestino)
 from Tiendas.serializers import TiendaMembresiaListaSerializer
 from Tiendas.views import (_confirmar_solicitud, _revertir_solicitud,
     _actualizar_estados_membresias, comprobar_estado_membresia)
@@ -41,6 +41,7 @@ class SuscripcionesTests(TestCase):
         Tienda_Administrador.objects.create(tienda=self.otra, administrador=self.admin)
         self.mensual = Membresia.objects.create(nombre='Mensual', precio=12000)
         self.anual = Membresia.objects.create(nombre='Anual', precio=120000)
+        CuentaDestino.objects.update_or_create(pk=1, defaults={'banco':'Banco Ficticio', 'numero':'000-PRUEBA', 'titular':'Titular Ficticio', 'tipo':'Cuenta de prueba'})
         self.tm = Tienda_Membresia.objects.create(tienda=self.ruta, membresia=self.mensual,
             estado='Activa', fecha_activacion=date(2026,10,1), fecha_vencimiento=date(2026,12,1))
         Tienda_Membresia.objects.create(tienda=self.otra, membresia=self.mensual,

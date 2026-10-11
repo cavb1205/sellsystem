@@ -2,7 +2,8 @@
 from rest_framework import serializers
 from .models import Tienda, Cierre_Caja, MovimientoCaja, Tienda_Membresia, Membresia, Tienda_Administrador, SolicitudPago, CuentaDestino
 from Trabajadores.serializers import UserSerializer, PerfilSerializer
-from Tiendas.fecha_operativa import validar_zona_horaria
+from Tiendas.fecha_operativa import validar_zona_horaria, fecha_operativa
+from datetime import timedelta
 from Tiendas.seguridad_root import puede_eliminar_desde_lista
 
 
@@ -188,6 +189,8 @@ class SolicitudPagoSerializer(serializers.ModelSerializer):
     solicitante = serializers.SerializerMethodField()
     revisor = serializers.SerializerMethodField()
     tiene_comprobante = serializers.SerializerMethodField()
+    cuenta_historica_verificable = serializers.SerializerMethodField()
+    vigencia_prevista = serializers.SerializerMethodField()
 
     class Meta:
         model = SolicitudPago
@@ -197,7 +200,9 @@ class SolicitudPagoSerializer(serializers.ModelSerializer):
             'solicitante', 'revisor', 'tiene_comprobante',
             'monto_detectado', 'motivo_rechazo',
             'confianza_ia', 'referencia_bancaria',
-            'creada', 'procesada', 'expira',
+            'creada', 'procesada', 'expira', 'confirmada_fuera_plazo', 'motivo_revision',
+            'cuenta_acordada', 'cuenta_historica_verificable',
+            'vigencia_prevista', 'fecha_vencimiento_previa',
         ]
 
     def _nombre_usuario(self, user):
@@ -217,12 +222,25 @@ class SolicitudPagoSerializer(serializers.ModelSerializer):
     def get_tiene_comprobante(self, obj):
         return bool(obj.comprobante)
 
+    def get_cuenta_historica_verificable(self, obj):
+        return bool(obj.cuenta_acordada)
+
+    def get_vigencia_prevista(self, obj):
+        tm = getattr(obj.tienda, 'tienda_membresia', None)
+        if tm is None or obj.membresia.nombre not in ('Mensual', 'Anual'):
+            return None
+        hoy = fecha_operativa(obj.tienda)
+        base = hoy if tm.vencida_manualmente else max(tm.fecha_vencimiento, hoy)
+        return {'actual': str(tm.fecha_vencimiento),
+            'propuesta': str(base + timedelta(days=30 if obj.membresia.nombre == 'Mensual' else 365)),
+            'estado_actual': tm.estado}
+
 
 class CuentaDestinoSerializer(serializers.ModelSerializer):
     class Meta:
         model = CuentaDestino
-        fields = ['banco', 'numero', 'titular', 'tipo', 'actualizada']
-        read_only_fields = ['actualizada']
+        fields = ['banco', 'numero', 'titular', 'tipo', 'actualizada', 'version']
+        read_only_fields = ['actualizada', 'version']
 
 
 class CajaSerializer(serializers.ModelSerializer):
