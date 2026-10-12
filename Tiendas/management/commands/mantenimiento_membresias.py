@@ -193,10 +193,10 @@ class Command(BaseCommand):
                 t=Sum('monto'))['t'] or 0,
         }
         if usuario_alertas:
-            telegram_bot.notificar_resumen_diario(stats, fecha=ayer)
+            enviado = telegram_bot.notificar_resumen_diario(stats, fecha=ayer)
             self.stdout.write(
-                f'Resumen de membresías de {usuario_alertas.username} '
-                f'({rutas_alertas.count()} ruta(s)) enviado a Telegram.'
+                f'Resumen de membresías de {usuario_alertas.username}: '
+                + ('entrega confirmada.' if enviado else 'entrega no confirmada.')
             )
         else:
             self.stdout.write(self.style.WARNING(
@@ -228,10 +228,18 @@ class Command(BaseCommand):
                 f'{nuevos_riesgos} alerta(s) nueva(s) de riesgo; '
                 f'{cierres_ausentes} cierre(s) ausente(s).'
             )
-            telegram_bot.notificar_resumen_operativo(
-                resumen_operativo(ayer, rutas=rutas_alertas), ayer
+            from Tiendas.entrega_reporte_rutas import reintentar_pendientes
+            reintentar_pendientes(usuario_alertas, ayer)
+            resultado = telegram_bot.notificar_resumen_operativo(
+                resumen_operativo(ayer, rutas=rutas_alertas), ayer, usuario=usuario_alertas
             )
-            self.stdout.write('Resumen operativo enviado a Telegram.')
+            if resultado['completo']:
+                self.stdout.write(f'Resumen operativo: {resultado["enviadas"]} parte(s), entrega confirmada.')
+            else:
+                self.stdout.write(self.style.WARNING(
+                    f'Resumen operativo: entrega incompleta/no confirmada '
+                    f'({resultado.get("enviadas", 0)}/{resultado.get("total", 0)} partes).'
+                ))
         else:
             self.stdout.write(self.style.WARNING(
                 'No se encontró el usuario configurado para alertas; '

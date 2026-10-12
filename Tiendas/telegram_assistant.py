@@ -393,6 +393,7 @@ def _ayuda():
         '/riesgo [Ruta] — clientes con señales de deterioro\n'
         '/alertas [Ruta] — alertas operativas nuevas\n'
         '/gestion [Ruta] — clasificación para gestionar cobro\n'
+        '/reporte — detalle del último reporte diario\n'
         '/ayuda — este menú'
     )
 
@@ -422,7 +423,7 @@ def _seleccionar_ruta(encontradas, titulo):
 
 
 def _procesar_comando(chat_id, texto):
-    _, rutas = _usuario_y_rutas()
+    usuario, rutas = _usuario_y_rutas()
     if not rutas.exists():
         _enviar(chat_id, '⛔ No encontré rutas autorizadas para el asistente.'); return
     partes = texto.strip().split(maxsplit=1)
@@ -435,6 +436,9 @@ def _procesar_comando(chat_id, texto):
     elif comando == '/rutas':
         texto_rutas, teclado = _texto_rutas(rutas)
         _enviar(chat_id, texto_rutas, teclado)
+    elif comando == '/reporte':
+        from Tiendas.consulta_reporte_rutas import menu_reporte
+        _enviar(chat_id, *menu_reporte(usuario, rutas, chat_id))
     elif comando in ('/ruta', '/vencidos', '/riesgo', '/alertas', '/gestion'):
         ruta, encontradas = _buscar_ruta(argumento, rutas)
         if argumento and not encontradas:
@@ -488,13 +492,25 @@ def procesar_callback(callback):
     if not data.startswith('asst:') or not _chat_autorizado(chat):
         return False
     callback_id = callback.get('id')
-    _, rutas = _usuario_y_rutas()
+    usuario, rutas = _usuario_y_rutas()
     if not rutas.exists():
         _responder_callback(callback_id, 'Sin rutas autorizadas'); return True
     partes = data.split(':')
     accion = partes[1] if len(partes) > 1 else ''
     ruta_id = partes[2] if len(partes) > 2 else None
-    if accion == 'resumen':
+    if accion in ('rep', 'reps'):
+        from Tiendas.consulta_reporte_rutas import detalle_reporte, menu_reporte
+        try:
+            if accion == 'rep' and len(partes) == 6:
+                respuesta, teclado = detalle_reporte(usuario, rutas, chat['id'],
+                    int(partes[2]), int(partes[3]), partes[4], int(partes[5]))
+            elif accion == 'reps' and len(partes) == 4:
+                respuesta, teclado = menu_reporte(usuario, rutas, chat['id'], int(partes[2]), int(partes[3]))
+            else:
+                raise ValueError('Acción inválida')
+        except (ValueError, OverflowError):
+            _responder_callback(callback_id, 'Detalle inválido'); return True
+    elif accion == 'resumen':
         respuesta, teclado = _texto_resumen(rutas), _botones_principales()
     elif accion == 'rutas':
         respuesta, teclado = _texto_rutas(rutas)

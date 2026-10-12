@@ -9,6 +9,21 @@ from django.utils import timezone
 from Tiendas.fecha_operativa import fecha_operativa
 
 
+class ReporteRutasTelegram(models.Model):
+    """Foto privada del reporte y entrega por partes, ajena al libro financiero."""
+    usuario = models.ForeignKey(User, on_delete=models.CASCADE)
+    fecha = models.DateField()
+    chat_ref = models.CharField(max_length=64)
+    corte = models.DateTimeField(default=timezone.now)
+    rutas = models.JSONField(default=list)
+    partes = models.JSONField(default=list)
+    actualizada = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['usuario', 'fecha'],
+            name='unique_reporte_rutas_usuario_fecha')]
+
+
 class OrdenVisita(models.Model):
     """Recorrido compartido. Conserva posiciones de clientes sin crédito activo."""
     tienda = models.OneToOneField('Tiendas.Tienda', on_delete=models.CASCADE)

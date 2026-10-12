@@ -326,11 +326,15 @@ def procesar_callback_alerta(callback):
     return True
 
 
-def notificar_resumen_operativo(rutas, fecha):
-    """Resumen legible dividido por rutas completas; sin omitir rutas."""
-    from Tiendas.reporte_rutas import partes_resumen
-    resultados = [_enviar_alerta(parte['texto']) for parte in partes_resumen(rutas, fecha)]
-    return all(resultados)
+def notificar_resumen_operativo(rutas, fecha, usuario=None):
+    """Guarda la foto del reporte y verifica la entrega de cada parte."""
+    from Tiendas.alertas_operativas import usuario_alertas_configurado
+    from Tiendas.entrega_reporte_rutas import preparar_reporte, entregar_reporte
+    usuario = usuario or usuario_alertas_configurado()
+    if not usuario or not _configurado():
+        return {'completo': False, 'omitido': True}
+    reporte = preparar_reporte(usuario, fecha, rutas)
+    return entregar_reporte(reporte.pk)
 
 
 def notificar_nuevo_usuario(user, tienda, telefono=''):
