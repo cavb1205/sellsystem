@@ -327,56 +327,10 @@ def procesar_callback_alerta(callback):
 
 
 def notificar_resumen_operativo(rutas, fecha):
-    """Envía el resumen separado de cartera de la jornada cerrada."""
-    if not rutas:
-        return _enviar_alerta(
-            f'📊 <b>Resumen operativo</b> · {fecha:%d/%m/%Y}\n\n'
-            'No hubo actividad operativa para resumir.'
-        )
-
-    lineas = [
-        f'📊 <b>Resumen de cartera</b> · {fecha:%d/%m/%Y}\n',
-        'Jornada cerrada · excepciones que requieren revisión.\n',
-    ]
-    for ruta in rutas[:35]:
-        excepciones = (
-            not ruta['cierre']
-            or ruta['pendiente_recaudo'] > 0
-            or ruta['sin_gestion'] > 0
-            or ruta['fallas'] > 0
-            or ruta['alertas_urgentes'] > 0
-            or ruta['alertas_criticas'] > 0
-        )
-        estado = '⚠️' if excepciones else '✅'
-        programacion = (
-            f'{_dinero(ruta["recaudo"])} / {_dinero(ruta["esperado"])}'
-            if ruta['programadas'] else 'sin cuotas programadas'
-        )
-        riesgos = (
-            f'{ruta["alertas_urgentes"]} urgentes · '
-            f'{ruta["alertas_criticas"]} críticas'
-            if ruta['alertas_urgentes'] or ruta['alertas_criticas']
-            else 'sin riesgos urgentes'
-        )
-        cierre = 'cierre OK' if ruta['cierre'] else '⚠️ cierre ausente'
-        lineas.append(
-            f'{estado} <b>{html.escape(str(ruta["nombre"]))}</b>\n'
-            f'  💰 Cobro programado: <b>{programacion}</b> · '
-            f'pendiente {_dinero(ruta["pendiente_recaudo"])}\n'
-            f'  👥 Sin gestión: <b>{ruta["sin_gestion"]}</b> · '
-            f'No pago: <b>{ruta["fallas"]}</b> · {cierre}\n'
-            f'  ⚠️ Riesgo: <b>{riesgos}</b> · '
-            f'Umbrales nuevos: <b>{ruta["alertas_nuevas"]}</b>'
-        )
-        for riesgo in ruta.get('riesgos_detalle', []):
-            severidad = '🔴' if riesgo['severidad'] == 'critica' else '🟠'
-            lineas.append(
-                f'  {severidad} {html.escape(str(riesgo["cliente"]))} · '
-                f'venta #{riesgo["venta_id"]} · saldo {_dinero(riesgo["saldo"])}'
-            )
-    if len(rutas) > 35:
-        lineas.append(f'\n<i>Se muestran 35 de {len(rutas)} rutas con actividad.</i>')
-    return _enviar_alerta('\n\n'.join(lineas))
+    """Resumen legible dividido por rutas completas; sin omitir rutas."""
+    from Tiendas.reporte_rutas import partes_resumen
+    resultados = [_enviar_alerta(parte['texto']) for parte in partes_resumen(rutas, fecha)]
+    return all(resultados)
 
 
 def notificar_nuevo_usuario(user, tienda, telefono=''):

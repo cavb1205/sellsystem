@@ -664,87 +664,9 @@ def revisar_cierres_ausentes(fecha, rutas=None, notificar=False):
 
 
 def _resumen_cumplimiento_dia(tienda, fecha):
-    """Calcula cumplimiento de cobro por crédito para el reporte nocturno.
-
-    El pendiente se suma crédito por crédito. Así un abono extraordinario de
-    un cliente no oculta a otro cliente que no fue visitado.
-    """
-    ventas = Venta.objects.filter(
-        tienda=tienda,
-        estado_venta__in=ESTADOS_ACTIVOS,
-    ).only(
-        'id', 'fecha_venta', 'plazo', 'saldo_actual', 'cuotas',
-        'valor_venta', 'interes',
-    )
-    recaudos_dia = Recaudo.objects.filter(
-        tienda=tienda,
-        fecha_recaudo=fecha,
-        es_renovacion=False,
-    ).values('venta_id', 'valor_recaudo', 'visita_blanco_id')
-
-    por_venta = {}
-    recaudo_total = Decimal('0')
-    fallas = 0
-    for recaudo in recaudos_dia:
-        venta_id = recaudo['venta_id']
-        valor = recaudo['valor_recaudo'] or Decimal('0')
-        info = por_venta.setdefault(
-            venta_id,
-            {'registro': False, 'abono': Decimal('0'), 'fallas': 0},
-        )
-        info['registro'] = True
-        if valor > 0:
-            info['abono'] += valor
-            recaudo_total += valor
-        else:
-            info['fallas'] += 1
-            fallas += 1
-
-    esperado = Decimal('0')
-    pendiente = Decimal('0')
-    cubierto = Decimal('0')
-    programadas = 0
-    con_gestion = 0
-    con_abono = 0
-    sin_gestion = 0
-    fallas_programadas = 0
-
-    for venta in ventas:
-        saldo = venta.saldo_actual or Decimal('0')
-        cuota = Decimal(str(venta.valor_cuota() or 0))
-        dias = (fecha - venta.fecha_venta).days
-        intervalo = intervalo_cobro(venta.plazo)
-        if dias < intervalo or dias % intervalo != 0 or saldo <= 0 or cuota <= 0:
-            continue
-
-        programadas += 1
-        esperado_venta = min(cuota, saldo)
-        esperado += esperado_venta
-        registro = por_venta.get(venta.id)
-        if not registro or not registro['registro']:
-            sin_gestion += 1
-        else:
-            con_gestion += 1
-        abono_venta = registro['abono'] if registro else Decimal('0')
-        if abono_venta > 0:
-            con_abono += 1
-        if registro and registro['fallas'] and abono_venta <= 0:
-            fallas_programadas += registro['fallas']
-        cubierto += min(esperado_venta, abono_venta)
-        pendiente += max(Decimal('0'), esperado_venta - abono_venta)
-
-    return {
-        'esperado': esperado,
-        'recaudo': recaudo_total,
-        'pendiente_recaudo': pendiente,
-        'cobertura_recaudo': cubierto,
-        'programadas': programadas,
-        'con_gestion': con_gestion,
-        'con_abono': con_abono,
-        'sin_gestion': sin_gestion,
-        'fallas': fallas,
-        'fallas_programadas': fallas_programadas,
-    }
+    """Cuotas de la jornada con la misma definición que Liquidar."""
+    from Tiendas.reporte_rutas import cumplimiento_dia
+    return cumplimiento_dia(tienda, fecha)
 
 
 def resumen_operativo(fecha, rutas=None):
@@ -809,7 +731,8 @@ def resumen_operativo(fecha, rutas=None):
                 'saldo': venta_alerta.saldo_actual if venta_alerta else Decimal('0'),
                 'titulo': alerta.titulo,
             })
-        if activas.exists() or nuevas or recaudo or blancos:
+        # Todas las rutas autorizadas aparecen, aunque no haya actividad.
+        if tienda.estado:
             resumen.append({
                 'nombre': tienda.nombre,
                 'id': tienda.id,
@@ -823,7 +746,7 @@ def resumen_operativo(fecha, rutas=None):
                 'sin_primer_abono': sin_primer_abono.count(),
                 'saldo_sin_primer_abono': sin_primer_abono.aggregate(total=Sum('saldo_actual'))['total'] or Decimal('0'),
                 'nuevas': nuevas,
-                'recaudo': recaudo,
+                'recaudo': cumplimiento['recaudo'],
                 'blancos': blancos,
                 'riesgo': riesgo,
                 'saldo_riesgo': saldo_riesgo,
@@ -836,6 +759,10 @@ def resumen_operativo(fecha, rutas=None):
                 'sin_gestion': cumplimiento['sin_gestion'],
                 'fallas': cumplimiento['fallas'],
                 'fallas_programadas': cumplimiento['fallas_programadas'],
+                'sin_abono': cumplimiento['sin_abono'],
+                'cobertura_recaudo': cumplimiento['cobertura_recaudo'],
+                'cobros_adicionales': cumplimiento['cobros_adicionales'],
+                'creditos_detalle': cumplimiento['creditos_detalle'],
                 'alertas_riesgo': alertas_riesgo.count(),
                 'alertas_urgentes': alertas_riesgo.filter(severidad='alta').count(),
                 'alertas_criticas': alertas_riesgo.filter(severidad='critica').count(),

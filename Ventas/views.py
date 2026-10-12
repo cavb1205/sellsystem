@@ -37,7 +37,8 @@ from Clientes.telegram_eventos import registrar_evento
 from Ventas.riesgo import calcular_fecha_vencimiento, normalizar_plazo
 from Tiendas.fecha_operativa import fecha_operativa
 from Ventas.perdidas import declarar_perdida
-from Ventas.calendario import calendario_venta, importe_cuota_fecha
+from Ventas.calendario import calendario_venta
+from Ventas.cobranza_dia import cuotas_del_dia
 from Tiendas.orden_visita import ordenar_ventas_recorrido
 
 
@@ -136,20 +137,8 @@ def list_ventas_a_liquidar(request, date, tienda_id=None):
     if request.query_params.get('resumen') == '1':
         # No partir de las filas pendientes: las ventas pagadas/gestionadas
         # durante el día también pertenecen a su base original de cobranza.
-        base = Venta.objects.filter(tienda=tienda, fecha_venta__lt=parsed_date).exclude(
-            estado_venta='Perdida').annotate(
-                _pagos_desde_fecha=Sum('recaudo__valor_recaudo',
-                    filter=Q(recaudo__fecha_recaudo__gte=parsed_date))).filter(
-                        Q(saldo_actual__gt=0) | Q(_pagos_desde_fecha__gt=0))
-        if previa:
-            base = base.filter(fecha_venta__lte=hoy)
-        total_programado = Decimal('0.00')
-        for venta in base:
-            saldo_inicio = Decimal(venta.saldo_actual or 0) + Decimal(venta._pagos_desde_fecha or 0)
-            total_programado += importe_cuota_fecha(
-                fecha_venta=venta.fecha_venta, cuotas=venta.cuotas, plazo=venta.plazo,
-                total=venta.total_a_pagar(), saldo_inicio=saldo_inicio,
-                consulta=parsed_date, version=venta.calendario_version)
+        total_programado = sum((importe for _, importe in cuotas_del_dia(
+            tienda, parsed_date, fecha_maxima=hoy if previa else None)), Decimal('0.00'))
         resumen = {'criterio': 'cuotas_del_dia', 'fecha_consulta': parsed_date.isoformat(),
                    'total_a_cobrar': format(total_programado, '.2f')}
     ventas = ventas.filter(fecha_venta__lt=parsed_date)
