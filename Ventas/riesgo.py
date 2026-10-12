@@ -1,7 +1,7 @@
 """Reglas compartidas de frecuencia, cobranza y deterioro de créditos."""
 
 from datetime import timedelta
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from django.utils import timezone
 
@@ -48,8 +48,9 @@ def intervalo_cobro(plazo):
 def calcular_cuotas_atrasadas(valor_cuota, ciclos_registrados, total_abonado):
     """Calcula cuotas pendientes dentro de los ciclos de cobro registrados.
 
-    Un recaudo puede cubrir más de una cuota. Por eso el atraso se calcula
-    contra el monto abonado y no contra la cantidad de recibos. Un crédito no
+    Los ciclos diarios son fechas distintas de gestión (no recibos). Todos
+    los abonos de la fecha se acumulan; una visita más un pago no exige dos
+    cuotas. Un recaudo también puede cubrir más de una cuota. Un crédito no
     puede quedar con un atraso negativo: los pagos adelantados se gestionan
     como una señal distinta, no como ``cuotas_atrasadas``.
     """
@@ -64,6 +65,19 @@ def calcular_cuotas_atrasadas(valor_cuota, ciclos_registrados, total_abonado):
 
 def umbrales_dsa(plazo):
     return UMBRALES_DSA.get(plazo, UMBRALES_DSA['Diario'])
+
+
+def importe_atrasado_registrado(cuota, jornadas, abonado, saldo, dias_sin_abono=0):
+    """Estimación monetaria directa, sin multiplicar cuotas redondeadas.
+
+    Conserva la inferencia histórica por días completos solo cuando todavía
+    no hay primer abono. No reconstruye un calendario contractual diario.
+    """
+    cuota, abonado, saldo = (Decimal(str(v or 0)) for v in (cuota, abonado, saldo))
+    if abonado <= 0:
+        jornadas = max(jornadas, max(0, int(dias_sin_abono or 0)))
+    importe = max(Decimal('0'), cuota * jornadas - abonado)
+    return min(max(Decimal('0'), saldo), importe).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
 
 
 def calcular_fecha_vencimiento(fecha_venta, cuotas, plazo, version=0):

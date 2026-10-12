@@ -6,7 +6,7 @@ from django.utils import timezone
 
 from Clientes.models import Cliente
 from Tiendas.models import Tienda
-from Ventas.riesgo import calcular_cuotas_atrasadas, dias_completos_sin_abono
+from Ventas.riesgo import calcular_cuotas_atrasadas, dias_completos_sin_abono, importe_atrasado_registrado
 from Tiendas.fecha_operativa import fecha_operativa
 
 
@@ -118,9 +118,20 @@ class Venta(models.Model):
         )
         return calcular_cuotas_atrasadas(
             self.valor_cuota(),
-            recaudos.count(),
+            (recaudos.values('fecha_recaudo').distinct().count()
+             if self.plazo == 'Diario' else recaudos.count()),
             self.total_abonado(),
         )
+
+    def importe_atrasado_estimado(self):
+        if self.plazo != 'Diario':
+            return None
+        if self.estado_venta in ('Pagado', 'Perdida'):
+            return Decimal('0')
+        jornadas = self.recaudo_set.filter(es_renovacion=False).values('fecha_recaudo').distinct().count()
+        abonado = self.total_abonado()
+        return importe_atrasado_registrado(self.valor_cuota(), jornadas, abonado,
+            self.saldo_actual, self.dias_sin_abono() if abonado <= 0 else 0)
 
     def perdida(self):
         return self.saldo_actual or Decimal(0)

@@ -58,7 +58,7 @@ def resumen_credito(venta):
     movimientos = venta.recaudo_set
     reales_qs = movimientos.filter(es_renovacion=False)
     reales_resumen = reales_qs.aggregate(
-        total=Sum('valor_recaudo'), ciclos=Count('id'),
+        total=Sum('valor_recaudo'), ciclos=Count('fecha_recaudo', distinct=True),
     )
     reales = reales_resumen['total'] or Decimal('0')
     transferidos = movimientos.filter(es_renovacion=True).aggregate(

@@ -54,10 +54,17 @@ def _anotar_ventas_lista(queryset, consulta=None, abonos_hasta=None):
         _fecha_calendario=Value(consulta, output_field=DateField()),
         _abonos_calendario=Sum('recaudo__valor_recaudo', filter=Q(recaudo__es_renovacion=False, recaudo__fecha_recaudo__lte=limite_abonos)),
         _gestiones_calendario=Count('recaudo', filter=Q(recaudo__es_renovacion=False, recaudo__fecha_recaudo=consulta, recaudo__fecha_recaudo__lte=limite_abonos)),
-        # Las visitas fallidas cuentan como ciclos; la liquidación automática
-        # de una renovación no es un ciclo de cobro del crédito anterior.
+        # Cantidad histórica de recibos/visitas para el promedio por registro;
+        # el cierre automático por renovación no es un recibo real.
         _recaudos_count=Count(
             'recaudo',
+            filter=Q(recaudo__es_renovacion=False),
+        ),
+        # Una fecha de gestión diaria es un ciclo, aunque contenga varios
+        # abonos parciales o una visita seguida de pago. Conservar por separado
+        # el número de recibos usado por el promedio histórico de pagos.
+        _jornadas_recaudo=Count(
+            'recaudo__fecha_recaudo', distinct=True,
             filter=Q(recaudo__es_renovacion=False),
         ),
         _ultimo_abono_real=Max(

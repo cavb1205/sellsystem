@@ -8,6 +8,7 @@ from Ventas.riesgo import (
     calcular_cuotas_atrasadas,
     calcular_riesgo_venta,
     dias_completos_sin_abono,
+    importe_atrasado_registrado,
 )
 from Clientes.serializers import ClienteSerializer
 from Clientes.models import Cliente
@@ -129,7 +130,7 @@ class VentaDetailSerializer(ModelSerializer):
             'plazo','comentario','estado_venta','tienda','total_a_pagar',
             'valor_cuota','saldo_actual','pagos_pendientes','pagos_realizados',
             'fecha_vencimiento','total_abonado','promedio_pago','dias_atrasados',
-            'perdida','dias_sin_abono',
+            'perdida','dias_sin_abono', 'importe_atrasado_estimado',
             'fue_renovada', 'renovacion_id', 'origen_renovacion_id', 'creado_por',
             'calendario_version', 'calendario_pago',
             )
@@ -187,6 +188,7 @@ class VentaListaSerializer(ModelSerializer):
     total_abonado = serializers.SerializerMethodField()
     promedio_pago = serializers.SerializerMethodField()
     dias_atrasados = serializers.SerializerMethodField()
+    importe_atrasado_estimado = serializers.SerializerMethodField()
     perdida = serializers.SerializerMethodField()
     dias_sin_abono = serializers.SerializerMethodField()
     fecha_ultimo_abono = serializers.SerializerMethodField()
@@ -209,6 +211,7 @@ class VentaListaSerializer(ModelSerializer):
             'valor_cuota', 'saldo_actual', 'pagos_pendientes',
             'pagos_realizados', 'fecha_vencimiento', 'total_abonado',
             'promedio_pago', 'dias_atrasados', 'perdida', 'dias_sin_abono',
+            'importe_atrasado_estimado',
             'fecha_ultimo_abono',
             'capital_recuperado', 'capital_expuesto', 'interes_cobrado',
             'interes_no_cobrado',
@@ -268,9 +271,24 @@ class VentaListaSerializer(ModelSerializer):
             return 0
         return calcular_cuotas_atrasadas(
             cuota,
-            self._recaudos_count(obj),
+            self._jornadas(obj) if obj.plazo == 'Diario' else self._recaudos_count(obj),
             self.get_total_abonado(obj),
         )
+
+    @staticmethod
+    def _jornadas(obj):
+        if hasattr(obj, '_jornadas_recaudo'):
+            return obj._jornadas_recaudo or 0
+        return obj.recaudo_set.filter(es_renovacion=False).values('fecha_recaudo').distinct().count()
+
+    def get_importe_atrasado_estimado(self, obj):
+        if obj.plazo != 'Diario':
+            return None
+        if obj.estado_venta in ('Pagado', 'Perdida'):
+            return Decimal('0')
+        abonado = self.get_total_abonado(obj)
+        return importe_atrasado_registrado(self._cuota(obj), self._jornadas(obj), abonado,
+            self._saldo(obj), self.get_dias_sin_abono(obj) if abonado <= 0 else 0)
 
     def get_perdida(self, obj):
         return self._saldo(obj)
