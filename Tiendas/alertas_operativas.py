@@ -322,6 +322,15 @@ def registrar_alerta_venta(venta, score_previo=None, usuario=None):
 
 
 def _perfil_riesgo(venta):
+    # Un crédito diario cerrado tampoco debe reactivarse por el paso del
+    # tiempo. Se corrige el monitor, no las reglas compartidas de Liquidar.
+    if venta.estado_venta in ('Pagado', 'Perdida'):
+        perfil = calcular_riesgo_venta(plazo=venta.plazo,
+            estado_venta='Vigente', dias_sin_abono=0,
+            dias_atrasados=0, total_abonado=1)
+        perfil['motivo'] = 'Crédito cerrado'
+        perfil['estado_calendario'] = venta.estado_venta
+        return perfil
     from Ventas.calendario import calendario_venta, riesgo_calendario
     calendario = calendario_venta(venta)
     if calendario:
@@ -488,7 +497,9 @@ def revisar_riesgo_venta(venta, notificar=True):
 
     if perfil['nivel_cobranza'] <= 0:
         for alerta in abiertas:
-            _resolver_alerta_cartera(alerta, 'Venta al día', perfil=perfil)
+            _resolver_alerta_cartera(alerta,
+                'Crédito cerrado' if venta.estado_venta in ('Pagado', 'Perdida') else 'Venta al día',
+                perfil=perfil)
         return {'creada': False, 'resueltas': len(abiertas), 'nivel': 0}
 
     tiene_abono_real = _tiene_abono_real(venta)
@@ -523,6 +534,9 @@ def revisar_riesgo_venta(venta, notificar=True):
             'tipo_nuevo': tipo,
         })
     datos_nuevos['historial'] = historial[-20:]
+    # La sincronización no debe borrar las notas administrativas.
+    if 'revisiones' in datos_anteriores:
+        datos_nuevos['revisiones'] = datos_anteriores['revisiones']
 
     debe_notificar = bool(
         notificar
@@ -599,10 +613,29 @@ def revisar_riesgo_cartera(rutas=None, notificar=True):
     return creadas
 
 
+def resolver_cierres_registrados(rutas):
+    """Reconcilia omisiones antiguas sin borrar sus antecedentes."""
+    ruta_ids = list(rutas.values_list('id', flat=True))
+    registradas = set(Cierre_Caja.objects.filter(tienda_id__in=ruta_ids)
+        .values_list('tienda_id', 'fecha_cierre'))
+    resueltas = 0
+    for alerta in AlertaOperativa.objects.filter(tienda_id_ref__in=ruta_ids,
+        tipo='CIERRE_AUSENTE', estado__in=ESTADOS_ALERTA_ABIERTA):
+        try:
+            fecha = date.fromisoformat((alerta.datos or {}).get('fecha', ''))
+        except (ValueError, TypeError):
+            continue
+        if (alerta.tienda_id_ref, fecha) in registradas:
+            _resolver_alerta_cartera(alerta, 'El cierre pendiente ya fue registrado')
+            resueltas += 1
+    return resueltas
+
+
 def revisar_cierres_ausentes(fecha, rutas=None, notificar=False):
     """Avisa si una ruta tuvo actividad en una fecha y no cerró caja."""
     creadas = 0
     alcance = rutas if rutas is not None else _rutas_activas_del_monitoreo()
+    resolver_cierres_registrados(alcance)
     for tienda in alcance:
         tuvo_ventas = Venta.objects.filter(tienda=tienda, fecha_venta=fecha).exists()
         tuvo_recaudos = Recaudo.objects.filter(tienda=tienda, fecha_recaudo=fecha).exists()

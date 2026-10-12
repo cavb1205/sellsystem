@@ -289,17 +289,38 @@ def procesar_callback_alerta(callback):
         responder_callback(callback.get('id'), 'Acción inválida')
         return True
 
+    from Tiendas.alertas_operativas import tienda_en_alcance_alertas, TIPOS_ALERTA_CARTERA, _perfil_riesgo
+    if not tienda_en_alcance_alertas(alerta.tienda_id_ref):
+        responder_callback(callback.get('id'), 'La ruta ya no pertenece al alcance del monitor')
+        return True
+
     nuevo_estado = 'revisada' if accion == 'revisar' else 'resuelta'
     if alerta.estado == 'resuelta' and nuevo_estado == 'revisada':
         responder_callback(callback.get('id'), 'La alerta ya está resuelta')
         return True
-    alerta.estado = nuevo_estado
-    alerta.save(update_fields=['estado', 'actualizada'])
     admin_tg = callback.get('from', {})
     admin_nombre = (
         f"{admin_tg.get('first_name', '')} {admin_tg.get('last_name', '')}".strip()
         or admin_tg.get('username', 'admin')
     )
+    from django.db import transaction
+    from Tiendas.centro_alertas import registrar_revision
+    from Ventas.models import Venta
+    with transaction.atomic():
+        alerta = AlertaOperativa.objects.select_for_update().get(pk=alerta.pk)
+        if alerta.estado == 'resuelta' and nuevo_estado == 'revisada':
+            responder_callback(callback.get('id'), 'La alerta ya está resuelta')
+            return True
+        if nuevo_estado == 'resuelta' and alerta.tipo in TIPOS_ALERTA_CARTERA:
+            venta = Venta.objects.filter(pk=alerta.venta_id_ref,
+                tienda_id=alerta.tienda_id_ref).select_related('tienda').first()
+            if venta and _perfil_riesgo(venta)['nivel_cobranza'] > 0:
+                responder_callback(callback.get('id'), 'La cobranza continúa. Marca revisada y registra el seguimiento en la plataforma.')
+                return True
+        if alerta.estado != nuevo_estado:
+            registrar_revision(alerta, nuevo_estado, origen='telegram',
+                actor=f'{admin_nombre} (Telegram {admin_tg.get("id", "sin ID")})',
+                nota='Revisión registrada desde el chat administrativo')
     _editar_alerta_operativa(alerta, callback, nuevo_estado, admin_nombre)
     responder_callback(callback.get('id'), f'✅ Alerta {nuevo_estado}')
     return True

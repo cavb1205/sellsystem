@@ -642,7 +642,8 @@ def listar_alertas_operativas(request):
 
     estado = request.query_params.get('estado', 'activas')
     if estado in ('activas', 'abiertas'):
-        base = base.filter(estado__in=('nueva', 'revisada'))
+        from Tiendas.centro_alertas import abiertas_vigentes
+        base = abiertas_vigentes(list(rutas)).select_related('trabajador')
     elif estado not in ('todas', 'todos', ''):
         base = base.filter(estado=estado)
     tipo = request.query_params.get('tipo')
@@ -652,15 +653,37 @@ def listar_alertas_operativas(request):
     if severidad:
         base = base.filter(severidad=severidad)
     tienda_id = request.query_params.get('tienda')
-    if tienda_id and tienda_id.isdigit() and int(tienda_id) in ruta_ids:
+    if tienda_id:
+        if not tienda_id.isdigit() or int(tienda_id) not in ruta_ids:
+            return Response({'error': 'Ruta fuera del alcance de alertas'}, status=403)
         base = base.filter(tienda_id_ref=int(tienda_id))
+    termino = request.query_params.get('q', '').strip()
+    if termino:
+        from Tiendas.centro_alertas import normalizar
+        nombres_clientes = {c.id: f'{c.nombres} {c.apellidos}' for c in
+            Cliente.objects.filter(tienda_id__in=ruta_ids)}
+        nombres_rutas = {r.id: r.nombre for r in rutas}
+        termino = normalizar(termino)
+        ids_coincidentes = [a.id for a in base if termino in normalizar(' '.join(
+            str(v or '') for v in (a.titulo, a.detalle, nombres_rutas.get(a.tienda_id_ref),
+                nombres_clientes.get(a.cliente_id_ref), a.venta_id_ref,
+                a.trabajador.get_full_name() or a.trabajador.username if a.trabajador else '')))]
+        base = base.filter(id__in=ids_coincidentes)
 
     try:
         limite = min(max(int(request.query_params.get('limit', 100)), 1), 200)
     except (TypeError, ValueError):
         limite = 100
 
-    alertas = list(base.order_by('-id')[:limite])
+    try:
+        pagina = max(1, int(request.query_params.get('page', 1)))
+    except (ValueError, TypeError):
+        return Response({'error': 'Página inválida'}, status=400)
+    from django.db.models import Case, When, IntegerField
+    base = base.annotate(_prioridad=Case(When(severidad='critica', then=3),
+        When(severidad='alta', then=2), default=1, output_field=IntegerField()))
+    total = base.count()
+    alertas = list(base.order_by('-_prioridad', '-actualizada', '-id')[(pagina-1)*limite:pagina*limite])
     ruta_map = {ruta.id: ruta for ruta in rutas}
     cliente_ids = {a.cliente_id_ref for a in alertas if a.cliente_id_ref}
     clientes = {
@@ -677,12 +700,14 @@ def listar_alertas_operativas(request):
             for ruta in rutas.order_by('nombre')
         ],
         'resumen': {
-            'total': base.count(),
+            'total': total,
             'nuevas': base.filter(estado='nueva').count(),
-            'criticas': base.filter(severidad='critica', estado='nueva').count(),
-            'altas': base.filter(severidad='alta', estado='nueva').count(),
-            'medias': base.filter(severidad='media', estado='nueva').count(),
+            'criticas': base.filter(severidad='critica').count(),
+            'altas': base.filter(severidad='alta').count(),
+            'medias': base.filter(severidad='media').count(),
         },
+        'paginacion': {'page': pagina, 'limit': limite, 'total': total,
+            'pages': max(1, (total+limite-1)//limite)},
     }, status=status.HTTP_200_OK)
 
 
@@ -699,19 +724,83 @@ def cambiar_estado_alerta_operativa(request, pk):
             {'error': 'Estado inválido. Usa nueva, revisada o resuelta.'},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    nota = request.data.get('nota', '')
+    if not isinstance(nota, str) or len(nota.strip()) > 1000:
+        return Response({'error': 'La nota debe ser texto de hasta 1000 caracteres'}, status=400)
+    nota = nota.strip()
+    if estado == 'resuelta' and len(nota) < 5:
+        return Response({'error': 'Explica por qué das por terminada la revisión (mínimo 5 caracteres)'}, status=400)
+    from Tiendas.centro_alertas import registrar_revision
+    from Tiendas.alertas_operativas import TIPOS_ALERTA_CARTERA, _perfil_riesgo
     ruta_ids = rutas_del_usuario(request.user).values_list('id', flat=True)
-    alerta = AlertaOperativa.objects.filter(
-        pk=pk,
-        tienda_id_ref__in=ruta_ids,
-    ).first()
-    if not alerta:
-        return Response({'error': 'Alerta no encontrada'}, status=status.HTTP_404_NOT_FOUND)
-    alerta.estado = estado
-    alerta.save(update_fields=['estado', 'actualizada'])
-    return Response({
-        'id': alerta.id,
-        'estado': alerta.estado,
-    }, status=status.HTTP_200_OK)
+    with transaction.atomic():
+        alerta = AlertaOperativa.objects.select_for_update().filter(
+            pk=pk, tienda_id_ref__in=ruta_ids).first()
+        if not alerta:
+            return Response({'error': 'Alerta no encontrada'}, status=404)
+        version = request.data.get('actualizada')
+        if version is not None and version != alerta.actualizada.isoformat():
+            return Response({'error': 'La alerta cambió. Actualiza antes de registrar tu revisión.'}, status=409)
+        if estado == 'resuelta' and alerta.tipo in TIPOS_ALERTA_CARTERA:
+            venta = Venta.objects.filter(pk=alerta.venta_id_ref,
+                tienda_id=alerta.tienda_id_ref).select_related('tienda').first()
+            if venta and _perfil_riesgo(venta)['nivel_cobranza'] > 0:
+                return Response({'error': 'La condición de cobranza continúa. Márcala revisada y registra el seguimiento; resolver no elimina la deuda.'}, status=409)
+        ultima = (alerta.datos or {}).get('revisiones', [])
+        if not (alerta.estado == estado and ultima and ultima[-1].get('nota') == nota):
+            registrar_revision(alerta, estado, usuario=request.user, nota=nota)
+        return Response({'id': alerta.id, 'estado': alerta.estado,
+            'actualizada': alerta.actualizada.isoformat()}, status=200)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def listar_pendientes_alertas(request):
+    """Centro compacto: filtros sobre todos los casos, solo lectura."""
+    from Tiendas.centro_alertas import pendientes, normalizar
+    configurado = usuario_alertas_configurado()
+    if not configurado or request.user.id != configurado.id:
+        return Response({'error': 'No tiene acceso a este centro de alertas'}, status=403)
+    todas_rutas = list(rutas_del_usuario(request.user).order_by('nombre'))
+    rutas = todas_rutas
+    tid = request.query_params.get('tienda')
+    if tid:
+        rutas = [r for r in rutas if str(r.id) == tid]
+        if not rutas:
+            return Response({'error': 'Ruta fuera del alcance de alertas'}, status=403)
+    try:
+        pagina = int(request.query_params.get('page', 1))
+        limite = int(request.query_params.get('limit', 25))
+        if pagina < 1 or not 1 <= limite <= 100:
+            raise ValueError()
+    except (ValueError, TypeError):
+        return Response({'error': 'Paginación inválida'}, status=400)
+    casos, sin_historial = pendientes(rutas)
+    resumen = {'total': len(casos),
+        'criticas': sum(c['severidad'] == 'critica' for c in casos),
+        'revisadas': sum(c['estado'] == 'revisada' for c in casos),
+        'cierres': sum(c['origen'] == 'cierres' for c in casos)}
+    termino = normalizar(request.query_params.get('q', '').strip())
+    severidad = request.query_params.get('severidad', '')
+    tipo = request.query_params.get('tipo', '')
+    estado = request.query_params.get('estado', '')
+    if severidad and severidad not in ('critica', 'alta', 'media'):
+        return Response({'error': 'Prioridad inválida'}, status=400)
+    if estado and estado not in ('nueva', 'revisada'):
+        return Response({'error': 'Estado inválido'}, status=400)
+    filtrados = [c for c in casos if (not severidad or c['severidad'] == severidad)
+        and (not tipo or c['tipo'] == tipo) and (not estado or c['estado'] == estado)
+        and (not termino or termino in normalizar(' '.join(str(v or '') for v in (
+            c['titulo'], c['detalle'], c['tienda']['nombre'],
+            (c.get('cliente') or {}).get('nombre'), c.get('venta_id'), c.get('trabajador')))))]
+    total = len(filtrados)
+    paginas = max(1, (total+limite-1)//limite)
+    pagina = min(pagina, paginas)
+    return Response({'version': 1, 'casos': [] if request.query_params.get('solo_resumen') == '1'
+        else filtrados[(pagina-1)*limite:pagina*limite],
+        'resumen': resumen, 'rutas': [{'id': r.id, 'nombre': r.nombre} for r in todas_rutas],
+        'paginacion': {'page': pagina, 'limit': limite, 'total': total, 'pages': paginas},
+        'caja_sin_historial': sin_historial, 'actualizado': timezone.now().isoformat()}, status=200)
 
 
 @api_view(['GET'])
@@ -726,8 +815,6 @@ def auditoria_inconsistencias_tienda(request, tienda_id=None):
     Así el administrador puede revisar errores de datos, recaudos cruzados o
     saldos que no coinciden sin llenar el centro de alertas de duplicados.
     """
-    from django.db.models.functions import Coalesce
-
     if tienda_id:
         tienda = Tienda.objects.filter(id=tienda_id).first()
     else:
@@ -736,9 +823,21 @@ def auditoria_inconsistencias_tienda(request, tienda_id=None):
     if not tienda:
         return Response({'error': 'Ruta no encontrada'}, status=status.HTTP_404_NOT_FOUND)
 
+    data = casos_inconsistencias([tienda.id])
+    data['ruta'] = {'id': tienda.id, 'nombre': tienda.nombre}
+    # Contrato histórico: mantiene su límite; el centro usa la colección
+    # completa de lectura y la pagina después de filtrar.
+    data['casos'] = data['casos'][:100]
+    return Response(data, status=status.HTTP_200_OK)
+
+
+def casos_inconsistencias(ruta_ids):
+    """Control en lectura, con consultas agrupadas para todas las rutas."""
+    from django.db.models.functions import Coalesce
+
     dinero_field = DecimalField(max_digits=14, decimal_places=2)
     fuera_de_ruta = ~Q(recaudo__tienda_id=F('tienda_id'))
-    ventas = Venta.objects.filter(tienda_id=tienda.id).select_related('cliente').annotate(
+    ventas = Venta.objects.filter(tienda_id__in=ruta_ids).select_related('cliente', 'tienda').annotate(
         _abonos_registrados=Coalesce(
             Sum(
                 'recaudo__valor_recaudo',
@@ -834,7 +933,7 @@ def auditoria_inconsistencias_tienda(request, tienda_id=None):
             agregar_señal(
                 'recaudo_fuera_de_ruta',
                 'Recaudo registrado en otra ruta',
-                f'{venta._recaudos_fuera_ruta} recaudo(s) de esta venta fueron registrados fuera de {tienda.nombre}.',
+                f'{venta._recaudos_fuera_ruta} recaudo(s) de esta venta fueron registrados fuera de {venta.tienda.nombre}.',
                 venta._recaudos_fuera_ruta_monto or Decimal('0'),
                 'critica',
             )
@@ -862,6 +961,7 @@ def auditoria_inconsistencias_tienda(request, tienda_id=None):
             if severidad_orden[señal['severidad']] == severidad_orden[severidad]
         )
         casos.append({
+            'tienda': {'id': venta.tienda_id, 'nombre': venta.tienda.nombre},
             'codigo': principal['codigo'],
             'severidad': severidad,
             'titulo': principal['titulo'],
@@ -882,16 +982,15 @@ def auditoria_inconsistencias_tienda(request, tienda_id=None):
             por_tipo[señal['codigo']] = por_tipo.get(señal['codigo'], 0) + 1
 
     casos.sort(key=lambda caso: (-severidad_orden[caso['severidad']], -caso['monto_a_revisar'], caso['venta_id']))
-    return Response({
-        'ruta': {'id': tienda.id, 'nombre': tienda.nombre},
+    return {
         'resumen': {
             'casos': len(casos),
             'monto_a_revisar': float(monto_total),
             'por_tipo': por_tipo,
         },
-        'casos': casos[:100],
+        'casos': casos,
         'actualizado': timezone.now().isoformat(),
-    }, status=status.HTTP_200_OK)
+    }
 
 ### END VIEWS FOR TIENDA  ####
 
@@ -1009,6 +1108,8 @@ def post_cierre_caja(request, fecha, tienda_id=None):
             )
         Cierre_Caja.objects.create(
             fecha_cierre=fecha, valor=tienda.caja_inicial, tienda=tienda)
+        from Tiendas.alertas_operativas import resolver_cierres_registrados
+        resolver_cierres_registrados(Tienda.objects.filter(pk=tienda.pk))
     return Response({'message': 'Se creo el registro'}, status=status.HTTP_200_OK)
 
 

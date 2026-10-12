@@ -26,6 +26,7 @@ urlpatterns = [
 
     # Alertas operativas — alcance del usuario autenticado
     path('alertas/', views.listar_alertas_operativas, name='listar_alertas_operativas'),
+    path('alertas/pendientes/', views.listar_pendientes_alertas, name='listar_pendientes_alertas'),
     path('alertas/<int:pk>/estado/', views.cambiar_estado_alerta_operativa, name='cambiar_estado_alerta_operativa'),
     path('controles/inconsistencias/t/<str:tienda_id>/', views.auditoria_inconsistencias_tienda, name='auditoria_inconsistencias_tienda'),
 
