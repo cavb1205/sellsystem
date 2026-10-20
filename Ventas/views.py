@@ -263,6 +263,8 @@ def put_venta(request, pk, tienda_id=None):
             {'error': 'Solo un administrador puede editar una venta.'},
             status=status.HTTP_403_FORBIDDEN,
         )
+    if venta and tienda_id is not None and str(venta.tienda_id) != str(tienda_id):
+        return Response({'error': 'La venta no pertenece a la ruta indicada.'}, status=404)
     if venta and Recaudo.objects.filter(venta=venta).exists():
         return Response(
             {
@@ -293,7 +295,8 @@ def put_venta(request, pk, tienda_id=None):
                 {'fecha_venta': 'La fecha de venta no puede quedar en el futuro.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        plazo = normalizar_plazo(new_data.get('plazo') or venta.plazo)
+        plazo_recibido = new_data.get('plazo', venta.plazo)
+        plazo = normalizar_plazo(plazo_recibido) if isinstance(plazo_recibido, str) else None
         if not plazo:
             return Response(
                 {'plazo': 'El plazo debe ser Diario, Semanal o Mensual.'},
@@ -312,6 +315,8 @@ def put_venta(request, pk, tienda_id=None):
                 # una corrección no sobrescriba otro movimiento concurrente.
                 tienda = Tienda.objects.select_for_update().get(pk=venta.tienda_id)
                 venta = Venta.objects.select_for_update().get(pk=pk)
+                if venta.tienda_id != tienda.pk:
+                    return Response({'error': 'La ruta del crédito cambió. Actualiza antes de guardar.'}, status=409)
                 if Recaudo.objects.filter(venta=venta).exists():
                     return Response(
                         {

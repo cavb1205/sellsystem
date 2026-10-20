@@ -14,7 +14,7 @@ from Clientes.serializers import ClienteSerializer
 from Clientes.models import Cliente
 from Tiendas.fecha_operativa import fecha_operativa
 from Ventas.riesgo import calcular_fecha_vencimiento
-from Ventas.calendario import calendario_venta, riesgo_calendario
+from Ventas.calendario import calendario_venta, riesgo_calendario, calcular_calendario
 
 
 def _renovacion_id(obj):
@@ -91,11 +91,38 @@ class VentaUpdateSerializer(ModelSerializer):
         exclude = ['cliente', 'creado_por']
         read_only_fields = ['origen_renovacion', 'tipo_origen', 'tienda', 'calendario_version']
 
+    def validate_plazo(self, value):
+        instance = self.instance
+        if instance and value != instance.plazo:
+            if instance.recaudo_set.exists():
+                raise serializers.ValidationError('No se puede cambiar la modalidad de un crédito con abonos o visitas registradas.')
+            if instance.estado_venta in ('Pagado', 'Perdida') or instance.origen_renovacion_id or instance.renovacion.exists():
+                raise serializers.ValidationError('No se puede cambiar la modalidad de un crédito cerrado o relacionado con una renovación.')
+        return value
+
     def update(self, instance, validated_data):
+        plazo = validated_data.get('plazo', instance.plazo)
+        cambio_modalidad = plazo != instance.plazo
+        # Solo una conversión explícita adopta el calendario de los nuevos
+        # contratos. Editar fecha/cuotas no migra silenciosamente un histórico.
+        version = (1 if plazo in ('Semanal', 'Mensual') else 0) if cambio_modalidad else instance.calendario_version
+        validated_data['calendario_version'] = version
         validated_data['fecha_vencimiento'] = calcular_fecha_vencimiento(
             validated_data.get('fecha_venta', instance.fecha_venta),
             validated_data.get('cuotas', instance.cuotas),
-            validated_data.get('plazo', instance.plazo), version=instance.calendario_version)
+            plazo, version=version)
+        if cambio_modalidad:
+            validated_data['estado_venta'] = 'Vigente'
+            if plazo in ('Semanal', 'Mensual'):
+                capital = validated_data.get('valor_venta', instance.valor_venta)
+                interes = validated_data.get('interes', instance.interes)
+                perfil = calcular_calendario(
+                    fecha_venta=validated_data.get('fecha_venta', instance.fecha_venta),
+                    cuotas=validated_data.get('cuotas', instance.cuotas), plazo=plazo,
+                    total=capital * (1 + Decimal(interes) / 100), abonado=0,
+                    consulta=fecha_operativa(instance.tienda), version=version,
+                    vencimiento=validated_data['fecha_vencimiento'])
+                validated_data['estado_venta'] = perfil['estado']
         return super().update(instance, validated_data)
 
     def to_internal_value(self, data):
@@ -113,6 +140,11 @@ class VentaCorreccionAdministrativaSerializer(serializers.Serializer):
     fecha_venta = serializers.DateField()
     cuotas = serializers.IntegerField(min_value=1, max_value=120)
     motivo = serializers.CharField(min_length=5, max_length=500, trim_whitespace=True)
+
+    def to_internal_value(self, data):
+        if 'plazo' in data:
+            raise serializers.ValidationError({'plazo': 'La corrección administrativa no permite cambiar la modalidad de pago.'})
+        return super().to_internal_value(data)
 
 
 class VentaDetailSerializer(ModelSerializer):
