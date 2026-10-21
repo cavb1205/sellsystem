@@ -393,6 +393,34 @@ class VentaListaSerializer(ModelSerializer):
         return getattr(obj, '_renovacion_id', None)
 
 
+class VentaLiquidacionSerializer(VentaListaSerializer):
+    """Separa gestión de visita y obligación financiera, sin alterar saldos."""
+    gestionado_hoy = serializers.SerializerMethodField()
+    falla_registrada_hoy = serializers.SerializerMethodField()
+    importe_pendiente_jornada = serializers.SerializerMethodField()
+
+    class Meta(VentaListaSerializer.Meta):
+        fields = VentaListaSerializer.Meta.fields + (
+            'gestionado_hoy', 'falla_registrada_hoy', 'importe_pendiente_jornada')
+
+    def get_gestionado_hoy(self, obj):
+        return bool(getattr(obj, '_gestiones_calendario', 0))
+
+    def get_falla_registrada_hoy(self, obj):
+        return bool(getattr(obj, '_fallas_calendario', 0))
+
+    def get_importe_pendiente_jornada(self, obj):
+        calendario = calendario_venta(obj)
+        if calendario:
+            return calendario['importe_pendiente_hoy']
+        from Ventas.calendario import importe_cuota_fecha
+        cuota = importe_cuota_fecha(fecha_venta=obj.fecha_venta, cuotas=obj.cuotas,
+            plazo=obj.plazo, total=obj.total_a_pagar(),
+            saldo_inicio=Decimal(obj.saldo_actual or 0) + Decimal(obj._pagos_desde_jornada or 0),
+            consulta=obj._fecha_calendario, version=obj.calendario_version)
+        return format(max(Decimal('0'), cuota - Decimal(obj._abonos_jornada or 0)), '.2f')
+
+
 class VentaReporteSerializer(ModelSerializer):
     """Campos mínimos para agregaciones de utilidad y cierre de caja."""
     total_a_pagar = serializers.SerializerMethodField()

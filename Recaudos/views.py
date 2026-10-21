@@ -479,18 +479,21 @@ def post_recaudo_no_pay(request, tienda_id=None):
         with transaction.atomic():
             tienda = Tienda.objects.select_for_update().get(pk=tienda.pk)
             venta = Venta.objects.select_for_update().get(pk=venta.pk)
+            try:
+                fecha_visita = datetime.strptime(new_data.get('fecha_recaudo', ''), '%Y-%m-%d').date()
+            except (ValueError, TypeError):
+                return Response({'error': 'Fecha inválida.'}, status=status.HTTP_400_BAD_REQUEST)
+            # La misma visita no se duplica, incluso si otro dispositivo
+            # conserva abierto el formulario. El bloqueo de ruta serializa ambos.
+            if venta.recaudo_set.filter(fecha_recaudo=fecha_visita,
+                    visita_blanco__isnull=False, es_renovacion=False).exists():
+                return Response({'error': 'Esta visita sin abono ya fue registrada.'}, status=status.HTTP_409_CONFLICT)
             if venta.plazo in ('Semanal', 'Mensual'):
-                try:
-                    fecha_visita = datetime.strptime(new_data.get('fecha_recaudo', ''), '%Y-%m-%d').date()
-                except (ValueError, TypeError):
-                    return Response({'error': 'Fecha inválida.'}, status=status.HTTP_400_BAD_REQUEST)
                 if fecha_visita > fecha_operativa(tienda):
                     return Response({'error': 'La visita no puede quedar en el futuro.'}, status=status.HTTP_400_BAD_REQUEST)
                 calendario = calendario_venta(venta, fecha_visita)
                 if not calendario['permite_falla']:
                     return Response({'error': 'No corresponde registrar falla: no hay una cuota exigible pendiente en esa fecha.'}, status=status.HTTP_409_CONFLICT)
-                if venta.recaudo_set.filter(fecha_recaudo=fecha_visita, visita_blanco__isnull=False, es_renovacion=False).exists():
-                    return Response({'error': 'Esta visita sin abono ya fue registrada.'}, status=status.HTTP_409_CONFLICT)
             visita_blanco = visita_blanco_serializer.save()
             new_data['visita_blanco'] = visita_blanco.id
             recaudo_serializer = RecaudoSerializer(data=new_data)

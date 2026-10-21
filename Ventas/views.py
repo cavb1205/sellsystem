@@ -55,6 +55,9 @@ def _anotar_ventas_lista(queryset, consulta=None, abonos_hasta=None):
         _fecha_calendario=Value(consulta, output_field=DateField()),
         _abonos_calendario=Sum('recaudo__valor_recaudo', filter=Q(recaudo__es_renovacion=False, recaudo__fecha_recaudo__lte=limite_abonos)),
         _gestiones_calendario=Count('recaudo', filter=Q(recaudo__es_renovacion=False, recaudo__fecha_recaudo=consulta, recaudo__fecha_recaudo__lte=limite_abonos)),
+        _fallas_calendario=Count('recaudo', filter=Q(recaudo__es_renovacion=False,
+            recaudo__fecha_recaudo=consulta, recaudo__fecha_recaudo__lte=limite_abonos,
+            recaudo__visita_blanco__isnull=False)),
         # Cantidad histórica de recibos/visitas para el promedio por registro;
         # el cierre automático por renovación no es un recibo real.
         _recaudos_count=Count(
@@ -145,15 +148,22 @@ def list_ventas_a_liquidar(request, date, tienda_id=None):
     if previa:
         ventas = ventas.filter(fecha_venta__lte=hoy)
     ventas = _anotar_ventas_lista(ventas.order_by('id'), parsed_date, abonos_hasta=hoy if previa else None)
+    ventas = ventas.annotate(
+        _abonos_jornada=Sum('recaudo__valor_recaudo', filter=Q(
+            recaudo__es_renovacion=False, recaudo__fecha_recaudo=parsed_date,
+            recaudo__fecha_recaudo__lte=hoy if previa else parsed_date)),
+        _pagos_desde_jornada=Sum('recaudo__valor_recaudo', filter=Q(recaudo__fecha_recaudo__gte=parsed_date)))
+    incluir_gestionados = request.query_params.get('incluir_gestionados') == '1'
     visibles = []
     for venta in ventas:
         calendario = calendario_venta(venta)
         if calendario and calendario['visible_liquidar']:
             visibles.append(venta)
-        elif calendario is None and not venta._gestiones_calendario:
+        elif calendario is None and (incluir_gestionados or not venta._gestiones_calendario):
             visibles.append(venta)
     visibles = ordenar_ventas_recorrido(visibles, tienda.id)
-    datos = VentaListaSerializer(visibles, many=True).data
+    from Ventas.serializers import VentaLiquidacionSerializer
+    datos = VentaLiquidacionSerializer(visibles, many=True).data
     if previa or resumen is not None:
         # Solo proyección: no persistir estados ni asumir abonos futuros.
         respuesta = {'vista_previa': previa, 'fecha_operativa': hoy.isoformat(),

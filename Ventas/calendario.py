@@ -52,7 +52,8 @@ def importe_cuota_fecha(*, fecha_venta, cuotas, plazo, total, saldo_inicio,
 
 
 def calcular_calendario(*, fecha_venta, cuotas, plazo, total, abonado, consulta,
-                       version=0, vencimiento=None, estado='Vigente', gestionado=False):
+                       version=0, vencimiento=None, estado='Vigente', gestionado=False,
+                       falla_registrada=False):
     fechas = list(fechas_cuotas(fecha_venta, cuotas, plazo, version))
     total = Decimal(str(total)).quantize(CENTAVO, rounding=ROUND_HALF_UP)
     abonos = max(Decimal('0'), min(total, Decimal(str(abonado or 0))))
@@ -95,7 +96,8 @@ def calcular_calendario(*, fecha_venta, cuotas, plazo, total, abonado, consulta,
         'importe_vencido': dinero(vencido), 'importe_pendiente_hoy': dinero(pendiente),
         'anticipo': dinero(anticipo), 'saldo_calculado': dinero(saldo),
         'dias_mora': dias_mora, 'estado': calculado, 'gestionado_hoy': bool(gestionado),
-        'permite_falla': not terminal and pendiente > 0 and consulta > fecha_venta,
+        'falla_registrada_hoy': bool(falla_registrada),
+        'permite_falla': not terminal and pendiente > 0 and consulta > fecha_venta and not falla_registrada,
         'pendiente_operativo': not terminal and pendiente > 0 and not gestionado,
         'cobro_voluntario': not terminal and pendiente == 0 and (anticipo > 0 or abonos > exigido_cerrado),
         'visible_liquidar': not terminal and consulta > fecha_venta and (pendiente > 0 or anticipo > 0 or abonos > exigido_cerrado),
@@ -113,14 +115,17 @@ def calendario_venta(venta, consulta=None):
     if hasattr(venta, '_abonos_calendario'):
         abonado = venta._abonos_calendario or 0
         gestionado = bool(venta._gestiones_calendario)
+        falla_registrada = bool(getattr(venta, '_fallas_calendario', 0))
     else:
         resumen = venta.recaudo_set.filter(es_renovacion=False, fecha_recaudo__lte=consulta).aggregate(
-            neto=Sum('valor_recaudo'), gestiones=Count('id', filter=Q(fecha_recaudo=consulta)))
+            neto=Sum('valor_recaudo'), gestiones=Count('id', filter=Q(fecha_recaudo=consulta)),
+            fallas=Count('id', filter=Q(fecha_recaudo=consulta, visita_blanco__isnull=False)))
         abonado, gestionado = resumen['neto'] or 0, bool(resumen['gestiones'])
+        falla_registrada = bool(resumen['fallas'])
     perfil = calcular_calendario(fecha_venta=venta.fecha_venta, cuotas=venta.cuotas,
         plazo=venta.plazo, total=venta.total_a_pagar(), abonado=abonado, consulta=consulta,
         version=venta.calendario_version, vencimiento=venta.fecha_vencimiento,
-        estado=venta.estado_venta, gestionado=gestionado)
+        estado=venta.estado_venta, gestionado=gestionado, falla_registrada=falla_registrada)
     venta._calendario_cache = (clave, perfil)
     return perfil
 
