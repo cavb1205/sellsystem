@@ -35,6 +35,13 @@ class UtilidadUpdateSerializer(ModelSerializer):
     class Meta:
         model = Utilidad
         exclude = ['trabajador']
+        read_only_fields = ['tienda']
+
+    def validate(self, attrs):
+        if self.instance and 'tienda' in self.initial_data:
+            if str(self.initial_data['tienda']) != str(self.instance.tienda_id):
+                raise serializers.ValidationError({'tienda': 'La ruta de la utilidad no se puede cambiar desde esta edición.'})
+        return attrs
 
     def validate_fecha(self, value):
         tienda = getattr(self.instance, 'tienda', None)

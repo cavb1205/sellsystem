@@ -134,6 +134,15 @@ def _rutas_perfil_ids(perfil):
 def _admin_puede_gestionar_perfil(user, perfil):
     if not _es_admin(user):
         return False
+    if user.is_superuser:
+        return True
+    objetivo = perfil.trabajador
+    if objetivo.is_superuser:
+        return False
+    if objetivo.is_staff and objetivo.pk != user.pk:
+        return False
+    if objetivo.pk == user.pk:
+        return True
     return any(
         usuario_es_administrador_tienda(user, tienda_id)
         for tienda_id in _rutas_perfil_ids(perfil)
@@ -344,8 +353,13 @@ def put_trabajador(request, pk):
         trabajador_serializer = PerfilSerializer(trabajador, data=trabajador_data)
         
         if trabajador_serializer.is_valid() and user_serializer.is_valid():
-            user_serializer.save()
-            trabajador_serializer.save()
+            nuevo_rol = user_serializer.validated_data.get('is_staff', user.is_staff)
+            if not request.user.is_superuser and nuevo_rol != user.is_staff:
+                return Response({'error': 'Los cambios de permisos de administrador se gestionan desde soporte.'},
+                                status=status.HTTP_403_FORBIDDEN)
+            with transaction.atomic():
+                user_serializer.save()
+                trabajador_serializer.save()
             return Response(trabajador_serializer.data,status=status.HTTP_200_OK)
         return Response(trabajador_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     return Response({'message':'Trabajador no existe'}, status=status.HTTP_400_BAD_REQUEST)
@@ -514,15 +528,15 @@ def delete_trabajador(request, pk):
 def update_password(request, pk):
     trabajador = Perfil.objects.filter(id=pk).first()
     if trabajador:
-        # Un trabajador solo puede cambiar SU propia contraseña (perfil);
-        # cambiar la de otros (incluido el admin) requiere rol admin.
         es_propia = trabajador.trabajador_id == request.user.id
-        if not es_propia and not _es_admin(request.user):
-            return respuesta_sin_permiso()
-        if not any(
-            usuario_puede_acceder_tienda(request.user, tienda_id)
-            for tienda_id in _rutas_perfil_ids(trabajador)
-        ):
+        if es_propia:
+            permitido = request.user.is_superuser or any(
+                usuario_puede_acceder_tienda(request.user, tienda_id)
+                for tienda_id in _rutas_perfil_ids(trabajador)
+            )
+        else:
+            permitido = _admin_puede_gestionar_perfil(request.user, trabajador)
+        if not permitido:
             return respuesta_sin_permiso()
         password = request.data.get('passwordNuevo') or ''
         if len(password) < 8:

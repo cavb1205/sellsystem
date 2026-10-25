@@ -12,12 +12,12 @@ class UserTokenLoginObtainSerializer(TokenObtainPairSerializer):
 class UserLoginSerializer(ModelSerializer):
     class Meta:
         model = User
-        fields = '__all__'
+        fields = ['id', 'username', 'first_name', 'last_name', 'email',
+                  'is_active', 'is_staff', 'is_superuser', 'last_login', 'date_joined']
+        read_only_fields = fields
 
-class UserSerializer(ModelSerializer):
-    class Meta:
-        model = User
-        fields = '__all__'
+class UserSerializer(UserLoginSerializer):
+    pass
 
 
 class UserCreateSerializer(ModelSerializer):

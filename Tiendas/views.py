@@ -440,7 +440,7 @@ def get_tienda(request):
 def put_tienda(request, pk):
     tienda = Tienda.objects.filter(id=pk).first()
     if tienda:
-        if not usuario_puede_acceder_tienda(request.user, pk):
+        if not usuario_es_administrador_tienda(request.user, pk):
             return respuesta_sin_permiso()
         serialize = TiendaSerializer(tienda, data=request.data)
         if serialize.is_valid():
@@ -489,11 +489,16 @@ def patch_tienda_settings(request, pk):
 @api_view(['POST'])
 def post_tienda(request):
     '''creamos una tienda'''
+    if not (request.user.is_staff or request.user.is_superuser):
+        return respuesta_sin_permiso()
     if request.method == 'POST':
         # Verificar antes de guardar para que el flag sea correcto
         es_primera_tienda = not Tienda.objects.filter(administrador=request.user).exists()
 
-        serialize = TiendaCreateSerializer(data=request.data)
+        datos = request.data.copy()
+        if not request.user.is_superuser:
+            datos['administrador'] = request.user.pk
+        serialize = TiendaCreateSerializer(data=datos)
         if serialize.is_valid():
             tienda = serialize.save()
             hoy = fecha_operativa(tienda)

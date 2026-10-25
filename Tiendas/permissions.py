@@ -108,3 +108,17 @@ def requiere_acceso_tienda(view_func):
             return respuesta_sin_permiso()
         return view_func(request, *args, **kwargs)
     return wrapper
+
+
+def requiere_administrador_tienda(view_func):
+    """Permiso administrativo para rutas explícitas y la ruta del perfil."""
+    @wraps(view_func)
+    def wrapper(request, *args, **kwargs):
+        tienda_id = kwargs.get('tienda_id')
+        if tienda_id is None:
+            perfil = getattr(request.user, 'perfil', None)
+            tienda_id = getattr(perfil, 'tienda_id', None)
+        if not usuario_es_administrador_tienda(request.user, tienda_id):
+            return respuesta_sin_permiso()
+        return view_func(request, *args, **kwargs)
+    return wrapper

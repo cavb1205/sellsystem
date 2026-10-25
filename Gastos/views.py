@@ -3,6 +3,7 @@ from rest_framework.response import Response
 from rest_framework.decorators import api_view
 
 from django.db import transaction
+from django.db.models.deletion import ProtectedError
 
 from .models import *
 from .serializers import GastoSerializer, TipoGastoSerializer, GastoUpdateSerializer, GastoDetailSerializer
@@ -36,6 +37,8 @@ def get_tipo_gasto(request, pk):
 
 @api_view(['PUT'])
 def put_tipo_gasto(request, pk, tienda_id=None):
+    if not request.user.is_superuser:
+        return respuesta_sin_permiso()
     tipo_gasto = Tipo_Gasto.objects.filter(id=pk).first()
     if tipo_gasto:
         tipo_gasto_serializer = TipoGastoSerializer(tipo_gasto, data=request.data)
@@ -49,6 +52,8 @@ def put_tipo_gasto(request, pk, tienda_id=None):
 @api_view(['POST'])
 def post_tipo_gasto(request):
     '''creamos un tipo_gasto'''
+    if not request.user.is_superuser:
+        return respuesta_sin_permiso()
     if request.method == 'POST':        
         tipo_gasto_serializer = TipoGastoSerializer(data = request.data)
         if tipo_gasto_serializer.is_valid():
@@ -59,9 +64,15 @@ def post_tipo_gasto(request):
 
 @api_view(['DELETE'])
 def delete_tipo_gasto(request, pk):
+    if not request.user.is_superuser:
+        return respuesta_sin_permiso()
     tipo_gasto = Tipo_Gasto.objects.filter(id=pk).first()
     if tipo_gasto:
-        tipo_gasto.delete()
+        try:
+            tipo_gasto.delete()
+        except ProtectedError:
+            return Response({'error': 'Esta categoría tiene gastos registrados y no se puede eliminar.'},
+                            status=status.HTTP_409_CONFLICT)
         return Response({'message':'tipo de gasto eliminado correctamente'},status=status.HTTP_200_OK)
     return Response({'message':'No se encontró el tipo de gasto'}, status=status.HTTP_400_BAD_REQUEST)
 

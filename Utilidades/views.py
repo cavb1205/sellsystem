@@ -7,12 +7,12 @@ from django.db import transaction
 from Utilidades.models import Utilidad
 from Tiendas.models import Tienda
 from Utilidades.serializers import UtilidadSerializer, UtilidadDetailSerializer, UtilidadUpdateSerializer
-from Tiendas.permissions import requiere_acceso_tienda, usuario_puede_acceder_tienda, respuesta_sin_permiso
+from Tiendas.permissions import requiere_administrador_tienda, usuario_es_administrador_tienda, respuesta_sin_permiso
 from Tiendas.caja import registrar_movimiento_caja
 
 
 @api_view(['GET'])
-@requiere_acceso_tienda
+@requiere_administrador_tienda
 def list_utilidades(request, tienda_id=None):
     '''obtenemos todas las utilidades'''
     user = request.user
@@ -27,7 +27,7 @@ def list_utilidades(request, tienda_id=None):
 
 
 @api_view(['GET'])
-@requiere_acceso_tienda
+@requiere_administrador_tienda
 def list_utilidades_x_fecha(request, date, tienda_id=None):
     '''obtenemos todas las utilidades por fecha'''
     user = request.user
@@ -47,7 +47,7 @@ def list_utilidades_x_fecha(request, date, tienda_id=None):
 def get_utilidad(request, pk):
     utilidad = Utilidad.objects.filter(id=pk).first()
     if utilidad:
-        if not usuario_puede_acceder_tienda(request.user, utilidad.tienda_id):
+        if not usuario_es_administrador_tienda(request.user, utilidad.tienda_id):
             return respuesta_sin_permiso()
         utilidad_serializer = UtilidadSerializer(utilidad, many=False)
         return Response(utilidad_serializer.data, status=status.HTTP_200_OK)
@@ -60,7 +60,7 @@ def put_utilidad(request, pk, tienda_id=None):
     utilidad = Utilidad.objects.filter(id=pk).first()
     if not utilidad:
         return Response({'message': 'No se encontró la utilidad'}, status=status.HTTP_400_BAD_REQUEST)
-    if not usuario_puede_acceder_tienda(request.user, utilidad.tienda_id):
+    if not usuario_es_administrador_tienda(request.user, utilidad.tienda_id):
         return respuesta_sin_permiso()
     utilidad_valor = utilidad.valor
     if utilidad:
@@ -94,7 +94,7 @@ def put_utilidad(request, pk, tienda_id=None):
 
 
 @api_view(['POST'])
-@requiere_acceso_tienda
+@requiere_administrador_tienda
 def post_utilidad(request, tienda_id=None):
     '''creamos una utilidad'''
 
@@ -105,8 +105,12 @@ def post_utilidad(request, tienda_id=None):
         else:
             tienda = Tienda.objects.filter(
                 id=request.user.perfil.tienda.id).first()
-        new_data = request.data
+        perfil = getattr(request.user, 'perfil', None)
+        if not perfil:
+            return Response({'error': 'El usuario no tiene un perfil asociado.'}, status=400)
+        new_data = request.data.copy()
         new_data['tienda'] = tienda.id
+        new_data['trabajador'] = perfil.pk
         utilidad_serializer = UtilidadSerializer(data=new_data)
         if utilidad_serializer.is_valid():
             with transaction.atomic():
@@ -126,12 +130,8 @@ def post_utilidad(request, tienda_id=None):
 
 @api_view(['DELETE'])
 def delete_utilidad(request, pk, tienda_id=None):
-    if tienda_id:
-        tienda = Tienda.objects.filter(id=tienda_id).first()
-    else:
-        tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
     utilidad = Utilidad.objects.filter(id=pk).first()
-    if utilidad and not usuario_puede_acceder_tienda(request.user, utilidad.tienda_id):
+    if utilidad and not usuario_es_administrador_tienda(request.user, utilidad.tienda_id):
         return respuesta_sin_permiso()
     if utilidad:
         with transaction.atomic():

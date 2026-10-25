@@ -8,6 +8,13 @@ class ClienteSerializer(ModelSerializer):
     class Meta:
         model = Cliente
         fields = '__all__'
+        read_only_fields = ['tienda', 'fecha_creacion']
+
+    def validate(self, attrs):
+        if self.instance and 'tienda' in self.initial_data:
+            if str(self.initial_data['tienda']) != str(self.instance.tienda_id):
+                raise serializers.ValidationError({'tienda': 'La ruta del cliente no se puede cambiar desde esta edición.'})
+        return attrs
 
 
 class ClienteCreateSerializer(ModelSerializer):

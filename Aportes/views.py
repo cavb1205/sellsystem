@@ -13,12 +13,12 @@ from django.db import transaction
 
 from .models import *
 from .serializers import AporteSerializer, AporteUpdateSerializer, AporteDetailSerializer
-from Tiendas.permissions import requiere_acceso_tienda, usuario_puede_acceder_tienda, respuesta_sin_permiso
+from Tiendas.permissions import requiere_administrador_tienda, usuario_es_administrador_tienda, respuesta_sin_permiso
 from Tiendas.caja import registrar_movimiento_caja
 
 
 @api_view(['GET'])
-@requiere_acceso_tienda
+@requiere_administrador_tienda
 def list_aportes(request, tienda_id=None):
     '''obtenemos todas los aportes'''
 
@@ -34,7 +34,7 @@ def list_aportes(request, tienda_id=None):
 
 
 @api_view(['GET'])
-@requiere_acceso_tienda
+@requiere_administrador_tienda
 def list_aportes_fecha(request, date, tienda_id=None):
     '''obtenemos los aportes x fecha'''
 
@@ -50,7 +50,7 @@ def list_aportes_fecha(request, date, tienda_id=None):
     return Response({'message': 'No se encontraron aportes'}, status=status.HTTP_200_OK)
 
 @api_view(['GET'])
-@requiere_acceso_tienda
+@requiere_administrador_tienda
 def list_aportes_fecha_range(request, date1, date2, tienda_id=None):
     '''obtenemos los aportes x rango de fechas'''
 
@@ -70,7 +70,7 @@ def list_aportes_fecha_range(request, date1, date2, tienda_id=None):
 def get_aporte(request, pk):
     aporte = Aporte.objects.filter(id=pk).first()
     if aporte:
-        if not usuario_puede_acceder_tienda(request.user, aporte.tienda_id):
+        if not usuario_es_administrador_tienda(request.user, aporte.tienda_id):
             return respuesta_sin_permiso()
         aporte_serializer = AporteSerializer(aporte, many=False)
         return Response(aporte_serializer.data)
@@ -81,7 +81,7 @@ def get_aporte(request, pk):
 @api_view(['PUT'])
 def put_aporte(request, pk, tienda_id=None):
     aporte_inicial = Aporte.objects.filter(id=pk).first()
-    if aporte_inicial and not usuario_puede_acceder_tienda(request.user, aporte_inicial.tienda_id):
+    if aporte_inicial and not usuario_es_administrador_tienda(request.user, aporte_inicial.tienda_id):
         return respuesta_sin_permiso()
     if aporte_inicial:
         aporte_serializer = AporteUpdateSerializer(
@@ -112,7 +112,7 @@ def put_aporte(request, pk, tienda_id=None):
 
 
 @api_view(['POST'])
-@requiere_acceso_tienda
+@requiere_administrador_tienda
 def post_aporte(request, tienda_id=None):
     '''creamos un aporte'''
     if request.method == 'POST':
@@ -121,8 +121,12 @@ def post_aporte(request, tienda_id=None):
         else:
             tienda = Tienda.objects.filter(
                 id=request.user.perfil.tienda.id).first()
-        new_data = request.data
+        perfil = getattr(request.user, 'perfil', None)
+        if not perfil:
+            return Response({'error': 'El usuario no tiene un perfil asociado.'}, status=400)
+        new_data = request.data.copy()
         new_data['tienda'] = tienda.id
+        new_data['trabajador'] = perfil.pk
 
         aporte_serializer = AporteSerializer(data=new_data)
         if aporte_serializer.is_valid():
@@ -144,7 +148,7 @@ def post_aporte(request, tienda_id=None):
 @api_view(['DELETE'])
 def delete_aporte(request, pk, tienda_id=None):
     aporte = Aporte.objects.filter(id=pk).first()
-    if aporte and not usuario_puede_acceder_tienda(request.user, aporte.tienda_id):
+    if aporte and not usuario_es_administrador_tienda(request.user, aporte.tienda_id):
         return respuesta_sin_permiso()
     if aporte:
         with transaction.atomic():
