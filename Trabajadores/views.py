@@ -1,8 +1,8 @@
-from django.contrib.auth import authenticate
 import datetime
 
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import AllowAny
+from rest_framework.exceptions import AuthenticationFailed
 from Tiendas.permission_suscripcion import IsAuthenticatedOperativo as IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
@@ -30,6 +30,7 @@ from Tiendas.permissions import (
 )
 from Tiendas.fecha_operativa import fecha_operativa
 from Trabajadores.throttles import LoginRateThrottle, RegisterRateThrottle
+from Trabajadores.password_policy import errores_password
 ##### LOGIN #####
 
 class Login(TokenObtainPairView):
@@ -39,56 +40,26 @@ class Login(TokenObtainPairView):
     def post(self, request, *args, **kwargs):
         username = request.data.get('username','')
         password = request.data.get('password','')
-        user = authenticate(
-            username=username,
-            password=password
-        )
-        if user:
-            # Perfil ausente: error controlado en vez de 500 (Perfil.objects.get)
-            perfil = Perfil.objects.filter(trabajador=user.id).first()
-            if perfil is None:
-                return Response(
-                    {'error': 'Tu usuario no tiene un perfil de ruta asociado. Contacta al soporte.'},
-                    status=status.HTTP_400_BAD_REQUEST)
-            if not (user.is_staff or user.is_superuser):
-                tiene_ruta_activa = AsignacionTrabajador.objects.filter(
-                    perfil=perfil,
-                    activa=True,
-                    tienda__estado=True,
-                    tienda__administrador_id=F('perfil__tienda__administrador_id'),
-                ).exists()
-                tiene_asignaciones = AsignacionTrabajador.objects.filter(
-                    perfil=perfil,
-                ).exists()
-                if not tiene_ruta_activa and not tiene_asignaciones and perfil.tienda.estado:
-                    tiene_ruta_activa = True
-                if not tiene_ruta_activa:
-                    return Response(
-                        {'error': 'Tu usuario no tiene rutas activas asignadas. Contacta al administrador.'},
-                        status=status.HTTP_403_FORBIDDEN,
-                    )
-            login_serializer = self.serializer_class(data=request.data)
-            if login_serializer.is_valid():
-                user_serializer = UserLoginSerializer(user)
-                perfil_serializer = PerfilSerializer(perfil)
-                membresia = comprobar_estado_membresia(perfil.tienda.id)
-                return Response({
-                    'token': login_serializer.validated_data['access'],
-                    'refresh': login_serializer.validated_data['refresh'],
-                    'user': user_serializer.data,
-                    'perfil':perfil_serializer.data,
-                    'membresia': membresia,
-                }, status=status.HTTP_200_OK)
+        login_serializer = self.get_serializer(data=request.data)
+        try:
+            login_serializer.is_valid(raise_exception=True)
+        except AuthenticationFailed:
+            # Mantiene el mensaje de cuenta desactivada sin exponer si existe
+            # un usuario cuando no se conoce su contraseña.
+            existente = User.objects.filter(username=username).first()
+            if existente and not existente.is_active and isinstance(password,str) and existente.check_password(password):
+                return Response({'error': 'Tu cuenta está desactivada. Contacta al administrador de tu ruta.'},
+                                status=status.HTTP_403_FORBIDDEN)
             return Response({'error':'Usuario o contraseña incorrectos.'},status=status.HTTP_400_BAD_REQUEST)
-        # authenticate() también rechaza cuentas desactivadas con la clave
-        # correcta — avisar la causa real evita que el trabajador crea que
-        # olvidó su contraseña y reintente en vano.
-        existente = User.objects.filter(username=username).first()
-        if existente and not existente.is_active and existente.check_password(password):
-            return Response(
-                {'error': 'Tu cuenta está desactivada. Contacta al administrador de tu ruta.'},
-                status=status.HTTP_403_FORBIDDEN)
-        return Response({'error':'Usuario o contraseña incorrectos.'},status=status.HTTP_400_BAD_REQUEST)
+        user = login_serializer.user
+        perfil = login_serializer.perfil
+        return Response({
+            'token': login_serializer.validated_data['access'],
+            'refresh': login_serializer.validated_data['refresh'],
+            'user': UserLoginSerializer(user).data,
+            'perfil': PerfilSerializer(perfil).data,
+            'membresia': comprobar_estado_membresia(perfil.tienda_id),
+        }, status=status.HTTP_200_OK)
 
    
 
@@ -370,7 +341,7 @@ def put_trabajador(request, pk):
 def post_trabajador(request, tienda_id = None):
     if not _es_admin(request.user):
         return respuesta_sin_permiso()
-    if len(request.data.get('password') or '') < 8:
+    if not isinstance(request.data.get('password'),str) or len(request.data['password']) < 8:
         return Response({'error': 'La contraseña debe tener al menos 8 caracteres.'},
                         status=status.HTTP_400_BAD_REQUEST)
     user_data = {
@@ -384,8 +355,6 @@ def post_trabajador(request, tienda_id = None):
     
     if user_serializer.is_valid():
         user = user_serializer.save()
-        user.set_password(request.data['password'])
-        user.save()
 
         if tienda_id:
             trabajador_data = {
@@ -424,7 +393,7 @@ def register_user(request):
     username = request.data.get('username', '')
     # Última vía sin validar: el front exige 8, pero la API directa aceptaba
     # cualquier largo (mismo criterio que update_password/post_trabajador).
-    if len(request.data.get('password') or '') < 8:
+    if not isinstance(request.data.get('password'),str) or len(request.data['password']) < 8:
         return Response({'error': 'La contraseña debe tener al menos 8 caracteres.'},
                         status=status.HTTP_400_BAD_REQUEST)
     user_data = {
@@ -437,7 +406,6 @@ def register_user(request):
     serializer = UserCreateSerializer(data=user_data)
     if serializer.is_valid():
         user = serializer.save()
-        user.set_password(request.data['password'])
         user.email = f"{username}@carterafinanciera.com"
         user.is_staff = True
         user.is_superuser = False
@@ -539,10 +507,13 @@ def update_password(request, pk):
         if not permitido:
             return respuesta_sin_permiso()
         password = request.data.get('passwordNuevo') or ''
-        if len(password) < 8:
+        if not isinstance(password,str) or len(password) < 8:
             return Response({'error': 'La contraseña debe tener al menos 8 caracteres.'},
                             status=status.HTTP_400_BAD_REQUEST)
         user = User.objects.filter(id=trabajador.trabajador.id).first()
+        errors = errores_password(password,user)
+        if errors:
+            return Response({'error':' '.join(errors)},status=status.HTTP_400_BAD_REQUEST)
         user.set_password(password)
         user.save()
         return Response({'message':'Contraseña cambiada con éxito'}, status=status.HTTP_200_OK)

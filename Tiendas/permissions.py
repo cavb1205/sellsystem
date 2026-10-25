@@ -97,14 +97,15 @@ def requiere_acceso_tienda(view_func):
     """Decorador para vistas con `tienda_id` en la URL.
 
     Si la URL trae `tienda_id` y el usuario no tiene acceso, devuelve 403.
-    Cuando no hay `tienda_id` (el usuario opera sobre su propia ruta vía
-    perfil), no impone restricción. Va debajo de `@api_view` para que DRF
-    ya haya autenticado al usuario.
+    Cuando no hay `tienda_id`, verifica igualmente la ruta principal del
+    perfil. Va debajo de `@api_view` para que DRF ya haya autenticado.
     """
     @wraps(view_func)
     def wrapper(request, *args, **kwargs):
         tienda_id = kwargs.get('tienda_id')
-        if tienda_id is not None and not usuario_puede_acceder_tienda(request.user, tienda_id):
+        if tienda_id is None:
+            tienda_id = getattr(getattr(request.user, 'perfil', None), 'tienda_id', None)
+        if not usuario_puede_acceder_tienda(request.user, tienda_id):
             return respuesta_sin_permiso()
         return view_func(request, *args, **kwargs)
     return wrapper

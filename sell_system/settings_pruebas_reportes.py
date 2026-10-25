@@ -1,5 +1,9 @@
 """Pruebas aisladas: nunca importa variables ni conexiones de producción."""
 SECRET_KEY = 'solo-pruebas-locales-no-utilizar-en-produccion'
+from Trabajadores.jwt_config import JWT_SECURITY_SETTINGS
+from Trabajadores.password_policy import PASSWORD_VALIDATORS
+AUTH_PASSWORD_VALIDATORS = PASSWORD_VALIDATORS
+SIMPLE_JWT = {**JWT_SECURITY_SETTINGS, 'SIGNING_KEY': 'clave-de-firma-ficticia-exclusiva-pruebas-locales-2026'}
 DEBUG = False
 ALLOWED_HOSTS = ['testserver', '127.0.0.1']
 INSTALLED_APPS = [
@@ -18,6 +22,7 @@ PASSWORD_HASHERS = ['django.contrib.auth.hashers.MD5PasswordHasher']
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': ['rest_framework.authentication.SessionAuthentication'],
     'DEFAULT_PERMISSION_CLASSES': ['Tiendas.permission_suscripcion.IsAuthenticatedOperativo'],
+    'DEFAULT_THROTTLE_RATES': {'login': '20/min', 'register': '10/hour', 'refresh': '120/min'},
 }
 TELEGRAM_CLIENTES_ENABLED = False
 TELEGRAM_CLIENTES_DELIVERY_ENABLED = False

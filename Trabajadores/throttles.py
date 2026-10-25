@@ -28,3 +28,8 @@ class LoginRateThrottle(_RealIPThrottle):
 class RegisterRateThrottle(_RealIPThrottle):
     """Limita creación de cuentas/rutas por IP (anti abuso de registro)."""
     scope = 'register'
+
+
+class RefreshRateThrottle(_RealIPThrottle):
+    """Límite independiente para renovaciones legítimas concurrentes."""
+    scope = 'refresh'

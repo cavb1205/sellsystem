@@ -12,6 +12,9 @@ https://docs.djangoproject.com/en/4.0/ref/settings/
 from datetime import timedelta
 from pathlib import Path
 from .variables import *
+from Trabajadores.jwt_config import JWT_SECURITY_SETTINGS
+from Trabajadores.password_policy import PASSWORD_VALIDATORS
+from django.core.exceptions import ImproperlyConfigured
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -25,6 +28,9 @@ SECRET_KEY = KEY
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = False
+JWT_SIGNING_KEY = globals().get('JWT_SIGNING_KEY', '')
+if not isinstance(JWT_SIGNING_KEY, str) or len(JWT_SIGNING_KEY) < 50 or JWT_SIGNING_KEY == SECRET_KEY:
+    raise ImproperlyConfigured('Configura una clave privada JWT independiente antes de iniciar el servicio.')
 
 if DEBUG == True:
     ALLOWED_HOSTS = ['localhost', '127.0.0.1', '192.168.1.160', '137.184.176.199']
@@ -32,7 +38,12 @@ else:
     ALLOWED_HOSTS = ['api.carterafinanciera.com', '137.184.176.199']
 
 if DEBUG == False:
-    CSRF_TRUSTED_ORIGINS = ['https://*.carterafinanciera.com']
+    CSRF_TRUSTED_ORIGINS = [
+        'https://api.carterafinanciera.com', 'https://app.carterafinanciera.com',
+        'https://carterafinanciera.com', 'https://www.carterafinanciera.com',
+    ]
+SESSION_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_SECURE = not DEBUG
 # Application definition
 
 BASE_APPS = [
@@ -126,20 +137,7 @@ else:
 # Password validation
 # https://docs.djangoproject.com/en/4.0/ref/settings/#auth-password-validators
 
-AUTH_PASSWORD_VALIDATORS = [
-    {
-        'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
-    },
-    {
-        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
-    },
-    {
-        'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
-    },
-    {
-        'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
-    },
-]
+AUTH_PASSWORD_VALIDATORS = PASSWORD_VALIDATORS
 
 
 # Internationalization
@@ -180,10 +178,14 @@ else:
         'https://app.carterafinanciera.com',
         'https://carterafinanciera.com',
         'https://www.carterafinanciera.com',
+        # Alias activos del mismo proyecto; no permitir cualquier sitio Vercel.
+        'https://newcarterafinanciera.vercel.app',
+        'https://gestion-financiera-xi.vercel.app',
+        'https://gestion-financiera-cavb1205s-projects.vercel.app',
     ]
     # Permite preview deployments de Vercel (PRs, branches)
     CORS_ALLOWED_ORIGIN_REGEXES = [
-        r'^https://.*\.vercel\.app$',
+        r'^https://gestion-financiera-[a-z0-9-]+-cavb1205s-projects\.vercel\.app$',
     ]
 
 
@@ -204,19 +206,15 @@ REST_FRAMEWORK = {
     'DEFAULT_THROTTLE_RATES': {
         'login': '20/min',
         'register': '10/hour',
+        'refresh': '120/min',
     },
 }
 
 
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),
-    'REFRESH_TOKEN_LIFETIME': timedelta(minutes=60),
-    'ROTATE_REFRESH_TOKENS': False,
-    'BLACKLIST_AFTER_ROTATION': False,
-    'UPDATE_LAST_LOGIN': False,
-
+    **JWT_SECURITY_SETTINGS,
     'ALGORITHM': 'HS256',
-    'SIGNING_KEY': SECRET_KEY,
+    'SIGNING_KEY': JWT_SIGNING_KEY,
     'VERIFYING_KEY': None,
     'AUDIENCE': None,
     'ISSUER': None,

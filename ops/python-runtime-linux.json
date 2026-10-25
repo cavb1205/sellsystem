@@ -1,0 +1,9 @@
+{
+  "python": "3.12.15",
+  "architecture": "x86_64-unknown-linux-gnu",
+  "provider": "astral-sh/python-build-standalone",
+  "release": "20261021",
+  "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261021/cpython-3.12.15%2B20261021-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
+  "sha256": "6d7521138fd33afddc1ccd08abb007d9a2829e38117c2576f9efdc0ec73ce772",
+  "bytes": 34479606
+}

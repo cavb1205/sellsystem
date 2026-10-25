@@ -11,16 +11,13 @@ from django.conf import settings
 from Trabajadores.views import Login, register_user
 from Clientes.telegram_webhook import webhook as telegram_clientes_webhook
 
-from rest_framework_simplejwt.views import (
-    TokenObtainPairView,
-    TokenRefreshView,
-)
+from Trabajadores.token_views import TokenObtainSeguroView, TokenRefreshSeguroView
 
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
-    path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+    path('token/', TokenObtainSeguroView.as_view(), name='token_obtain_pair'),
+    path('token/refresh/', TokenRefreshSeguroView.as_view(), name='token_refresh'),
 
     path('login/', Login.as_view(), name="login"),
     path('register/',register_user , name="register"),

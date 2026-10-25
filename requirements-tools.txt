@@ -1,0 +1,5 @@
+# Herramientas para crear el entorno nuevo; no actualizar el virtualenv activo.
+pip==26.2.2
+setuptools==84.2.1
+wheel==0.48.0
+packaging==26.3
