@@ -123,6 +123,47 @@ class CarteraDiariaTests(TestCase):
         with self.assertNumQueries(0):
             self.assertEqual(len(VentaListaSerializer(ventas,many=True).data),9)
 
+    def test_api_liquidar_expone_adelanto_diario_sin_atraso_negativo(self):
+        venta = self.venta_diaria()
+        self.registrar_abono(venta, 18000, day=7)
+        self.api.force_authenticate(self.admin)
+        before = list(Venta.objects.values()), list(Recaudo.objects.values())
+        response = self.api.get(f'/ventas/activas/liquidar/2026-10-10/t/{self.ruta.pk}/?resumen=1')
+        self.assertEqual(response.status_code, 200, response.data)
+        credito = next(v for v in response.json()['creditos'] if v['id'] == venta.pk)
+        self.assertIsNone(credito['calendario_pago'])
+        self.assertEqual(credito['dias_atrasados'], 0)
+        self.assertEqual(credito['cuotas_adelantadas'], 2)
+        self.assertEqual((list(Venta.objects.values()), list(Recaudo.objects.values())), before)
+
+    def test_adelanto_diario_suma_parciales_de_una_fecha_sin_contar_dos_ciclos(self):
+        venta = self.venta_diaria()
+        self.registrar_abono(venta, 6000, day=7)
+        self.registrar_abono(venta, 9000, day=7)
+        self.assertEqual(self.lista(venta)['cuotas_adelantadas'], Decimal('1.5'))
+        self.registrar_abono(venta, 0, day=8)
+        self.assertEqual(self.lista(venta)['cuotas_adelantadas'], Decimal('.5'))
+        self.registrar_abono(venta, 0, day=9)
+        data = self.lista(venta)
+        self.assertEqual(data['cuotas_adelantadas'], 0)
+        self.assertEqual(data['dias_atrasados'], Decimal('.5'))
+
+    def test_adelanto_semanal_y_mensual_usan_el_anticipo_del_calendario(self):
+        for plazo, cuotas, esperado in [('Semanal', 4, Decimal('1')), ('Mensual', 1, Decimal('.5'))]:
+            venta = self.venta_diaria(plazo=plazo, cuotas=cuotas, calendario_version=1)
+            self.registrar_abono(venta, 60000, day=7)
+            self.assertEqual(self.lista(venta)['cuotas_adelantadas'], esperado)
+
+    def test_creditos_cerrados_no_muestran_adelanto_y_anticipo_pequeno_no_se_pierde(self):
+        venta = self.venta_diaria()
+        self.registrar_abono(venta, 6001, day=7)
+        self.assertGreater(self.lista(venta)['cuotas_adelantadas'], 0)
+        self.assertLess(self.lista(venta)['cuotas_adelantadas'], Decimal('.01'))
+        for estado in ('Pagado', 'Perdida'):
+            venta.estado_venta = estado
+            venta.save(update_fields=['estado_venta'])
+            self.assertEqual(self.lista(venta)['cuotas_adelantadas'], 0)
+
     def test_permisos_y_get_sin_escrituras_financieras(self):
         self.api.force_authenticate(self.admin)
         before = list(Venta.objects.values()), list(Recaudo.objects.values())

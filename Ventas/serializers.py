@@ -220,6 +220,7 @@ class VentaListaSerializer(ModelSerializer):
     total_abonado = serializers.SerializerMethodField()
     promedio_pago = serializers.SerializerMethodField()
     dias_atrasados = serializers.SerializerMethodField()
+    cuotas_adelantadas = serializers.SerializerMethodField()
     importe_atrasado_estimado = serializers.SerializerMethodField()
     perdida = serializers.SerializerMethodField()
     dias_sin_abono = serializers.SerializerMethodField()
@@ -243,7 +244,7 @@ class VentaListaSerializer(ModelSerializer):
             'valor_cuota', 'saldo_actual', 'pagos_pendientes',
             'pagos_realizados', 'fecha_vencimiento', 'total_abonado',
             'promedio_pago', 'dias_atrasados', 'perdida', 'dias_sin_abono',
-            'importe_atrasado_estimado',
+            'importe_atrasado_estimado', 'cuotas_adelantadas',
             'fecha_ultimo_abono',
             'capital_recuperado', 'capital_expuesto', 'interes_cobrado',
             'interes_no_cobrado',
@@ -312,6 +313,26 @@ class VentaListaSerializer(ModelSerializer):
         if hasattr(obj, '_jornadas_recaudo'):
             return obj._jornadas_recaudo or 0
         return obj.recaudo_set.filter(es_renovacion=False).values('fecha_recaudo').distinct().count()
+
+    def get_cuotas_adelantadas(self, obj):
+        """Adelanto separado del atraso, que siempre se conserva no negativo.
+
+        Diario mantiene las jornadas registradas del contrato histórico: varios
+        recibos de una fecha son un ciclo. Semanal y mensual usan su calendario.
+        Las anotaciones del listado evitan consultar por cada crédito.
+        """
+        if obj.estado_venta in ('Pagado', 'Perdida') or self._saldo(obj) <= 0:
+            return Decimal('0')
+        calendario = calendario_venta(obj)
+        if calendario:
+            if calendario['estado'] in ('Pagado', 'Perdida'):
+                return Decimal('0')
+            cuota = self._total(obj) / obj.cuotas if obj.cuotas else Decimal('0')
+            anticipo = Decimal(calendario['anticipo'])
+        else:
+            cuota = self._cuota(obj)
+            anticipo = self.get_total_abonado(obj) - cuota * self._jornadas(obj)
+        return max(Decimal('0'), anticipo / cuota) if cuota > 0 else Decimal('0')
 
     def get_importe_atrasado_estimado(self, obj):
         if obj.plazo != 'Diario':
