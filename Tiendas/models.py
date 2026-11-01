@@ -501,6 +501,7 @@ class SolicitudPago(models.Model):
 class CuentaDestino(models.Model):
     """Datos bancarios a los que el usuario transfiere para pagar la membresía.
     Registro único (singleton, pk=1) editable por el root desde la app."""
+    datos_transferencia = models.TextField(blank=True, default="")
     banco = models.CharField(max_length=100, blank=True)
     numero = models.CharField(max_length=100, blank=True)
     titular = models.CharField(max_length=100, blank=True)

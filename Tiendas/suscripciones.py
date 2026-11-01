@@ -1,4 +1,5 @@
 """Correcciones de suscripción; no modifica caja, créditos ni recaudos."""
+from datetime import timedelta
 from django.db import transaction
 from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes
@@ -9,6 +10,12 @@ from .fecha_operativa import fecha_operativa
 from .models import CambioSuscripcion, PagoMembresia, SolicitudPago, Tienda_Membresia
 
 ESTADOS_PENDIENTES = ('pendiente', 'pendiente_confirmacion', 'procesando', 'pre_aprobada', 'aprobada')
+
+
+def prevision_renovacion_mensual(tm):
+    hoy = fecha_operativa(tm.tienda)
+    base = hoy if tm.vencida_manualmente else max(tm.fecha_vencimiento, hoy)
+    return {'dias': 30, 'desde': str(base), 'hasta': str(base + timedelta(days=30))}
 
 
 def snapshot(tm):

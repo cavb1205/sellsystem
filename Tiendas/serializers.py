@@ -5,6 +5,8 @@ from Trabajadores.serializers import UserSerializer, PerfilSerializer
 from Tiendas.fecha_operativa import validar_zona_horaria, fecha_operativa
 from datetime import timedelta
 from Tiendas.seguridad_root import puede_eliminar_desde_lista
+from Tiendas.configuracion_root import texto_cuenta
+from Tiendas.suscripciones import prevision_renovacion_mensual
 
 
 class TiendaCreateSerializer(serializers.ModelSerializer):
@@ -119,10 +121,14 @@ class TiendaMembresiaSerializer(serializers.ModelSerializer):
     # Última señal de uso real de la ruta (recaudo o cierre de caja).
     # Se llena solo cuando la vista anota _ult_recaudo/_ult_cierre (panel root).
     ultima_actividad = serializers.SerializerMethodField()
+    renovacion_mensual = serializers.SerializerMethodField()
 
     class Meta:
         model = Tienda_Membresia
         fields = '__all__'
+
+    def get_renovacion_mensual(self, obj):
+        return prevision_renovacion_mensual(obj)
 
     def get_ultima_actividad(self, obj):
         fechas = [f for f in (getattr(obj, '_ult_recaudo', None),
@@ -244,9 +250,14 @@ class SolicitudPagoSerializer(serializers.ModelSerializer):
 
 
 class CuentaDestinoSerializer(serializers.ModelSerializer):
+    datos_transferencia = serializers.SerializerMethodField()
+
+    def get_datos_transferencia(self, obj):
+        return texto_cuenta(obj)
+
     class Meta:
         model = CuentaDestino
-        fields = ['banco', 'numero', 'titular', 'tipo', 'actualizada', 'version']
+        fields = ['datos_transferencia', 'banco', 'numero', 'titular', 'tipo', 'actualizada', 'version']
         read_only_fields = ['actualizada', 'version']
 
 

@@ -152,13 +152,14 @@ class SuscripcionesTests(TestCase):
         self.assertEqual(self.activar(legacy=True).status_code,200)
         self.tm.refresh_from_db(); self.assertEqual(self.tm.fecha_vencimiento,date(2026,11,9))
 
-    def test_renovacion_anual_desde_hoy_y_mensual_vigente_desde_vencimiento(self):
+    def test_renovacion_mensual_conserva_dias_y_anual_retirado_no_activa(self):
         self.assertEqual(self.activar().status_code,200)
         self.tm.refresh_from_db(); self.assertEqual(self.tm.fecha_vencimiento,date(2026,12,31))
         self.assertEqual(self.vencer().status_code,200)
         self.tm.refresh_from_db()
-        self.assertEqual(self.activar(anual=True).status_code,200)
-        self.tm.refresh_from_db(); self.assertEqual(self.tm.fecha_vencimiento,date(2027,10,10))
+        self.assertEqual(self.activar(anual=True).status_code,400)
+        self.tm.refresh_from_db(); self.assertEqual(self.tm.fecha_vencimiento,date(2026,10,10))
+        self.assertTrue(self.tm.vencida_manualmente)
 
     def test_precio_congelado_tras_cambio_de_plan(self):
         self.mensual.precio=15000; self.mensual.save()

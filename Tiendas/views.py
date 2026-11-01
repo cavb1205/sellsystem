@@ -26,7 +26,7 @@ from Tiendas.alertas_operativas import rutas_del_usuario, usuario_alertas_config
 from Tiendas.fecha_operativa import fecha_operativa, validar_zona_horaria
 from Tiendas import telegram_bot
 from Tiendas import telegram_assistant
-from Tiendas.suscripciones import snapshot, registrar_cambio, anular_pago, pendientes
+from Tiendas.suscripciones import snapshot, registrar_cambio, anular_pago, pendientes, prevision_renovacion_mensual
 from Tiendas.seguridad_root import anotar_historial_ruta, tiene_historial_protegido
 from Tiendas.configuracion_root import (CAMPOS_CUENTA, snapshot_cuenta, cuenta_completa,
     motivo_configuracion, registrar_configuracion, historial_configuracion)
@@ -1162,7 +1162,8 @@ def get_tienda_membresia(request):
                 'pre_activada_hasta': tm.pre_activada_hasta, 'archivada': tm.archivada,
                 'fecha_archivado': tm.fecha_archivado, 'version': tm.version,
                 'vencida_manualmente': tm.vencida_manualmente,
-                'vencimiento_manual_fecha': tm.vencimiento_manual_fecha, 'motivo': tm.motivo},
+                'vencimiento_manual_fecha': tm.vencimiento_manual_fecha, 'motivo': tm.motivo,
+                'renovacion_mensual': prevision_renovacion_mensual(tm)},
                 headers={'Cache-Control': 'no-store'})
         comprobar_estado_membresia(tienda.id)
         tienda_membresia.refresh_from_db()
@@ -1197,7 +1198,8 @@ def get_tienda_membresia_admin(request, pk):
                 'pre_activada_hasta': tm.pre_activada_hasta, 'archivada': tm.archivada,
                 'fecha_archivado': tm.fecha_archivado, 'version': tm.version,
                 'vencida_manualmente': tm.vencida_manualmente,
-                'vencimiento_manual_fecha': tm.vencimiento_manual_fecha, 'motivo': tm.motivo},
+                'vencimiento_manual_fecha': tm.vencimiento_manual_fecha, 'motivo': tm.motivo,
+                'renovacion_mensual': prevision_renovacion_mensual(tm)},
                 headers={'Cache-Control': 'no-store'})
         comprobar_estado_membresia(tienda.id)
         tienda_membresia.refresh_from_db()
@@ -1819,6 +1821,8 @@ def _activar_manual(request, pk, plan):
         return respuesta_sin_permiso()
     if not isinstance(request.data, dict):
         return Response({'error': 'Se espera un objeto JSON.'}, status=400)
+    if plan != 'Mensual':
+        return Response({'error': 'El plan anual ya no está disponible. Renueva con el plan mensual.', 'code': 'plan_retirado'}, status=400)
     expected = request.data.get('version')
     if expected is not None and (type(expected) is not int or expected < 0):
         return Response({'error': 'Versión de suscripción inválida.'}, status=400)
@@ -1936,9 +1940,13 @@ def _datos_solicitud_pago(solicitud):
         f"Hola, necesito ayuda con el pago de mi plan, tienda *{solicitud.tienda.nombre}* "
         f"(código {solicitud.codigo})."
     )
+    tm = Tienda_Membresia.objects.select_related('tienda').filter(tienda_id=solicitud.tienda_id).first()
     return {
         'codigo': solicitud.codigo,
         'expira': solicitud.expira,
+        'tiene_comprobante': bool(solicitud.comprobante),
+        'pre_activada_hasta': str(tm.pre_activada_hasta) if tm and tm.pre_activada_hasta else None,
+        'acceso_temporal': bool(tm and not tm.vencida_manualmente and tm.estado == 'Pre-activada' and tm.pre_activada_hasta and fecha_operativa(tm.tienda) <= tm.pre_activada_hasta),
         'monto': str(solicitud.monto_acordado) if solicitud.monto_acordado is not None else None,
         'requiere_revision_monto': solicitud.monto_acordado is None,
         'plan': solicitud.membresia.nombre,
@@ -1952,58 +1960,50 @@ def _datos_solicitud_pago(solicitud):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def solicitar_pago(request):
-    """Crea una SolicitudPago y devuelve el código + datos de cuenta para que el usuario pague."""
+    """Inicia o retoma una única renovación mensual por ruta."""
+    if not isinstance(request.data, dict):
+        return Response({'error': 'Se espera un objeto JSON.'}, status=400)
     membresia_id = request.data.get('membresia_id')
-    plan_nombre = request.data.get('plan')
-
+    plan_nombre = request.data.get('plan', 'Mensual')
     if membresia_id:
-        try:
-            membresia = Membresia.objects.get(id=membresia_id)
-        except Membresia.DoesNotExist:
-            return Response({'error': 'Membresía no encontrada'}, status=status.HTTP_404_NOT_FOUND)
-    elif plan_nombre in ('Mensual', 'Anual'):
-        membresia = Membresia.objects.filter(nombre=plan_nombre).first()
-        if not membresia:
-            return Response({'error': f'Plan {plan_nombre} no configurado'}, status=status.HTTP_404_NOT_FOUND)
+        if type(membresia_id) not in (int, str) or not str(membresia_id).isdigit():
+            return Response({'error': 'Membresía inválida.'}, status=400)
+        membresia = Membresia.objects.filter(pk=membresia_id).first()
     else:
-        return Response({'error': 'membresia_id o plan requerido'}, status=status.HTTP_400_BAD_REQUEST)
-
+        membresia = Membresia.objects.filter(nombre=plan_nombre).first()
+    if not membresia:
+        return Response({'error': 'Plan no configurado.'}, status=404)
+    if membresia.nombre != 'Mensual' or plan_nombre != 'Mensual':
+        return Response({'error': 'Solo está disponible la renovación mensual.', 'code': 'plan_retirado'}, status=400)
     perfil = getattr(request.user, 'perfil', None)
     tienda_id = request.data.get('tienda_id') or getattr(perfil, 'tienda_id', None)
-    tienda = Tienda.objects.filter(id=tienda_id).first()
+    if type(tienda_id) not in (int, str) or not str(tienda_id).isdigit():
+        return Response({'error': 'Ruta inválida.'}, status=400)
+    tienda = Tienda.objects.filter(pk=tienda_id).first()
     if not tienda:
-        return Response({'error': 'Tienda no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+        return Response({'error': 'Ruta no encontrada.'}, status=404)
     if not usuario_puede_acceder_tienda(request.user, tienda_id):
         return respuesta_sin_permiso()
-
-    solicitud_existente = (
-        SolicitudPago.objects
-        .filter(tienda=tienda, estado__in=('pendiente', 'pendiente_confirmacion'))
-        .select_related('tienda', 'membresia')
-        .order_by('-creada')
-        .first()
-    )
-    if solicitud_existente:
-        _normalizar_solicitud_pago(solicitud_existente)
-        if solicitud_existente.estado in ('pendiente', 'pendiente_confirmacion'):
-            return Response(_datos_solicitud_pago(solicitud_existente), status=status.HTTP_200_OK)
-
-    codigo = _generar_codigo_solicitud(membresia.nombre)
-    expira = timezone.now() + datetime.timedelta(hours=24)
-
     with transaction.atomic():
+        # Todas las nuevas solicitudes de una ruta se serializan sobre su fila.
+        # Evita que un doble toque o dos pestañas generen dos pagos simultáneos.
+        tienda = Tienda.objects.select_for_update().get(pk=tienda.pk)
+        existente = SolicitudPago.objects.filter(tienda=tienda,
+            estado__in=('pendiente', 'pendiente_confirmacion', 'procesando', 'pre_aprobada')).select_related('tienda', 'membresia').order_by('-creada', '-pk').first()
+        if existente:
+            _normalizar_solicitud_pago(existente)
+            if existente.estado in ('pendiente', 'pendiente_confirmacion', 'procesando', 'pre_aprobada'):
+                return Response(_datos_solicitud_pago(existente), status=200)
         cuenta = CuentaDestino.get()
         cuenta = CuentaDestino.objects.select_for_update().get(pk=cuenta.pk)
         if not cuenta_completa(cuenta):
             return Response({'error': 'Los datos bancarios aún no están completos. Contacta con soporte antes de transferir.'}, status=409)
         membresia = Membresia.objects.select_for_update().get(pk=membresia.pk)
-        solicitud = SolicitudPago.objects.create(
-            tienda=tienda, membresia=membresia, monto_acordado=membresia.precio,
-            codigo=codigo, expira=expira, solicitada_por=request.user,
-            cuenta_acordada=snapshot_cuenta(cuenta),
-        )
-
-    return Response(_datos_solicitud_pago(solicitud), status=status.HTTP_201_CREATED)
+        solicitud = SolicitudPago.objects.create(tienda=tienda, membresia=membresia,
+            monto_acordado=membresia.precio, codigo=_generar_codigo_solicitud('Mensual'),
+            expira=timezone.now() + datetime.timedelta(hours=24), solicitada_por=request.user,
+            cuenta_acordada=snapshot_cuenta(cuenta))
+    return Response(_datos_solicitud_pago(solicitud), status=201)
 
 
 @api_view(['GET'])
@@ -2015,16 +2015,18 @@ def solicitud_pago_actual(request, tienda_id):
 
     solicitud = (
         SolicitudPago.objects
-        .filter(tienda_id=tienda_id, estado__in=('pendiente', 'pendiente_confirmacion'))
+        .filter(tienda_id=tienda_id, estado__in=('pendiente', 'pendiente_confirmacion', 'procesando', 'pre_aprobada'))
         .select_related('tienda', 'membresia')
         .order_by('-creada')
         .first()
     )
+    if not solicitud and request.GET.get('incluir_ultima') == '1':
+        solicitud = SolicitudPago.objects.filter(tienda_id=tienda_id).select_related('tienda', 'membresia').order_by('-creada', '-pk').first()
     if not solicitud:
         return Response({'solicitud': None}, status=status.HTTP_200_OK)
 
     _normalizar_solicitud_pago(solicitud)
-    if solicitud.estado not in ('pendiente', 'pendiente_confirmacion'):
+    if solicitud.estado not in ('pendiente', 'pendiente_confirmacion', 'procesando', 'pre_aprobada') and request.GET.get('incluir_ultima') != '1':
         return Response({'solicitud': None}, status=status.HTTP_200_OK)
     return Response({'solicitud': _datos_solicitud_pago(solicitud)}, status=status.HTTP_200_OK)
 
@@ -2068,7 +2070,12 @@ def cuenta_destino(request):
         motivo = motivo_configuracion(data)
     except ValueError as exc:
         return Response({'error': str(exc)}, status=400)
-    if any(not isinstance(data.get(key), str) or not 1 <= len(data[key].strip()) <= 100 for key in CAMPOS_CUENTA):
+    nuevo_texto = data.get('datos_transferencia')
+    if 'datos_transferencia' in data:
+        if not isinstance(nuevo_texto, str) or not 1 <= len(nuevo_texto.strip()) <= 2000 or '\x00' in nuevo_texto:
+            return Response({'error': 'Escribe los datos de transferencia (máximo 2000 caracteres).'}, status=400)
+        nuevo_texto = nuevo_texto.replace('\r\n', '\n').replace('\r', '\n').strip()
+    elif any(not isinstance(data.get(key), str) or not 1 <= len(data[key].strip()) <= 100 for key in CAMPOS_CUENTA):
         return Response({'error': 'Completa banco, número, titular y tipo de cuenta (máximo 100 caracteres por campo).'}, status=400)
     with transaction.atomic():
         cuenta = CuentaDestino.objects.select_for_update().get(pk=cuenta.pk)
@@ -2076,8 +2083,15 @@ def cuenta_destino(request):
             return Response({'error': 'La cuenta cambió en otra sesión. Recarga y revisa antes de guardar.',
                 'code': 'cuenta_modificada'}, status=409)
         anterior = snapshot_cuenta(cuenta)
-        for key in CAMPOS_CUENTA:
-            setattr(cuenta, key, data[key].strip())
+        if nuevo_texto is not None:
+            cuenta.datos_transferencia = nuevo_texto
+            # Un cliente anterior no debe mostrar una cuenta vieja después del cambio.
+            for key in CAMPOS_CUENTA:
+                setattr(cuenta, key, '')
+        else:
+            for key in CAMPOS_CUENTA:
+                setattr(cuenta, key, data[key].strip())
+            cuenta.datos_transferencia = '\n'.join(getattr(cuenta, key) for key in ('titular', 'banco', 'tipo', 'numero'))
         if snapshot_cuenta(cuenta) != anterior:
             cuenta.version += 1
             cuenta.save()
@@ -2108,7 +2122,7 @@ def planes(request):
         return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
 
     if request.method == 'GET':
-        membresias = Membresia.objects.all().order_by('id')
+        membresias = Membresia.objects.exclude(nombre='Anual').order_by('id')
         return Response(MembresiaSerializer(membresias, many=True).data, status=status.HTTP_200_OK)
 
     # PUT: [{"id": 1, "precio": 12000, "version": 0}, ...], todo o nada.
@@ -2151,7 +2165,7 @@ def planes(request):
         if nuevo != anterior:
             registrar_configuracion('planes', anterior, nuevo, request.user, motivo)
 
-    membresias = Membresia.objects.all().order_by('id')
+    membresias = Membresia.objects.exclude(nombre='Anual').order_by('id')
     return Response(MembresiaSerializer(membresias, many=True).data, status=status.HTTP_200_OK)
 
 
@@ -2232,7 +2246,8 @@ def adjuntar_comprobante(request, codigo):
 
     return Response({
         'estado': solicitud.estado,
-        'mensaje': 'Tu acceso ya está activo. Confirmaremos tu pago en las próximas horas.',
+        'mensaje': 'Comprobante recibido. El pago está en revisión.',
+        'acceso_temporal': not tm.vencida_manualmente,
         'pre_activada_hasta': str(tm.pre_activada_hasta) if tm else None,
     }, status=status.HTTP_200_OK)
 

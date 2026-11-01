@@ -4,12 +4,22 @@ from .models import CambioConfiguracionRoot
 CAMPOS_CUENTA = ('banco', 'numero', 'titular', 'tipo')
 
 
+def texto_cuenta(cuenta):
+    """Compatibilidad con cuentas anteriores sin alterar solicitudes congeladas."""
+    if cuenta.datos_transferencia.strip():
+        return cuenta.datos_transferencia
+    return '\n'.join(getattr(cuenta, key).strip() for key in
+        ('titular', 'banco', 'tipo', 'numero') if getattr(cuenta, key).strip())
+
+
 def snapshot_cuenta(cuenta):
-    return {**{key: getattr(cuenta, key) for key in CAMPOS_CUENTA}, 'version': cuenta.version}
+    return {**{key: getattr(cuenta, key) for key in CAMPOS_CUENTA},
+        'datos_transferencia': texto_cuenta(cuenta), 'version': cuenta.version}
 
 
 def cuenta_completa(cuenta):
-    return all(isinstance(getattr(cuenta, key), str) and getattr(cuenta, key).strip()
+    return bool(cuenta.datos_transferencia.strip()) or all(
+        isinstance(getattr(cuenta, key), str) and getattr(cuenta, key).strip()
         for key in CAMPOS_CUENTA)
 
 
