@@ -1,5 +1,5 @@
 """Centro de alertas: datos ficticios, SQLite y notificaciones prohibidas."""
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone as utc
 from decimal import Decimal
 from unittest.mock import patch
 from django.test import TestCase, override_settings
@@ -62,13 +62,17 @@ class AlertasTests(TestCase):
         self.assertEqual(alerta.datos['revisiones'][0]['nota'], 'Llamar al cliente')
 
     def test_cierre_posterior_resuelve_omision_en_la_operacion_autorizada(self):
+        Tienda.objects.filter(pk=self.ruta.pk).update(fecha_registro=date(2026,10,1))
+        with patch('Tiendas.fecha_operativa.timezone.now', return_value=datetime(2026,10,8,15,tzinfo=utc.utc)):
+            MovimientoCaja.objects.create(tienda=self.ruta, tipo='AJUSTE', delta=0,
+                saldo_anterior=10000, saldo_posterior=10000)
         alerta = self.alerta(tipo='CIERRE_AUSENTE', venta_id_ref=None,
             datos={'fecha': '2026-10-09'})
         response = self.api.post(f'/tiendas/cierre/post/2026-10-09/t/{self.ruta.id}/')
         self.assertEqual(response.status_code, 200, response.data)
         alerta.refresh_from_db(); self.assertEqual(alerta.estado, 'resuelta')
         self.assertTrue(alerta.datos['resolucion']['automatica'])
-        self.assertFalse(MovimientoCaja.objects.exists())
+        self.assertEqual(MovimientoCaja.objects.count(), 1)
 
     def test_mantenimiento_reconcilia_omisiones_antiguas_solo_en_alcance(self):
         vieja = self.alerta(tipo='CIERRE_AUSENTE', datos={'fecha': '2026-10-01'})

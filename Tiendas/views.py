@@ -24,6 +24,7 @@ from Tiendas.models import AlertaOperativa, Tienda, Cierre_Caja, MovimientoCaja,
 from Tiendas.serializers import TiendaSerializer, CajaSerializer, MovimientoCajaSerializer, TiendaMembresiaSerializer, TiendaMembresiaListaSerializer, TiendaCreateSerializer, TiendaAdminSerializer, SolicitudPagoSerializer, CuentaDestinoSerializer, MembresiaSerializer
 from Tiendas.alertas_operativas import rutas_del_usuario, usuario_alertas_configurado
 from Tiendas.fecha_operativa import fecha_operativa, validar_zona_horaria
+from Tiendas.cierres import validar_cierre, ESTADOS_HTTP
 from Tiendas import telegram_bot
 from Tiendas import telegram_assistant
 from Tiendas.suscripciones import snapshot, registrar_cambio, anular_pago, pendientes, prevision_renovacion_mensual
@@ -1106,16 +1107,16 @@ def post_cierre_caja(request, fecha, tienda_id=None):
         )
     with transaction.atomic():
         tienda = Tienda.objects.select_for_update().get(pk=tienda.pk)
-        if Cierre_Caja.objects.filter(tienda=tienda, fecha_cierre=fecha).exists():
-            return Response(
-                {'error': 'Ya existe un cierre de caja para esa fecha.'},
-                status=status.HTTP_409_CONFLICT,
-            )
-        Cierre_Caja.objects.create(
+        validacion = validar_cierre(tienda, fecha, request.user)
+        if not validacion['puede_registrar']:
+            return Response({'error': validacion['mensaje'], 'code': validacion['codigo'],
+                'validacion_cierre': validacion}, status=ESTADOS_HTTP.get(validacion['codigo'], 409))
+        cierre = Cierre_Caja.objects.create(
             fecha_cierre=fecha, valor=tienda.caja_inicial, tienda=tienda)
         from Tiendas.alertas_operativas import resolver_cierres_registrados
         resolver_cierres_registrados(Tienda.objects.filter(pk=tienda.pk))
-    return Response({'message': 'Se creo el registro'}, status=status.HTTP_200_OK)
+    return Response({'message': 'Cierre registrado.', 'id': cierre.pk,
+        'fecha_cierre': cierre.fecha_cierre, 'valor': str(cierre.valor)}, status=status.HTTP_200_OK)
 
 
 @api_view(['DELETE'])
@@ -1382,6 +1383,7 @@ def cierre_resumen_movimientos(request, fecha, tienda_id=None):
     return Response({
         'fecha': fecha_data,
         'hoy': hoy_data,
+        'validacion_cierre': validar_cierre(tienda, fecha_obj, request.user),
     }, status=status.HTTP_200_OK)
 
 
