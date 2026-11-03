@@ -158,8 +158,9 @@ def put_gasto(request, pk, tienda_id=None):
 
         gasto_serializer = GastoUpdateSerializer(gasto, data=request.data)
         gasto_serializer.is_valid(raise_exception=True)
+        cambio_fecha = gasto_serializer.validated_data.get('fecha', gasto.fecha) != gasto.fecha
         gasto_serializer.save()
-        if diferencia:
+        if diferencia or cambio_fecha:
             registrar_movimiento_caja(
                 tienda,
                 -diferencia,
@@ -167,7 +168,7 @@ def put_gasto(request, pk, tienda_id=None):
                 accion='CORRECCION',
                 usuario=request.user,
                 origen=gasto,
-                detalle='Corrección del valor del gasto',
+                detalle='Corrección del valor o la fecha del gasto',
             )
 
     return Response(gasto_serializer.data, status=status.HTTP_200_OK)

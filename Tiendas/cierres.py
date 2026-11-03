@@ -6,7 +6,7 @@ sola el cierre ni reconstruye balances históricos.
 """
 from datetime import datetime, time, timedelta
 from decimal import Decimal
-from django.db.models import Q
+from django.db.models import F, Q
 from .models import Cierre_Caja, MovimientoCaja
 from .fecha_operativa import fecha_operativa, zona_horaria_tienda
 from .permissions import usuario_es_administrador_tienda
@@ -17,33 +17,50 @@ ESTADOS_HTTP = {
 }
 
 
-def _hay_cambios_posteriores(movimientos, corte, fecha, tienda_id):
-    """Un abono ingresado tarde puede pertenecer al día que se quiere cerrar.
-
-    Solo se admite su creación si el origen sigue siendo un pago real de la
-    misma ruta y su importe coincide. Correcciones (incluso de solo fecha),
-    reversas, ajustes y referencias sin respaldo mantienen el bloqueo.
-    """
+def _origenes_de_caja():
+    from Aportes.models import Aporte
+    from Gastos.models import Gasto
     from Recaudos.models import Recaudo
+    from Utilidades.models import Utilidad
+    from Ventas.models import Venta
 
+    return {
+        'APORTE': (Aporte, 'fecha', 'valor', 1, {}),
+        'GASTO': (Gasto, 'fecha', 'valor', -1, {}),
+        'UTILIDAD': (Utilidad, 'fecha', 'valor', -1, {}),
+        'RECAUDO': (Recaudo, 'fecha_recaudo', 'valor_recaudo', 1, {'es_renovacion': False}),
+        'VENTA': (Venta, 'fecha_venta', 'valor_venta', -1,
+                  {'origen_renovacion__isnull': True, 'tipo_origen__in': ['', 'Nuevo']}),
+    }
+
+
+def _hay_cambios_posteriores(movimientos, corte, fecha, tienda_id, origenes):
+    """Solo las altas con origen, fecha e importe comprobables pueden ser tardías."""
     posteriores = movimientos.filter(creado_en__gte=corte).filter(
-        ~Q(delta=0) | Q(tipo='RECAUDO', accion='CORRECCION'))
-    if posteriores.exclude(
-            tipo='RECAUDO', accion='CREACION', delta__gt=0,
-            origen_tipo=Recaudo._meta.label_lower, origen_id__isnull=False).exists():
-        return True
-
-    # Una consulta para todos los orígenes: no consultar un cliente por asiento.
-    abonos = dict(Recaudo.objects.filter(
-        pk__in=posteriores.values('origen_id'), tienda_id=tienda_id,
-        venta__tienda_id=tienda_id, fecha_recaudo__lte=fecha,
-        valor_recaudo__gt=0, es_renovacion=False, visita_blanco__isnull=True,
-    ).values_list('pk', 'valor_recaudo'))
-    comprobados = set()
-    for origen_id, delta in posteriores.values_list('origen_id', 'delta').iterator():
-        if origen_id in comprobados or abonos.get(origen_id) != delta:
+        ~Q(delta=0) | Q(accion='CORRECCION'))
+    asientos_por_tipo = {}
+    for tipo, accion, etiqueta, origen_id, delta in posteriores.values_list(
+            'tipo', 'accion', 'origen_tipo', 'origen_id', 'delta').iterator():
+        if accion != 'CREACION' or tipo not in origenes or origen_id is None:
             return True
-        comprobados.add(origen_id)
+        if etiqueta != origenes[tipo][0]._meta.label_lower:
+            return True
+        asientos = asientos_por_tipo.setdefault(tipo, {})
+        if origen_id in asientos:
+            return True
+        asientos[origen_id] = delta
+
+    for tipo, asientos in asientos_por_tipo.items():
+        modelo, campo_fecha, campo_valor, signo, filtros = origenes[tipo]
+        requisitos = {'venta__tienda_id': tienda_id, 'visita_blanco__isnull': True} if tipo == 'RECAUDO' else {}
+        importes = dict(modelo.objects.filter(
+            pk__in=asientos, tienda_id=tienda_id,
+            **filtros, **requisitos, **{campo_fecha+'__lte': fecha, campo_valor+'__gt': 0},
+        ).values_list('pk', campo_valor))
+        for origen_id, delta in asientos.items():
+            importe = importes.get(origen_id)
+            if importe is None or signo * importe != delta:
+                return True
     return False
 
 
@@ -78,22 +95,18 @@ def validar_cierre(tienda, fecha, usuario):
     primero = movimientos.order_by('creado_en', 'id').only('creado_en').first()
     if primero:
         result['historial_desde'] = fecha_operativa(tienda, primero.creado_en).isoformat()
-    if _hay_cambios_posteriores(movimientos, corte, fecha, tienda.pk):
+    from Ventas.models import AjusteVentaAdministrativo
+
+    origenes = _origenes_de_caja()
+    ajustes_fecha = AjusteVentaAdministrativo.objects.filter(
+        venta__tienda_id=tienda.pk, creada__gte=corte,
+    ).exclude(fecha_venta_anterior=F('fecha_venta_nueva'))
+    if _hay_cambios_posteriores(movimientos, corte, fecha, tienda.pk, origenes) or ajustes_fecha.exists():
         return bloquear('movimientos_posteriores', 'No puedes cerrar esta fecha con el saldo actual: hubo cambios de caja posteriores, incluidas correcciones o anulaciones.')
 
     # También detectar operaciones fechadas después que no tengan auditoría
     # (datos anteriores al registro, importaciones o cambios de fecha).
-    from Aportes.models import Aporte
-    from Gastos.models import Gasto
-    from Utilidades.models import Utilidad
-    from Recaudos.models import Recaudo
-    from Ventas.models import Venta
-    for modelo, campo_fecha, campo_valor, filtros in (
-        (Aporte, 'fecha', 'valor', {}), (Gasto, 'fecha', 'valor', {}),
-        (Utilidad, 'fecha', 'valor', {}),
-        (Recaudo, 'fecha_recaudo', 'valor_recaudo', {'es_renovacion': False}),
-        (Venta, 'fecha_venta', 'valor_venta', {}),
-    ):
+    for modelo, campo_fecha, campo_valor, _, filtros in origenes.values():
         if modelo.objects.filter(tienda_id=tienda.pk, **{campo_fecha+'__gt': fecha}, **filtros).exclude(
                 Q(**{campo_valor: 0}) | Q(**{campo_valor+'__isnull': True})).exists():
             return bloquear('movimientos_posteriores', 'No puedes cerrar esta fecha con el saldo actual: hay movimientos con fecha posterior al día seleccionado.')

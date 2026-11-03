@@ -350,8 +350,9 @@ def put_venta(request, pk, tienda_id=None):
                     and getattr(venta, campo) != venta_serializer.validated_data[campo]
                     for campo in campos_aviso
                 )
+                cambio_fecha = fecha_venta != venta.fecha_venta
                 venta_serializer.save()
-                if diferencia:
+                if diferencia or cambio_fecha:
                     registrar_movimiento_caja(
                         tienda,
                         -diferencia,
@@ -359,7 +360,7 @@ def put_venta(request, pk, tienda_id=None):
                         accion='CORRECCION',
                         usuario=request.user,
                         origen=venta,
-                        detalle='Corrección del capital del crédito',
+                        detalle='Corrección del capital o la fecha del crédito',
                     )
                 if cambiado:
                     registrar_evento(venta, accion='edicion_credito', operacion_id=uuid4())
@@ -467,6 +468,7 @@ def corregir_venta_administrativamente(request, pk, tienda_id=None):
         valor_cuota_anterior = Decimal('0.00')
 
     with transaction.atomic():
+        Tienda.objects.select_for_update().get(pk=venta.tienda_id)
         venta = Venta.objects.select_for_update().get(pk=venta.pk)
         ajuste = AjusteVentaAdministrativo.objects.create(
             venta=venta,

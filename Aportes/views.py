@@ -95,8 +95,9 @@ def put_aporte(request, pk, tienda_id=None):
                 aporte_serializer.is_valid(raise_exception=True)
                 new_aporte = aporte_serializer.validated_data['valor']
                 diferencia = new_aporte - aporte_inicial.valor
+                cambio_fecha = aporte_serializer.validated_data.get('fecha', aporte_inicial.fecha) != aporte_inicial.fecha
                 aporte_serializer.save()
-                if diferencia:
+                if diferencia or cambio_fecha:
                     registrar_movimiento_caja(
                         tienda,
                         diferencia,
@@ -104,7 +105,7 @@ def put_aporte(request, pk, tienda_id=None):
                         accion='CORRECCION',
                         usuario=request.user,
                         origen=aporte_inicial,
-                        detalle='Corrección del valor del aporte',
+                        detalle='Corrección del valor o la fecha del aporte',
                     )
             return Response(aporte_serializer.data, status=status.HTTP_200_OK)
         return Response(aporte_serializer.errors, status=status.HTTP_400_BAD_REQUEST)

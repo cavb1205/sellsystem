@@ -75,8 +75,9 @@ def put_utilidad(request, pk, tienda_id=None):
                 utilidad_serializer.is_valid(raise_exception=True)
                 nuevo_valor = utilidad_serializer.validated_data['valor']
                 diferencia = nuevo_valor - utilidad.valor
+                cambio_fecha = utilidad_serializer.validated_data.get('fecha', utilidad.fecha) != utilidad.fecha
                 utilidad_serializer.save()
-                if diferencia:
+                if diferencia or cambio_fecha:
                     # Una utilidad retirada reduce caja; una corrección hacia
                     # abajo devuelve la diferencia a la caja.
                     registrar_movimiento_caja(
@@ -86,7 +87,7 @@ def put_utilidad(request, pk, tienda_id=None):
                         accion='CORRECCION',
                         usuario=request.user,
                         origen=utilidad,
-                        detalle='Corrección del valor de la utilidad',
+                        detalle='Corrección del valor o la fecha de la utilidad',
                     )
             return Response(utilidad_serializer.data, status=status.HTTP_200_OK)
         return Response(utilidad_serializer.errors, status=status.HTTP_400_BAD_REQUEST)

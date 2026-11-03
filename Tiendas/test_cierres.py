@@ -9,6 +9,9 @@ from Tiendas.test_suscripciones import SuscripcionesTests
 from Tiendas.models import Tienda, Cierre_Caja, MovimientoCaja
 from Tiendas.caja import registrar_movimiento_caja
 from Aportes.models import Aporte
+from Gastos.models import Gasto, Tipo_Gasto
+from Utilidades.models import Utilidad
+from Ventas.models import Venta
 from Recaudos.models import Recaudo
 
 
@@ -78,6 +81,59 @@ class CierresAnterioresTests(TestCase):
         self.ruta.refresh_from_db(); self.venta.refresh_from_db()
         self.assertEqual(self.ruta.caja_inicial, 140000)
         self.assertEqual(self.venta.saldo_actual, 1070000)
+
+    def test_gasto_del_sabado_ingresado_despues_permite_cerrar_el_sabado(self):
+        categoria = Tipo_Gasto.objects.create(tipo_gasto='Prueba')
+        self.api.force_authenticate(self.worker)
+        r = self.api.post(f'/gastos/create/t/{self.ruta.pk}/', {
+            'fecha': '2026-10-31', 'valor': '1500', 'tipo_gasto': categoria.pk,
+        }, format='json')
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(Gasto.objects.get().fecha, date(2026, 10, 31))
+        self.api.force_authenticate(self.admin)
+        self.assertEqual(self.resumen()['codigo'], 'movimientos_posteriores')
+        self.assertEqual(self.resumen('2026-10-31')['saldo_a_registrar'], '8500.00')
+        r = self.cerrar('2026-10-31')
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(Cierre_Caja.objects.get().valor, 8500)
+
+    def test_fecha_operativa_de_aporte_utilidad_y_credito_ingresados_tarde(self):
+        datos = {'tienda': self.ruta, 'fecha': date(2026, 10, 30),
+                 'trabajador': self.worker.perfil, 'valor': 100}
+        aporte = Aporte.objects.create(**datos)
+        utilidad = Utilidad.objects.create(**datos)
+        venta = Venta.objects.create(
+            tienda=self.ruta, cliente=self.cliente, fecha_venta=datos['fecha'],
+            valor_venta=500, saldo_actual=600, interes=20, cuotas=20,
+        )
+        for tipo, origen, delta in [('APORTE', aporte, 100), ('UTILIDAD', utilidad, -100),
+                                    ('VENTA', venta, -500)]:
+            self.movimiento(datetime(2026, 11, 1, 15, tzinfo=timezone.utc),
+                            delta, tipo, origen=origen)
+        self.assertEqual(self.resumen()['saldo_a_registrar'], '9500.00')
+        self.assertEqual(self.cerrar().status_code, 200)
+
+    def test_editar_solo_fecha_de_gasto_deja_constancia_y_bloquea(self):
+        gasto = Gasto.objects.create(
+            tienda=self.ruta, trabajador=self.worker.perfil, fecha=date(2026, 10, 31),
+            tipo_gasto=Tipo_Gasto.objects.create(tipo_gasto='Prueba'), valor=1500,
+        )
+        self.movimiento(datetime(2026, 11, 1, 15, tzinfo=timezone.utc),
+                        -1500, 'GASTO', origen=gasto)
+        r = self.api.put(f'/gastos/{gasto.pk}/update/', {
+            'fecha': '2026-10-30', 'valor': '1500',
+        }, format='json')
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(MovimientoCaja.objects.get(accion='CORRECCION').delta, 0)
+        self.assertEqual(self.cerrar().data['code'], 'movimientos_posteriores')
+
+    def test_renovacion_sin_entrega_de_efectivo_no_bloquea(self):
+        Venta.objects.create(
+            tienda=self.ruta, cliente=self.cliente, fecha_venta=date(2026, 10, 31),
+            valor_venta=500, saldo_actual=600, interes=20, cuotas=20,
+            tipo_origen='Renovacion', origen_renovacion=self.venta,
+        )
+        self.assertEqual(self.cerrar().status_code, 200)
 
     def test_abono_tardio_de_un_dia_anterior_al_cierre_tambien_esta_incluido(self):
         self.abono_tardio(fecha='2026-10-29')
