@@ -17,6 +17,36 @@ ESTADOS_HTTP = {
 }
 
 
+def _hay_cambios_posteriores(movimientos, corte, fecha, tienda_id):
+    """Un abono ingresado tarde puede pertenecer al día que se quiere cerrar.
+
+    Solo se admite su creación si el origen sigue siendo un pago real de la
+    misma ruta y su importe coincide. Correcciones (incluso de solo fecha),
+    reversas, ajustes y referencias sin respaldo mantienen el bloqueo.
+    """
+    from Recaudos.models import Recaudo
+
+    posteriores = movimientos.filter(creado_en__gte=corte).filter(
+        ~Q(delta=0) | Q(tipo='RECAUDO', accion='CORRECCION'))
+    if posteriores.exclude(
+            tipo='RECAUDO', accion='CREACION', delta__gt=0,
+            origen_tipo=Recaudo._meta.label_lower, origen_id__isnull=False).exists():
+        return True
+
+    # Una consulta para todos los orígenes: no consultar un cliente por asiento.
+    abonos = dict(Recaudo.objects.filter(
+        pk__in=posteriores.values('origen_id'), tienda_id=tienda_id,
+        venta__tienda_id=tienda_id, fecha_recaudo__lte=fecha,
+        valor_recaudo__gt=0, es_renovacion=False, visita_blanco__isnull=True,
+    ).values_list('pk', 'valor_recaudo'))
+    comprobados = set()
+    for origen_id, delta in posteriores.values_list('origen_id', 'delta').iterator():
+        if origen_id in comprobados or abonos.get(origen_id) != delta:
+            return True
+        comprobados.add(origen_id)
+    return False
+
+
 def validar_cierre(tienda, fecha, usuario):
     hoy = fecha_operativa(tienda)
     result = {'fecha': fecha.isoformat(), 'tienda_id': tienda.pk,
@@ -48,7 +78,7 @@ def validar_cierre(tienda, fecha, usuario):
     primero = movimientos.order_by('creado_en', 'id').only('creado_en').first()
     if primero:
         result['historial_desde'] = fecha_operativa(tienda, primero.creado_en).isoformat()
-    if movimientos.filter(creado_en__gte=corte).exclude(delta=0).exists():
+    if _hay_cambios_posteriores(movimientos, corte, fecha, tienda.pk):
         return bloquear('movimientos_posteriores', 'No puedes cerrar esta fecha con el saldo actual: hubo cambios de caja posteriores, incluidas correcciones o anulaciones.')
 
     # También detectar operaciones fechadas después que no tengan auditoría
@@ -73,5 +103,5 @@ def validar_cierre(tienda, fecha, usuario):
     if Decimal(str(ultimo.saldo_posterior)) != Decimal(str(tienda.caja_inicial)):
         return bloquear('saldo_sin_respaldo', 'El saldo actual no coincide con el último movimiento auditado. Revisa la caja antes de registrar un cierre anterior.')
     return {**result, 'puede_registrar': True, 'codigo': 'sin_movimientos_posteriores',
-        'mensaje': 'Puedes cerrar esta fecha: no se registran cambios de caja posteriores.',
+        'mensaje': 'Puedes cerrar esta fecha: no hay movimientos que correspondan a días posteriores.',
         'saldo_a_registrar': str(tienda.caja_inicial)}

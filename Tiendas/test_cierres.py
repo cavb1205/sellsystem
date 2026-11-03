@@ -23,10 +23,19 @@ class CierresAnterioresTests(TestCase):
         self.ruta.refresh_from_db(); self.otra.refresh_from_db()
         self.movimiento(datetime(2026,10,29,15,tzinfo=timezone.utc), 0)
 
-    def movimiento(self, cuando, valor, tipo='AJUSTE', accion='CREACION'):
+    def movimiento(self, cuando, valor, tipo='AJUSTE', accion='CREACION', **origen):
         with patch('Tiendas.fecha_operativa.timezone.now', return_value=cuando), transaction.atomic():
             t = Tienda.objects.select_for_update().get(pk=self.ruta.pk)
-            return registrar_movimiento_caja(t, valor, tipo=tipo, accion=accion, usuario=self.admin)
+            return registrar_movimiento_caja(t, valor, tipo=tipo, accion=accion, usuario=self.admin, **origen)
+
+    def abono_tardio(self, valor=100, fecha='2026-10-30', cuando=None):
+        cuando = cuando or datetime(2026,10,31,15,tzinfo=timezone.utc)
+        with patch('Tiendas.fecha_operativa.timezone.now', return_value=cuando):
+            r = self.api.post(f'/recaudos/create/t/{self.ruta.pk}/', {
+                'venta': self.venta.pk, 'fecha_recaudo': fecha, 'valor_recaudo': valor,
+            }, format='json')
+        self.assertEqual(r.status_code, 200, r.data)
+        return Recaudo.objects.get(pk=r.data['id'])
 
     def cerrar(self, fecha='2026-10-30', ruta=None):
         return self.api.post(f'/tiendas/cierre/post/{fecha}/t/{ruta or self.ruta.pk}/')
@@ -50,6 +59,107 @@ class CierresAnterioresTests(TestCase):
     def test_no_hay_limite_de_un_dia_si_el_historial_cubre_la_fecha(self):
         with patch('Tiendas.fecha_operativa.timezone.now', return_value=datetime(2026,12,20,15,tzinfo=timezone.utc)):
             self.assertEqual(self.cerrar().status_code, 200)
+
+    def test_abonos_del_viernes_ingresados_el_sabado_permiten_cerrar_el_viernes(self):
+        # Reproduce los importes y horas de R4 con datos exclusivamente locales.
+        self.venta.valor_venta = 1000000
+        self.venta.saldo_actual = 1200000
+        self.venta.save(update_fields=['valor_venta', 'saldo_actual'])
+        self.abono_tardio(100000, cuando=datetime(2026,10,31,3,26,tzinfo=timezone.utc))
+        self.abono_tardio(30000, cuando=datetime(2026,10,31,17,27,tzinfo=timezone.utc))
+        auditoria = list(MovimientoCaja.objects.values())
+        info = self.resumen()
+        self.assertTrue(info['puede_registrar'], info)
+        self.assertEqual(info['saldo_a_registrar'], '140000.00')
+        self.assertFalse(Cierre_Caja.objects.exists())
+        self.assertEqual(self.cerrar().status_code, 200)
+        self.assertEqual(Cierre_Caja.objects.get().valor, 140000)
+        self.assertEqual(list(MovimientoCaja.objects.values()), auditoria)
+        self.ruta.refresh_from_db(); self.venta.refresh_from_db()
+        self.assertEqual(self.ruta.caja_inicial, 140000)
+        self.assertEqual(self.venta.saldo_actual, 1070000)
+
+    def test_abono_tardio_de_un_dia_anterior_al_cierre_tambien_esta_incluido(self):
+        self.abono_tardio(fecha='2026-10-29')
+        self.assertTrue(self.resumen()['puede_registrar'])
+        self.assertEqual(self.cerrar().status_code, 200)
+
+    def test_abono_que_corresponde_al_sabado_no_permite_cerrar_viernes(self):
+        self.abono_tardio(fecha='2026-10-31')
+        self.assertEqual(self.resumen()['codigo'], 'movimientos_posteriores')
+        self.assertEqual(self.cerrar().status_code, 409)
+
+    def test_correccion_posterior_del_importe_de_abono_tardio_bloquea(self):
+        pago = self.abono_tardio()
+        self.assertTrue(self.resumen()['puede_registrar'])
+        r = self.api.put(f'/recaudos/{pago.pk}/update/', {
+            'fecha_recaudo': '2026-10-30', 'valor_recaudo': 50,
+        }, format='json')
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(self.cerrar().data['code'], 'movimientos_posteriores')
+        self.assertFalse(Cierre_Caja.objects.exists())
+
+    def test_cambiar_solo_la_fecha_de_un_pago_no_sirve_para_saltar_el_bloqueo(self):
+        pago = self.abono_tardio(fecha='2026-10-31')
+        self.ruta.refresh_from_db(); saldo = self.ruta.caja_inicial
+        r = self.api.put(f'/recaudos/{pago.pk}/update/', {
+            'fecha_recaudo': '2026-10-30', 'valor_recaudo': 100,
+        }, format='json')
+        self.assertEqual(r.status_code, 200, r.data)
+        correccion = MovimientoCaja.objects.get(accion='CORRECCION')
+        self.assertEqual(correccion.delta, 0)
+        self.assertEqual(correccion.origen_id, pago.pk)
+        self.assertEqual(correccion.saldo_anterior, saldo)
+        self.assertEqual(correccion.saldo_posterior, saldo)
+        self.ruta.refresh_from_db(); self.assertEqual(self.ruta.caja_inicial, saldo)
+        self.assertEqual(self.resumen()['codigo'], 'movimientos_posteriores')
+        self.assertEqual(self.cerrar().status_code, 409)
+
+    def test_guardar_abono_sin_cambios_no_crea_una_correccion_ni_bloquea(self):
+        pago = self.abono_tardio()
+        r = self.api.put(f'/recaudos/{pago.pk}/update/', {
+            'fecha_recaudo': '2026-10-30', 'valor_recaudo': 100,
+        }, format='json')
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertFalse(MovimientoCaja.objects.filter(accion='CORRECCION').exists())
+        self.assertTrue(self.resumen()['puede_registrar'])
+
+    def test_anulacion_posterior_de_abono_tardio_mantiene_bloqueo(self):
+        pago = self.abono_tardio()
+        r = self.api.delete(f'/recaudos/{pago.pk}/delete/')
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertFalse(Recaudo.objects.filter(pk=pago.pk).exists())
+        self.assertEqual(self.cerrar().data['code'], 'movimientos_posteriores')
+
+    def test_abono_tardio_sin_origen_verificable_no_se_acepta(self):
+        pago = self.abono_tardio()
+        Recaudo.objects.filter(pk=pago.pk).delete()
+        self.assertEqual(self.cerrar().data['code'], 'movimientos_posteriores')
+
+    def test_origen_de_otra_ruta_importe_distinto_o_renovacion_no_se_aceptan(self):
+        pago = self.abono_tardio()
+        for campos in ({'tienda': self.otra}, {'valor_recaudo': 99}, {'es_renovacion': True}):
+            with self.subTest(campos=campos):
+                with transaction.atomic():
+                    Recaudo.objects.filter(pk=pago.pk).update(**campos)
+                    self.assertEqual(self.cerrar().data['code'], 'movimientos_posteriores')
+                    transaction.set_rollback(True)
+        self.assertTrue(self.resumen()['puede_registrar'])
+
+    def test_asientos_duplicados_del_mismo_abono_tardio_no_se_aceptan(self):
+        pago = self.abono_tardio()
+        self.movimiento(datetime(2026,11,1,15,tzinfo=timezone.utc), 100, 'RECAUDO', origen=pago)
+        self.assertEqual(self.cerrar().data['code'], 'movimientos_posteriores')
+
+    def test_abono_tardio_no_reemplaza_historial_anterior_al_dia_solicitado(self):
+        self.abono_tardio(fecha='2026-10-27')
+        self.assertEqual(self.cerrar('2026-10-28').data['code'], 'historial_insuficiente')
+
+    def test_abono_tardio_no_oculta_otro_movimiento_posterior(self):
+        self.abono_tardio()
+        self.assertTrue(self.resumen()['puede_registrar'])
+        self.movimiento(datetime(2026,11,1,15,tzinfo=timezone.utc), 50, 'APORTE')
+        self.assertEqual(self.cerrar().data['code'], 'movimientos_posteriores')
 
     def test_movimiento_intermedio_bloquea_aunque_lunes_no_tenga_actividad(self):
         self.movimiento(datetime(2026,11,1,15,tzinfo=timezone.utc), 100, 'APORTE')

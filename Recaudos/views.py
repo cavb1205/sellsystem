@@ -339,7 +339,9 @@ def put_recaudo(request, pk, tienda_id=None):
                 es_renovacion=False,
             )
             actualizar_estado(venta)
-            if diferencia:
+            # Cambiar solo la fecha de un pago también afecta a la validación
+            # de cierres anteriores, aunque no cambie el efectivo de la caja.
+            if diferencia or (cambiado and nuevo_valor > 0):
                 registrar_movimiento_caja(
                     tienda,
                     diferencia,
@@ -347,7 +349,7 @@ def put_recaudo(request, pk, tienda_id=None):
                     accion='CORRECCION',
                     usuario=request.user,
                     origen=recaudo,
-                    detalle='Corrección del valor del abono',
+                    detalle='Corrección del valor o la fecha del abono',
                 )
             venta.save(update_fields=['saldo_actual', 'estado_venta'])
             if cambiado:
