@@ -145,15 +145,54 @@ class CierresAnterioresTests(TestCase):
         self.assertEqual(self.resumen()['codigo'], 'movimientos_posteriores')
         self.assertEqual(self.cerrar().status_code, 409)
 
-    def test_correccion_posterior_del_importe_de_abono_tardio_bloquea(self):
+    def test_correccion_de_importe_y_abonos_tardios_de_r2_iquique(self):
+        self.venta.valor_venta = 1000000
+        self.venta.saldo_actual = 1200000
+        self.venta.save(update_fields=['valor_venta', 'saldo_actual'])
+        fecha = '2026-11-09'
+        pago = self.abono_tardio(60000, fecha, datetime(2026, 11, 10, 2, 55, tzinfo=timezone.utc))
+        with patch('Tiendas.fecha_operativa.timezone.now',
+                   return_value=datetime(2026, 11, 10, 3, 1, tzinfo=timezone.utc)):
+            r = self.api.put(f'/recaudos/{pago.pk}/update/', {
+                'fecha_recaudo': fecha, 'valor_recaudo': 80000,
+            }, format='json')
+            self.assertEqual(r.status_code, 200, r.data)
+        for hora, minuto, monto in [(3, 3, 40000), (18, 33, 60000), (18, 40, 30000), (22, 22, 50000)]:
+            self.abono_tardio(monto, fecha, datetime(2026, 11, 10, hora, minuto, tzinfo=timezone.utc))
+
+        with patch('Tiendas.fecha_operativa.timezone.now',
+                   return_value=datetime(2026, 11, 10, 23, tzinfo=timezone.utc)):
+            self.assertEqual(self.resumen(fecha)['saldo_a_registrar'], '270000.00')
+            self.assertFalse(Cierre_Caja.objects.exists())
+            self.assertEqual(self.cerrar(fecha).status_code, 200)
+        self.assertEqual(Cierre_Caja.objects.get().valor, 270000)
+        self.assertEqual(MovimientoCaja.objects.get(accion='CORRECCION').delta, 20000)
+
+    def test_correccion_posterior_de_abono_tardio_concilia_el_importe_final(self):
         pago = self.abono_tardio()
         self.assertTrue(self.resumen()['puede_registrar'])
         r = self.api.put(f'/recaudos/{pago.pk}/update/', {
             'fecha_recaudo': '2026-10-30', 'valor_recaudo': 50,
         }, format='json')
         self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(self.resumen()['saldo_a_registrar'], '10050.00')
+        self.assertEqual(self.cerrar().status_code, 200)
+
+    def test_correccion_de_abono_de_jornada_posterior_sigue_bloqueando(self):
+        pago = self.abono_tardio(fecha='2026-10-31')
+        r = self.api.put(f'/recaudos/{pago.pk}/update/', {
+            'fecha_recaudo': '2026-10-31', 'valor_recaudo': 50,
+        }, format='json')
+        self.assertEqual(r.status_code, 200, r.data)
         self.assertEqual(self.cerrar().data['code'], 'movimientos_posteriores')
         self.assertFalse(Cierre_Caja.objects.exists())
+
+    def test_correccion_sin_alta_auditada_no_se_considera_conciliada(self):
+        r = self.api.put(f'/recaudos/{self.recaudo.pk}/update/', {
+            'fecha_recaudo': self.recaudo.fecha_recaudo.isoformat(), 'valor_recaudo': 120,
+        }, format='json')
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(self.cerrar().data['code'], 'movimientos_posteriores')
 
     def test_cambiar_solo_la_fecha_de_un_pago_no_sirve_para_saltar_el_bloqueo(self):
         pago = self.abono_tardio(fecha='2026-10-31')

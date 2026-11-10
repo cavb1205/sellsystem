@@ -35,32 +35,49 @@ def _origenes_de_caja():
 
 
 def _hay_cambios_posteriores(movimientos, corte, fecha, tienda_id, origenes):
-    """Solo las altas con origen, fecha e importe comprobables pueden ser tardías."""
+    """Concilia los registros tardíos y sus correcciones con el origen vigente."""
     posteriores = movimientos.filter(creado_en__gte=corte).filter(
         ~Q(delta=0) | Q(accion='CORRECCION'))
-    asientos_por_tipo = {}
+    origenes_por_tipo = {}
     for tipo, accion, etiqueta, origen_id, delta in posteriores.values_list(
             'tipo', 'accion', 'origen_tipo', 'origen_id', 'delta').iterator():
-        if accion != 'CREACION' or tipo not in origenes or origen_id is None:
+        if accion not in ('CREACION', 'CORRECCION') or tipo not in origenes or origen_id is None:
+            return True
+        # Una corrección sin delta indica una reclasificación de fecha. El
+        # asiento histórico no conserva la jornada anterior a esa edición.
+        if accion == 'CORRECCION' and delta == 0:
             return True
         if etiqueta != origenes[tipo][0]._meta.label_lower:
             return True
-        asientos = asientos_por_tipo.setdefault(tipo, {})
-        if origen_id in asientos:
-            return True
-        asientos[origen_id] = delta
+        origenes_por_tipo.setdefault(tipo, set()).add(origen_id)
 
-    for tipo, asientos in asientos_por_tipo.items():
+    for tipo, ids in origenes_por_tipo.items():
         modelo, campo_fecha, campo_valor, signo, filtros = origenes[tipo]
         requisitos = {'venta__tienda_id': tienda_id, 'visita_blanco__isnull': True} if tipo == 'RECAUDO' else {}
         importes = dict(modelo.objects.filter(
-            pk__in=asientos, tienda_id=tienda_id,
+            pk__in=ids, tienda_id=tienda_id,
             **filtros, **requisitos, **{campo_fecha+'__lte': fecha, campo_valor+'__gt': 0},
         ).values_list('pk', campo_valor))
-        for origen_id, delta in asientos.items():
-            importe = importes.get(origen_id)
-            if importe is None or signo * importe != delta:
+        if importes.keys() != ids:
+            return True
+
+        # Un asiento de corrección solo contiene la diferencia. Comprobar el
+        # alta y todas las correcciones del mismo origen, incluidas las previas
+        # al corte, para conciliar exactamente el importe que sigue en caja.
+        historial = movimientos.filter(tipo=tipo, origen_tipo=modelo._meta.label_lower,
+                                       origen_id__in=ids).order_by('creado_en', 'pk')
+        saldos = {}
+        for origen_id, accion, delta in historial.values_list('origen_id', 'accion', 'delta').iterator():
+            if accion == 'CREACION' and origen_id not in saldos and signo * delta > 0:
+                saldos[origen_id] = delta
+            elif accion == 'CORRECCION' and origen_id in saldos:
+                saldos[origen_id] += delta
+                if signo * saldos[origen_id] < 0:
+                    return True
+            else:
                 return True
+        if any(saldos.get(origen_id) != signo * importe for origen_id, importe in importes.items()):
+            return True
     return False
 
 
