@@ -13,6 +13,7 @@ from Gastos.models import Gasto, Tipo_Gasto
 from Utilidades.models import Utilidad
 from Ventas.models import Venta
 from Recaudos.models import Recaudo
+from Trabajadores.models import Perfil
 
 
 @override_settings(ROOT_URLCONF='Tiendas.test_suscripciones')
@@ -50,7 +51,7 @@ class CierresAnterioresTests(TestCase):
 
     def test_lunes_cierra_viernes_sin_actividad_sabado_domingo_ni_lunes(self):
         info = self.resumen()
-        self.assertTrue(info['puede_registrar']); self.assertEqual(info['saldo_a_registrar'], '10000.00')
+        self.assertTrue(info['puede_registrar']); self.assertEqual(Decimal(info['saldo_a_registrar']), 10000)
         r = self.cerrar(); self.assertEqual(r.status_code, 200, r.data)
         cierre = Cierre_Caja.objects.get(tienda=self.ruta)
         self.assertEqual(cierre.fecha_cierre, date(2026,10,30)); self.assertEqual(cierre.valor, 10000)
@@ -73,7 +74,7 @@ class CierresAnterioresTests(TestCase):
         auditoria = list(MovimientoCaja.objects.values())
         info = self.resumen()
         self.assertTrue(info['puede_registrar'], info)
-        self.assertEqual(info['saldo_a_registrar'], '140000.00')
+        self.assertEqual(Decimal(info['saldo_a_registrar']), 140000)
         self.assertFalse(Cierre_Caja.objects.exists())
         self.assertEqual(self.cerrar().status_code, 200)
         self.assertEqual(Cierre_Caja.objects.get().valor, 140000)
@@ -92,7 +93,7 @@ class CierresAnterioresTests(TestCase):
         self.assertEqual(Gasto.objects.get().fecha, date(2026, 10, 31))
         self.api.force_authenticate(self.admin)
         self.assertEqual(self.resumen()['codigo'], 'movimientos_posteriores')
-        self.assertEqual(self.resumen('2026-10-31')['saldo_a_registrar'], '8500.00')
+        self.assertEqual(Decimal(self.resumen('2026-10-31')['saldo_a_registrar']), 8500)
         r = self.cerrar('2026-10-31')
         self.assertEqual(r.status_code, 200, r.data)
         self.assertEqual(Cierre_Caja.objects.get().valor, 8500)
@@ -110,7 +111,7 @@ class CierresAnterioresTests(TestCase):
                                     ('VENTA', venta, -500)]:
             self.movimiento(datetime(2026, 11, 1, 15, tzinfo=timezone.utc),
                             delta, tipo, origen=origen)
-        self.assertEqual(self.resumen()['saldo_a_registrar'], '9500.00')
+        self.assertEqual(Decimal(self.resumen()['saldo_a_registrar']), 9500)
         self.assertEqual(self.cerrar().status_code, 200)
 
     def test_editar_fecha_de_gasto_conserva_auditoria_y_usa_la_fecha_elegida(self):
@@ -125,7 +126,7 @@ class CierresAnterioresTests(TestCase):
         }, format='json')
         self.assertEqual(r.status_code, 200, r.data)
         self.assertEqual(MovimientoCaja.objects.get(accion='CORRECCION').delta, 0)
-        self.assertEqual(self.resumen()['saldo_a_registrar'], '8500.00')
+        self.assertEqual(Decimal(self.resumen()['saldo_a_registrar']), 8500)
         self.assertEqual(self.cerrar().status_code, 200)
 
     def test_renovacion_sin_entrega_de_efectivo_no_bloquea(self):
@@ -149,7 +150,7 @@ class CierresAnterioresTests(TestCase):
             'fecha_venta': '2026-10-30', 'cuotas': 20, 'motivo': 'Corregir fecha contable',
         }, format='json')
         self.assertEqual(r.status_code, 200, r.data)
-        self.assertEqual(self.resumen()['saldo_a_registrar'], '9500.00')
+        self.assertEqual(Decimal(self.resumen()['saldo_a_registrar']), 9500)
         self.assertEqual(self.cerrar().status_code, 200)
 
     def test_abono_tardio_de_un_dia_anterior_al_cierre_tambien_esta_incluido(self):
@@ -179,7 +180,7 @@ class CierresAnterioresTests(TestCase):
 
         with patch('Tiendas.fecha_operativa.timezone.now',
                    return_value=datetime(2026, 11, 10, 23, tzinfo=timezone.utc)):
-            self.assertEqual(self.resumen(fecha)['saldo_a_registrar'], '270000.00')
+            self.assertEqual(Decimal(self.resumen(fecha)['saldo_a_registrar']), 270000)
             self.assertFalse(Cierre_Caja.objects.exists())
             self.assertEqual(self.cerrar(fecha).status_code, 200)
         self.assertEqual(Cierre_Caja.objects.get().valor, 270000)
@@ -192,7 +193,7 @@ class CierresAnterioresTests(TestCase):
             'fecha_recaudo': '2026-10-30', 'valor_recaudo': 50,
         }, format='json')
         self.assertEqual(r.status_code, 200, r.data)
-        self.assertEqual(self.resumen()['saldo_a_registrar'], '10050.00')
+        self.assertEqual(Decimal(self.resumen()['saldo_a_registrar']), 10050)
         self.assertEqual(self.cerrar().status_code, 200)
 
     def test_correccion_de_abono_de_jornada_posterior_sigue_bloqueando(self):
@@ -224,7 +225,7 @@ class CierresAnterioresTests(TestCase):
         self.assertEqual(correccion.saldo_anterior, saldo)
         self.assertEqual(correccion.saldo_posterior, saldo)
         self.ruta.refresh_from_db(); self.assertEqual(self.ruta.caja_inicial, saldo)
-        self.assertEqual(self.resumen()['saldo_a_registrar'], str(saldo))
+        self.assertEqual(Decimal(self.resumen()['saldo_a_registrar']), saldo)
         self.assertEqual(self.cerrar().status_code, 200)
 
     def test_guardar_abono_sin_cambios_no_crea_una_correccion_ni_bloquea(self):
@@ -252,7 +253,7 @@ class CierresAnterioresTests(TestCase):
 
         with patch('Tiendas.fecha_operativa.timezone.now',
                    return_value=datetime(2026, 11, 13, 18, tzinfo=timezone.utc)):
-            self.assertEqual(self.resumen(fecha)['saldo_a_registrar'], '225000.00')
+            self.assertEqual(Decimal(self.resumen(fecha)['saldo_a_registrar']), 225000)
             self.assertEqual(self.cerrar(fecha).status_code, 200)
         self.assertEqual(Cierre_Caja.objects.get().valor, 225000)
         self.assertEqual(MovimientoCaja.objects.get(accion='REVERSA').delta, -150000)
@@ -265,7 +266,7 @@ class CierresAnterioresTests(TestCase):
         self.assertEqual(r.status_code, 200, r.data)
         r = self.api.delete(f'/recaudos/{pago.pk}/delete/')
         self.assertEqual(r.status_code, 200, r.data)
-        self.assertEqual(self.resumen()['saldo_a_registrar'], '10000.00')
+        self.assertEqual(Decimal(self.resumen()['saldo_a_registrar']), 10000)
         self.assertEqual(self.cerrar().status_code, 200)
 
     def test_abono_corregido_a_cero_y_eliminado_no_necesita_reversa(self):
@@ -276,7 +277,7 @@ class CierresAnterioresTests(TestCase):
         self.assertEqual(r.status_code, 200, r.data)
         self.assertEqual(self.api.delete(f'/recaudos/{pago.pk}/delete/').status_code, 200)
         self.assertFalse(MovimientoCaja.objects.filter(accion='REVERSA').exists())
-        self.assertEqual(self.resumen()['saldo_a_registrar'], '10000.00')
+        self.assertEqual(Decimal(self.resumen()['saldo_a_registrar']), 10000)
         self.assertEqual(self.cerrar().status_code, 200)
 
     def test_anular_un_abono_no_oculta_otro_abono_con_fecha_posterior(self):
@@ -303,8 +304,40 @@ class CierresAnterioresTests(TestCase):
         )
         self.movimiento(datetime(2026, 10, 31, 15, tzinfo=timezone.utc), -1500, 'GASTO', origen=gasto)
         self.assertEqual(self.api.delete(f'/gastos/{gasto.pk}/delete/').status_code, 200)
-        self.assertEqual(self.resumen()['saldo_a_registrar'], '10000.00')
+        self.assertEqual(Decimal(self.resumen()['saldo_a_registrar']), 10000)
         self.assertEqual(self.cerrar().status_code, 200)
+
+    def test_alta_correccion_y_anulacion_tardias_en_cada_flujo_de_caja(self):
+        Perfil.objects.create(trabajador=self.admin, tienda=self.ruta, identificacion='admin-caja')
+        categoria = Tipo_Gasto.objects.create(tipo_gasto='Prueba')
+        fecha = '2026-10-30'
+        rutas = (
+            ('aportes', 'APORTE', {'fecha': fecha}, 'valor', 1),
+            ('gastos', 'GASTO', {'fecha': fecha, 'tipo_gasto': categoria.pk}, 'valor', -1),
+            ('utilidades', 'UTILIDAD', {'fecha': fecha}, 'valor', -1),
+            ('recaudos', 'RECAUDO', {'fecha_recaudo': fecha, 'venta': self.venta.pk}, 'valor_recaudo', 1),
+            ('ventas', 'VENTA', {'fecha_venta': fecha, 'cliente': self.cliente.pk,
+                                 'interes': 20, 'cuotas': 20, 'plazo': 'Diario'}, 'valor_venta', -1),
+        )
+        for recurso, tipo, datos, campo_importe, signo in rutas:
+            with self.subTest(recurso=recurso):
+                alta = self.api.post(f'/{recurso}/create/t/{self.ruta.pk}/', {
+                    **datos, campo_importe: 100,
+                }, format='json')
+                self.assertEqual(alta.status_code, 200, alta.data)
+                base = f'/{recurso}/{alta.data["id"]}'
+                self.assertEqual(Decimal(self.resumen()['saldo_a_registrar']), 10000 + signo * 100)
+                cambio = self.api.put(f'{base}/update/', {**datos, campo_importe: 125}, format='json')
+                self.assertEqual(cambio.status_code, 200, cambio.data)
+                self.assertEqual(Decimal(self.resumen()['saldo_a_registrar']), 10000 + signo * 125)
+                baja = self.api.delete(f'{base}/delete/')
+                self.assertEqual(baja.status_code, 200, baja.data)
+                self.assertEqual(Decimal(self.resumen()['saldo_a_registrar']), 10000)
+                self.assertEqual(list(MovimientoCaja.objects.filter(tipo=tipo).order_by('pk').values_list(
+                    'accion', 'delta')), [('CREACION', signo * 100), ('CORRECCION', signo * 25),
+                                         ('REVERSA', -signo * 125)])
+        self.assertEqual(self.cerrar().status_code, 200)
+        self.assertEqual(Cierre_Caja.objects.get().valor, 10000)
 
     def test_abono_tardio_sin_origen_verificable_no_se_acepta(self):
         pago = self.abono_tardio()
