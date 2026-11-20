@@ -1111,8 +1111,10 @@ def post_cierre_caja(request, fecha, tienda_id=None):
         if not validacion['puede_registrar']:
             return Response({'error': validacion['mensaje'], 'code': validacion['codigo'],
                 'validacion_cierre': validacion}, status=ESTADOS_HTTP.get(validacion['codigo'], 409))
+        # Hoy es el saldo actual; una fecha anterior usa el saldo reconstruido
+        # y verificado bajo el mismo bloqueo de la ruta.
         cierre = Cierre_Caja.objects.create(
-            fecha_cierre=fecha, valor=tienda.caja_inicial, tienda=tienda)
+            fecha_cierre=fecha, valor=Decimal(validacion['saldo_a_registrar']), tienda=tienda)
         from Tiendas.alertas_operativas import resolver_cierres_registrados
         resolver_cierres_registrados(Tienda.objects.filter(pk=tienda.pk))
     return Response({'message': 'Cierre registrado.', 'id': cierre.pk,

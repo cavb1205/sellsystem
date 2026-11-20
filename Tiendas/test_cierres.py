@@ -92,7 +92,10 @@ class CierresAnterioresTests(TestCase):
         self.assertEqual(r.status_code, 200, r.data)
         self.assertEqual(Gasto.objects.get().fecha, date(2026, 10, 31))
         self.api.force_authenticate(self.admin)
-        self.assertEqual(self.resumen()['codigo'], 'movimientos_posteriores')
+        viernes = self.resumen()
+        self.assertEqual(viernes['codigo'], 'saldo_reconstruido')
+        self.assertEqual(Decimal(viernes['saldo_a_registrar']), 10000)
+        self.assertEqual(Decimal(viernes['efecto_posterior']), -1500)
         self.assertEqual(Decimal(self.resumen('2026-10-31')['saldo_a_registrar']), 8500)
         r = self.cerrar('2026-10-31')
         self.assertEqual(r.status_code, 200, r.data)
@@ -145,7 +148,9 @@ class CierresAnterioresTests(TestCase):
         self.movimiento(datetime(2026, 10, 31, 15, tzinfo=timezone.utc), -500, 'VENTA', origen=venta)
         Recaudo.objects.create(tienda=self.ruta, venta=venta, fecha_recaudo=date(2026, 10, 31),
                                valor_recaudo=0)
-        self.assertEqual(self.resumen()['codigo'], 'movimientos_posteriores')
+        antes = self.resumen()
+        self.assertEqual(antes['codigo'], 'saldo_reconstruido')
+        self.assertEqual(Decimal(antes['saldo_a_registrar']), 10000)
         r = self.api.patch(f'/ventas/{venta.pk}/correccion-administrativa/t/{self.ruta.pk}/', {
             'fecha_venta': '2026-10-30', 'cuotas': 20, 'motivo': 'Corregir fecha contable',
         }, format='json')
@@ -158,10 +163,15 @@ class CierresAnterioresTests(TestCase):
         self.assertTrue(self.resumen()['puede_registrar'])
         self.assertEqual(self.cerrar().status_code, 200)
 
-    def test_abono_que_corresponde_al_sabado_no_permite_cerrar_viernes(self):
+    def test_abono_que_corresponde_al_sabado_se_descuenta_al_cerrar_viernes(self):
         self.abono_tardio(fecha='2026-10-31')
-        self.assertEqual(self.resumen()['codigo'], 'movimientos_posteriores')
-        self.assertEqual(self.cerrar().status_code, 409)
+        info = self.resumen()
+        self.assertEqual(info['codigo'], 'saldo_reconstruido')
+        self.assertEqual(Decimal(info['saldo_actual']), 10100)
+        self.assertEqual(Decimal(info['saldo_a_registrar']), 10000)
+        r = self.cerrar(); self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(Cierre_Caja.objects.get().valor, 10000)
+        self.ruta.refresh_from_db(); self.assertEqual(self.ruta.caja_inicial, 10100)
 
     def test_correccion_de_importe_y_abonos_tardios_de_r2_iquique(self):
         self.venta.valor_venta = 1000000
@@ -196,14 +206,15 @@ class CierresAnterioresTests(TestCase):
         self.assertEqual(Decimal(self.resumen()['saldo_a_registrar']), 10050)
         self.assertEqual(self.cerrar().status_code, 200)
 
-    def test_correccion_de_abono_de_jornada_posterior_sigue_bloqueando(self):
+    def test_correccion_de_abono_de_jornada_posterior_se_descuenta_con_su_importe_final(self):
         pago = self.abono_tardio(fecha='2026-10-31')
         r = self.api.put(f'/recaudos/{pago.pk}/update/', {
             'fecha_recaudo': '2026-10-31', 'valor_recaudo': 50,
         }, format='json')
         self.assertEqual(r.status_code, 200, r.data)
-        self.assertEqual(self.cerrar().data['code'], 'movimientos_posteriores')
-        self.assertFalse(Cierre_Caja.objects.exists())
+        self.ruta.refresh_from_db(); self.assertEqual(self.ruta.caja_inicial, 10050)
+        r = self.cerrar(); self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(Cierre_Caja.objects.get().valor, 10000)
 
     def test_correccion_sin_alta_auditada_no_se_considera_conciliada(self):
         r = self.api.put(f'/recaudos/{self.recaudo.pk}/update/', {
@@ -284,7 +295,9 @@ class CierresAnterioresTests(TestCase):
         pago = self.abono_tardio()
         self.abono_tardio(fecha='2026-10-31')
         self.assertEqual(self.api.delete(f'/recaudos/{pago.pk}/delete/').status_code, 200)
-        self.assertEqual(self.cerrar().data['code'], 'movimientos_posteriores')
+        self.ruta.refresh_from_db(); self.assertEqual(self.ruta.caja_inicial, 10100)
+        r = self.cerrar(); self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(Cierre_Caja.objects.get().valor, 10000)
 
     def test_reversa_incompleta_o_con_origen_vigente_no_se_concilia(self):
         for importe, eliminado in ((-80, True), (-100, False)):
@@ -375,7 +388,7 @@ class CierresAnterioresTests(TestCase):
         r = self.cerrar(); self.assertEqual(r.status_code, 409, r.data)
         self.assertFalse(Cierre_Caja.objects.exists())
 
-    def test_entradas_y_salidas_compensadas_tambien_bloquean(self):
+    def test_entradas_y_salidas_posteriores_se_descuentan_una_por_una(self):
         datos = {'tienda': self.ruta, 'trabajador': self.worker.perfil,
                  'fecha': date(2026, 10, 31), 'valor': 100}
         aporte = Aporte.objects.create(**datos)
@@ -383,8 +396,13 @@ class CierresAnterioresTests(TestCase):
         self.movimiento(datetime(2026, 10, 31, 15, tzinfo=timezone.utc), 100, 'APORTE', origen=aporte)
         self.movimiento(datetime(2026, 10, 31, 16, tzinfo=timezone.utc), -100, 'GASTO', origen=gasto)
         self.ruta.refresh_from_db(); self.assertEqual(self.ruta.caja_inicial, 10000)
-        self.assertEqual(self.cerrar().data['code'], 'movimientos_posteriores')
-        self.assertFalse(Cierre_Caja.objects.exists())
+        self.assertEqual(self.resumen()['codigo'], 'saldo_reconstruido')
+        r = self.cerrar(); self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(Cierre_Caja.objects.get().valor, 10000)
+        # Si uno de los dos no tiene respaldo exacto en la bitácora, no se compensa.
+        Cierre_Caja.objects.all().delete()
+        Gasto.objects.filter(pk=gasto.pk).update(valor=150)
+        self.assertEqual(self.cerrar().data['code'], 'historial_no_conciliado')
 
     def test_correccion_o_anulacion_posterior_no_se_pierde_aunque_no_quede_registro_original(self):
         for accion in ('CORRECCION', 'REVERSA'):
@@ -395,7 +413,122 @@ class CierresAnterioresTests(TestCase):
 
     def test_registro_con_fecha_posterior_sin_auditoria_no_se_ignora(self):
         Aporte.objects.create(tienda=self.ruta, trabajador=self.worker.perfil, fecha=date(2026,11,1), valor=100)
-        self.assertEqual(self.cerrar().data['code'], 'movimientos_posteriores')
+        self.assertEqual(self.cerrar().data['code'], 'historial_no_conciliado')
+        self.assertFalse(Cierre_Caja.objects.exists())
+
+    def _operar(self, cuando, metodo, url, datos, usuario=None):
+        self.api.force_authenticate(usuario or self.admin)
+        with patch('Tiendas.fecha_operativa.timezone.now', return_value=cuando):
+            r = getattr(self.api, metodo)(url, datos, format='json')
+        self.api.force_authenticate(self.admin)
+        self.assertEqual(r.status_code, 200, r.data)
+        return r
+
+    def test_admin_cierra_dias_anteriores_aunque_hoy_ya_haya_cobros_y_gastos(self):
+        # Caso reportado: la ruta ya trabaja hoy (2026-11-02) y el administrador
+        # cuadra varios días atrás. Cada cierre debe guardar el saldo real de
+        # ESA jornada, igual al que tenía la caja al terminar ese día.
+        tid = self.ruta.pk
+        categoria = Tipo_Gasto.objects.create(tipo_gasto='Prueba')
+        self.venta.valor_venta = 100000; self.venta.saldo_actual = 120000
+        self.venta.save(update_fields=['valor_venta', 'saldo_actual'])
+        jornada = {  # día -> hora UTC (mediodía en Chile)
+            '2026-10-30': datetime(2026,10,30,15,tzinfo=timezone.utc),
+            '2026-10-31': datetime(2026,10,31,15,tzinfo=timezone.utc),
+            '2026-11-01': datetime(2026,11,1,15,tzinfo=timezone.utc),
+            '2026-11-02': datetime(2026,11,2,14,tzinfo=timezone.utc),
+        }
+        fin_de_dia = {}
+        for dia, cuando in jornada.items():
+            self._operar(cuando, 'post', f'/recaudos/create/t/{tid}/',
+                         {'venta': self.venta.pk, 'fecha_recaudo': dia, 'valor_recaudo': 7000})
+            self._operar(cuando, 'post', f'/gastos/create/t/{tid}/',
+                         {'fecha': dia, 'valor': '1200', 'tipo_gasto': categoria.pk}, self.worker)
+            self.ruta.refresh_from_db(); fin_de_dia[dia] = self.ruta.caja_inicial
+        # Un abono del 31 ingresado hoy también pertenece al 31.
+        self._operar(jornada['2026-11-02'], 'post', f'/recaudos/create/t/{tid}/',
+                     {'venta': self.venta.pk, 'fecha_recaudo': '2026-10-31', 'valor_recaudo': 300})
+        fin_de_dia['2026-10-31'] += 300; fin_de_dia['2026-11-01'] += 300
+        self.ruta.refresh_from_db(); caja_hoy = self.ruta.caja_inicial
+
+        for dia in ('2026-11-01', '2026-10-30', '2026-10-31'):
+            with self.subTest(dia=dia):
+                info = self.resumen(dia)
+                self.assertTrue(info['puede_registrar'], info)
+                self.assertEqual(info['codigo'], 'saldo_reconstruido')
+                self.assertEqual(Decimal(info['saldo_a_registrar']), fin_de_dia[dia])
+                r = self.cerrar(dia); self.assertEqual(r.status_code, 200, r.data)
+                self.assertEqual(Decimal(r.data['valor']), fin_de_dia[dia])
+        r = self.cerrar('2026-11-02'); self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(Decimal(r.data['valor']), caja_hoy)
+        self.ruta.refresh_from_db(); self.assertEqual(self.ruta.caja_inicial, caja_hoy)
+        self.assertEqual(Cierre_Caja.objects.filter(tienda=self.ruta).count(), 4)
+
+    def test_registro_de_jornada_posterior_hecho_antes_del_corte_tambien_se_descuenta(self):
+        # Un aporte cargado el 30 y luego reasignado a la jornada del 31 queda
+        # fuera del saldo del 30, aunque su asiento sea anterior al corte.
+        aporte = Aporte.objects.create(tienda=self.ruta, trabajador=self.worker.perfil,
+                                       fecha=date(2026, 10, 31), valor=250)
+        self.movimiento(datetime(2026, 10, 30, 20, tzinfo=timezone.utc), 250, 'APORTE', origen=aporte)
+        info = self.resumen()
+        self.assertEqual(info['codigo'], 'saldo_reconstruido')
+        self.assertEqual(Decimal(info['saldo_a_registrar']), 10000)
+
+    def test_trabajador_sigue_sin_poder_cerrar_dias_anteriores_con_movimientos_de_hoy(self):
+        self.abono_tardio(fecha='2026-11-02', cuando=datetime(2026,11,2,14,tzinfo=timezone.utc))
+        self.api.force_authenticate(self.worker)
+        r = self.cerrar('2026-11-01'); self.assertEqual(r.status_code, 403, r.data)
+        self.assertEqual(r.data['code'], 'solo_hoy_trabajador')
+        self.assertFalse(Cierre_Caja.objects.exists())
+
+    def _visita_sin_abono(self, fecha, cuando):
+        with patch('Tiendas.fecha_operativa.timezone.now', return_value=cuando):
+            r = self.api.post(f'/recaudos/create/nopay/t/{self.ruta.pk}/', {
+                'venta': self.venta.pk, 'fecha_recaudo': fecha,
+                'visita_blanco': {'tipo_falla': 'Casa o Local Cerrado', 'comentario': ''},
+            }, format='json')
+        self.assertIn(r.status_code, (200, 201), r.data)
+        return Recaudo.objects.get(venta=self.venta, fecha_recaudo=fecha, visita_blanco__isnull=False)
+
+    def _editar_abono(self, recaudo, valor, cuando):
+        with patch('Tiendas.fecha_operativa.timezone.now', return_value=cuando):
+            r = self.api.put(f'/recaudos/{recaudo.pk}/update/', {
+                'fecha_recaudo': recaudo.fecha_recaudo.isoformat(), 'valor_recaudo': valor,
+            }, format='json')
+        self.assertEqual(r.status_code, 200, r.data)
+
+    def test_visita_sin_abono_editada_a_abono_no_bloquea_los_cierres_anteriores(self):
+        # Caso real (ruta Finanzas): falla del 31 editada hoy a un abono de 600.
+        hoy = datetime(2026, 11, 2, 14, tzinfo=timezone.utc)
+        visita = self._visita_sin_abono('2026-10-31', datetime(2026, 10, 31, 15, tzinfo=timezone.utc))
+        self._editar_abono(visita, 600, hoy)
+        self.ruta.refresh_from_db(); self.assertEqual(self.ruta.caja_inicial, 10600)
+        viernes = self.resumen('2026-10-30')
+        self.assertTrue(viernes['puede_registrar'], viernes)
+        self.assertEqual(Decimal(viernes['saldo_a_registrar']), 10000)
+        sabado = self.resumen('2026-10-31')
+        self.assertTrue(sabado['puede_registrar'], sabado)
+        self.assertEqual(Decimal(sabado['saldo_a_registrar']), 10600)
+        self.assertEqual(self.cerrar('2026-10-31').status_code, 200)
+        self.assertEqual(Cierre_Caja.objects.get().valor, 10600)
+
+    def test_visita_editada_a_abono_y_luego_eliminada_tambien_concilia(self):
+        hoy = datetime(2026, 11, 2, 14, tzinfo=timezone.utc)
+        visita = self._visita_sin_abono('2026-10-31', datetime(2026, 10, 31, 15, tzinfo=timezone.utc))
+        self._editar_abono(visita, 600, hoy)
+        with patch('Tiendas.fecha_operativa.timezone.now', return_value=hoy):
+            self.assertEqual(self.api.delete(f'/recaudos/{visita.pk}/delete/').status_code, 200)
+        self.ruta.refresh_from_db(); self.assertEqual(self.ruta.caja_inicial, 10000)
+        info = self.resumen('2026-10-31')
+        self.assertTrue(info['puede_registrar'], info)
+        self.assertEqual(Decimal(info['saldo_a_registrar']), 10000)
+
+    def test_correccion_sin_alta_que_no_parte_de_cero_sigue_bloqueando(self):
+        # Un abono con importe previo sin auditar no se puede reconstruir.
+        aporte = Aporte.objects.create(tienda=self.ruta, trabajador=self.worker.perfil,
+                                       fecha=date(2026, 10, 31), valor=120)
+        self.movimiento(datetime(2026, 11, 1, 15, tzinfo=timezone.utc), 20, 'APORTE', 'CORRECCION', origen=aporte)
+        self.assertEqual(self.cerrar().data['code'], 'historial_no_conciliado')
 
     def test_fallas_y_movimientos_de_delta_cero_no_bloquean_el_cierre(self):
         Recaudo.objects.create(tienda=self.ruta, venta=self.venta, fecha_recaudo=date(2026,11,1), valor_recaudo=0)
