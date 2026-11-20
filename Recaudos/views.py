@@ -332,7 +332,21 @@ def put_recaudo(request, pk, tienda_id=None):
             cambiado = bool(diferencia) or recaudo.fecha_recaudo != recaudo_serializer.validated_data['fecha_recaudo']
             recaudo.fecha_recaudo = recaudo_serializer.validated_data['fecha_recaudo']
             recaudo.valor_recaudo = nuevo_valor
-            recaudo.save(update_fields=['fecha_recaudo', 'valor_recaudo'])
+            campos = ['fecha_recaudo', 'valor_recaudo']
+            detalle_caja = 'Corrección del valor o la fecha del abono'
+            # Una visita sin abono editada a un monto real pasa a ser un abono:
+            # deja de contarse como falla en el calendario, el score, las
+            # alertas y los reportes. El motivo original queda en la bitácora
+            # de caja; la ficha de la visita se conserva, solo se desvincula.
+            if recaudo.visita_blanco_id and nuevo_valor > 0:
+                visita = recaudo.visita_blanco
+                detalle_caja = f'Visita sin abono ({visita.tipo_falla}) convertida en abono'
+                if visita.comentario:
+                    detalle_caja = f'{detalle_caja}: {visita.comentario}'
+                detalle_caja = detalle_caja[:250]
+                recaudo.visita_blanco = None
+                campos.append('visita_blanco')
+            recaudo.save(update_fields=campos)
             venta.saldo_actual = (venta.saldo_actual or Decimal('0')) - diferencia
             recaudos = Recaudo.objects.filter(
                 venta=venta.id,
@@ -349,7 +363,7 @@ def put_recaudo(request, pk, tienda_id=None):
                     accion='CORRECCION',
                     usuario=request.user,
                     origen=recaudo,
-                    detalle='Corrección del valor o la fecha del abono',
+                    detalle=detalle_caja,
                 )
             venta.save(update_fields=['saldo_actual', 'estado_venta'])
             if cambiado:
