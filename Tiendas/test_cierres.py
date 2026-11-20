@@ -530,6 +530,50 @@ class CierresAnterioresTests(TestCase):
         self.movimiento(datetime(2026, 11, 1, 15, tzinfo=timezone.utc), 20, 'APORTE', 'CORRECCION', origen=aporte)
         self.assertEqual(self.cerrar().data['code'], 'historial_no_conciliado')
 
+    def _lista_cierres(self):
+        r = self.api.get(f'/tiendas/cierres/t/{self.ruta.pk}/')
+        self.assertEqual(r.status_code, 200, r.data)
+        return {c['fecha_cierre']: c for c in r.data}
+
+    def test_cierre_hecho_a_media_jornada_se_marca_desactualizado(self):
+        # Se cierra hoy a mediodía y después entra otro abono del mismo día.
+        r = self.cerrar('2026-11-02'); self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(self._lista_cierres()['2026-11-02']['verificacion']['estado'], 'coincide')
+        self.abono_tardio(250, fecha='2026-11-02', cuando=datetime(2026, 11, 2, 20, tzinfo=timezone.utc))
+        v = self._lista_cierres()['2026-11-02']['verificacion']
+        self.assertEqual(v['estado'], 'desactualizado')
+        self.assertEqual(Decimal(v['saldo_del_dia']), 10250)
+        self.assertEqual(Decimal(v['diferencia']), 250)
+        # El aviso es informativo: no cambia el cierre ni la caja.
+        self.assertEqual(Cierre_Caja.objects.get().valor, 10000)
+        self.ruta.refresh_from_db(); self.assertEqual(self.ruta.caja_inicial, 10250)
+
+    def test_abono_tardio_de_un_dia_ya_cerrado_lo_desactualiza_y_rehacerlo_lo_corrige(self):
+        self.assertEqual(self.cerrar().status_code, 200)               # 30-10 = 10000
+        self.abono_tardio(fecha='2026-11-01', cuando=datetime(2026, 11, 1, 15, tzinfo=timezone.utc))
+        self.assertEqual(self._lista_cierres()['2026-10-30']['verificacion']['estado'], 'coincide')
+        self.abono_tardio(300, fecha='2026-10-30',                      # tarde, para el 30
+                          cuando=datetime(2026, 11, 2, 12, tzinfo=timezone.utc))
+        info = self.resumen()
+        self.assertEqual(info['codigo'], 'cierre_existente')
+        v = info['cierre_existente']['verificacion']
+        self.assertEqual((v['estado'], Decimal(v['diferencia'])), ('desactualizado', 300))
+        cierre = Cierre_Caja.objects.get()
+        self.assertEqual(self.api.delete(f'/tiendas/cierre/delete/{cierre.pk}/').status_code, 200)
+        r = self.cerrar(); self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(Decimal(r.data['valor']), 10300)
+        self.assertEqual(self._lista_cierres()['2026-10-30']['verificacion']['estado'], 'coincide')
+
+    def test_cierre_anterior_a_la_bitacora_o_caja_sin_respaldo_no_se_verifica(self):
+        Cierre_Caja.objects.create(tienda=self.ruta, fecha_cierre=date(2026, 10, 20), valor=1)
+        self.assertEqual(self.cerrar().status_code, 200)
+        lista = self._lista_cierres()
+        self.assertEqual(lista['2026-10-20']['verificacion'],
+                         {'estado': 'sin_verificacion', 'saldo_del_dia': None, 'diferencia': None})
+        self.assertEqual(lista['2026-10-30']['verificacion']['estado'], 'coincide')
+        Tienda.objects.filter(pk=self.ruta.pk).update(caja_inicial=15000)
+        self.assertEqual(self._lista_cierres()['2026-10-30']['verificacion']['estado'], 'sin_verificacion')
+
     def test_fallas_y_movimientos_de_delta_cero_no_bloquean_el_cierre(self):
         Recaudo.objects.create(tienda=self.ruta, venta=self.venta, fecha_recaudo=date(2026,11,1), valor_recaudo=0)
         self.movimiento(datetime(2026,11,1,15,tzinfo=timezone.utc), 0, 'RECAUDO')
