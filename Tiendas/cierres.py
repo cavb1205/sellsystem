@@ -12,7 +12,7 @@ sola el cierre: el POST vuelve a validar y recalcular bajo el bloqueo.
 """
 from datetime import datetime, time, timedelta
 from decimal import Decimal
-from django.db.models import Q
+from django.db.models import Q, Sum
 from .models import Cierre_Caja, MovimientoCaja
 from .fecha_operativa import fecha_operativa, zona_horaria_tienda
 from .permissions import usuario_es_administrador_tienda
@@ -140,6 +140,55 @@ def _asientos_conciliados(movimientos, corte, tienda_id, origenes, adicionales=N
     return True
 
 
+def verificar_cierres(tienda, cierres):
+    """Compara cada cierre guardado con el saldo que hoy corresponde a su día.
+
+    Usa la misma contabilidad que el cierre de fechas anteriores: caja actual
+    menos el efecto de lo registrado para días posteriores. Un cierre queda
+    ``desactualizado`` cuando, después de registrarlo, hubo movimientos o
+    correcciones de ese mismo día (por ejemplo, se cerró a media jornada o se
+    ingresó un abono tarde). Es solo informativo: no modifica ningún dato.
+
+    Fechas sin historial de caja que las cubra, o una caja que no coincide con
+    la bitácora, quedan como ``sin_verificacion``.
+    """
+    cierres = list(cierres)
+    sin_dato = {'estado': 'sin_verificacion', 'saldo_del_dia': None, 'diferencia': None}
+    resultado = {c.pk: dict(sin_dato) for c in cierres}
+    if not cierres:
+        return resultado
+    movimientos = MovimientoCaja.objects.filter(tienda_id=tienda.pk)
+    primero = movimientos.order_by('creado_en', 'id').only('creado_en').first()
+    ultimo = movimientos.order_by('-creado_en', '-id').only('saldo_posterior').first()
+    caja = Decimal(str(tienda.caja_inicial or 0))
+    if not primero or Decimal(str(ultimo.saldo_posterior)) != caja:
+        return resultado
+    desde = fecha_operativa(tienda, primero.creado_en)
+    verificables = [c for c in cierres if c.fecha_cierre >= desde]
+    if not verificables:
+        return resultado
+    efectos = {}
+    minimo = min(c.fecha_cierre for c in verificables)
+    for tipo, (modelo, campo_fecha, campo_valor, signo, filtros) in _origenes_de_caja().items():
+        filas = modelo.objects.filter(
+            tienda_id=tienda.pk, **{campo_fecha + '__gt': minimo},
+            **_filtros_vigentes(tipo, filtros, tienda.pk),
+        ).order_by().values(campo_fecha).annotate(total=Sum(campo_valor)).values_list(campo_fecha, 'total')
+        for dia, total in filas:
+            efectos[dia] = efectos.get(dia, Decimal('0')) + signo * Decimal(str(total or 0))
+    dias = sorted(efectos, reverse=True)
+    for cierre in verificables:
+        posterior = sum((efectos[d] for d in dias if d > cierre.fecha_cierre), Decimal('0'))
+        saldo = caja - posterior
+        diferencia = saldo - Decimal(str(cierre.valor))
+        # Cierre_Caja guarda pesos sin centavos; menos de 1 es redondeo.
+        resultado[cierre.pk] = {
+            'estado': 'coincide' if abs(diferencia) < 1 else 'desactualizado',
+            'saldo_del_dia': str(saldo), 'diferencia': str(diferencia),
+        }
+    return resultado
+
+
 def validar_cierre(tienda, fecha, usuario):
     hoy = fecha_operativa(tienda)
     result = {'fecha': fecha.isoformat(), 'tienda_id': tienda.pk,
@@ -157,7 +206,8 @@ def validar_cierre(tienda, fecha, usuario):
         return bloquear('solo_hoy_trabajador', 'El trabajador solo puede cerrar el día actual de la ruta.')
     existente = Cierre_Caja.objects.filter(tienda_id=tienda.pk, fecha_cierre=fecha).order_by('-id').first()
     if existente:
-        result['cierre_existente'] = {'id': existente.pk, 'fecha_cierre': fecha.isoformat(), 'valor': str(existente.valor)}
+        result['cierre_existente'] = {'id': existente.pk, 'fecha_cierre': fecha.isoformat(), 'valor': str(existente.valor),
+                                      'verificacion': verificar_cierres(tienda, [existente])[existente.pk]}
         return bloquear('cierre_existente', 'Ya existe un cierre registrado para esta fecha.')
     if fecha == hoy:
         return {**result, 'puede_registrar': True, 'codigo': 'dia_actual',

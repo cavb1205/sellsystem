@@ -24,7 +24,7 @@ from Tiendas.models import AlertaOperativa, Tienda, Cierre_Caja, MovimientoCaja,
 from Tiendas.serializers import TiendaSerializer, CajaSerializer, MovimientoCajaSerializer, TiendaMembresiaSerializer, TiendaMembresiaListaSerializer, TiendaCreateSerializer, TiendaAdminSerializer, SolicitudPagoSerializer, CuentaDestinoSerializer, MembresiaSerializer
 from Tiendas.alertas_operativas import rutas_del_usuario, usuario_alertas_configurado
 from Tiendas.fecha_operativa import fecha_operativa, validar_zona_horaria
-from Tiendas.cierres import validar_cierre, ESTADOS_HTTP
+from Tiendas.cierres import validar_cierre, verificar_cierres, ESTADOS_HTTP
 from Tiendas import telegram_bot
 from Tiendas import telegram_assistant
 from Tiendas.suscripciones import snapshot, registrar_cambio, anular_pago, pendientes, prevision_renovacion_mensual
@@ -1012,10 +1012,13 @@ def get_cierres_caja(request, tienda_id=None):
     else:
         tienda = Tienda.objects.filter(
             id=request.user.perfil.tienda.id).first()
-    cierres_caja = Cierre_Caja.objects.filter(tienda=tienda.id).order_by('-id')
+    cierres_caja = list(Cierre_Caja.objects.filter(tienda=tienda.id).order_by('-id'))
     if cierres_caja:
-        serializer = CajaSerializer(cierres_caja, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        verificacion = verificar_cierres(tienda, cierres_caja)
+        data = CajaSerializer(cierres_caja, many=True).data
+        for item in data:
+            item['verificacion'] = verificacion[item['id']]
+        return Response(data, status=status.HTTP_200_OK)
     else:
         return Response({'message': 'No se encontraron registros'}, status=status.HTTP_200_OK)
 
