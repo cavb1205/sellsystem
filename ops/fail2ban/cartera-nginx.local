@@ -1,0 +1,22 @@
+# Instalar en /etc/fail2ban/jail.d/cartera-nginx.local
+# El DEFAULT del servidor usa backend systemd; estos jails leen archivos.
+[cartera-api-escaneo]
+enabled  = true
+backend  = auto
+filter   = cartera-api-escaneo
+logpath  = /var/log/nginx/api-bloqueado.log
+port     = http,https
+maxretry = 20
+findtime = 10m
+bantime  = 1d
+ignoreip = 127.0.0.1/8 ::1 137.184.176.199 167.71.158.237
+
+[nginx-http-auth]
+enabled  = true
+backend  = auto
+logpath  = /var/log/nginx/error.log
+port     = http,https
+maxretry = 5
+findtime = 10m
+bantime  = 1d
+ignoreip = 127.0.0.1/8 ::1 137.184.176.199 167.71.158.237
