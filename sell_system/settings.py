@@ -35,7 +35,7 @@ if not isinstance(JWT_SIGNING_KEY, str) or len(JWT_SIGNING_KEY) < 50 or JWT_SIGN
 if DEBUG == True:
     ALLOWED_HOSTS = ['localhost', '127.0.0.1', '192.168.1.160', '137.184.176.199']
 else:
-    ALLOWED_HOSTS = ['api.carterafinanciera.com', '137.184.176.199']
+    ALLOWED_HOSTS = ['api.carterafinanciera.com']
 
 if DEBUG == False:
     CSRF_TRUSTED_ORIGINS = [
