@@ -88,7 +88,7 @@ def list_gastos(request, tienda_id=None):
         tienda = Tienda.objects.filter(id=tienda_id).first()
     else:
         tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
-    gastos = Gasto.objects.filter(tienda=tienda.id).order_by('-id')
+    gastos = Gasto.objects.filter(tienda=tienda.id).select_related('tipo_gasto').order_by('-id')
     if gastos:
         gasto_serializer = GastoDetailSerializer(gastos, many=True)
         return Response(gasto_serializer.data, status=status.HTTP_200_OK)
@@ -103,7 +103,7 @@ def list_gastos_x_fecha(request, date, tienda_id=None):
         tienda = Tienda.objects.filter(id=tienda_id).first()
     else:
         tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
-    gastos = Gasto.objects.filter(tienda=tienda.id).filter(fecha=date).order_by('-id')
+    gastos = Gasto.objects.filter(tienda=tienda.id).select_related('tipo_gasto').filter(fecha=date).order_by('-id')
     if gastos:
         gasto_serializer = GastoDetailSerializer(gastos, many=True)
         return Response(gasto_serializer.data, status=status.HTTP_200_OK)
@@ -117,7 +117,7 @@ def list_gastos_x_fecha_range(request, date1, date2, tienda_id=None):
         tienda = Tienda.objects.filter(id=tienda_id).first()
     else:
         tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
-    gastos = Gasto.objects.filter(tienda=tienda.id).filter(fecha__range=[date1, date2]).order_by('-id')
+    gastos = Gasto.objects.filter(tienda=tienda.id).select_related('tipo_gasto').filter(fecha__range=[date1, date2]).order_by('-id')
     if gastos:
         gasto_serializer = GastoDetailSerializer(gastos, many=True)
         return Response(gasto_serializer.data, status=status.HTTP_200_OK)

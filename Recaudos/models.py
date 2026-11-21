@@ -39,6 +39,12 @@ class Recaudo(models.Model):
     # No es un pago real — se excluye del cálculo del score crediticio.
     es_renovacion = models.BooleanField(default=False, db_index=True)
 
+    class Meta:
+        indexes = [
+            # Consultas por ruta y fecha (cobros del día, informes por rango).
+            models.Index(fields=['tienda', 'fecha_recaudo'], name='recaudo_tienda_fecha_idx'),
+        ]
+
     def __str__(self):
         return str(self.fecha_recaudo)
 
