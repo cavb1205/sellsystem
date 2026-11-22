@@ -1,6 +1,7 @@
 """Base compartida de cuotas del día; no cambia saldos ni acumula mora."""
 from decimal import Decimal
-from django.db.models import Q, Sum
+from django.db.models import Exists, OuterRef, Q, Sum
+from Recaudos.models import Recaudo
 from Ventas.models import Venta
 from Ventas.calendario import importe_cuota_fecha
 
@@ -8,8 +9,14 @@ from Ventas.calendario import importe_cuota_fecha
 def cuotas_del_dia(tienda, fecha, fecha_maxima=None):
     # Incluir créditos pagados durante/después de la jornada conserva su base
     # original. Es la misma reconstrucción que utiliza Liquidar.
+    # Prefiltro equivalente: un crédito con saldo 0 solo puede calificar si
+    # tiene algún cobro desde la fecha. Evita sumar los cobros de todo el
+    # historial de créditos pagados (usa el índice tienda+fecha_recaudo).
+    cobros_desde_fecha = Recaudo.objects.filter(
+        tienda=tienda, fecha_recaudo__gte=fecha, venta_id=OuterRef('pk'))
     base = Venta.objects.filter(tienda=tienda, fecha_venta__lt=fecha).exclude(
-        estado_venta='Perdida').annotate(
+        estado_venta='Perdida').filter(
+            Q(saldo_actual__gt=0) | Exists(cobros_desde_fecha)).annotate(
             _pagos_desde_fecha=Sum('recaudo__valor_recaudo',
                 filter=Q(recaudo__fecha_recaudo__gte=fecha))).filter(
                     Q(saldo_actual__gt=0) | Q(_pagos_desde_fecha__gt=0))
