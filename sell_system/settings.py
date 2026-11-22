@@ -131,6 +131,11 @@ else:
             'PASSWORD': PASSWORD_BD,
             'HOST': 'localhost',
             'PORT': '',
+            # Reutiliza la conexión por worker: abrir una nueva (TLS + SCRAM)
+            # costaba ~27 ms en cada solicitud. La verificación descarta
+            # conexiones caídas (p. ej. tras reiniciar PostgreSQL).
+            'CONN_MAX_AGE': 60,
+            'CONN_HEALTH_CHECKS': True,
     }
 }
 
