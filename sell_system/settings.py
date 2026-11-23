@@ -267,6 +267,11 @@ TELEGRAM_ALERTAS_USERNAME = globals().get(
     'TELEGRAM_ALERTAS_USERNAME', TELEGRAM_ASSISTANT_USERNAME
 )
 
+# API de solo lectura para el asistente personal (Tiendas/agente_api.py).
+# El token vive en variables.py del VPS; vacío o corto deja la API cerrada.
+# Alcance: las mismas rutas de TELEGRAM_ALERTAS_USERNAME.
+AGENTE_JARVIS_TOKEN = globals().get('AGENTE_JARVIS_TOKEN', '')
+
 # Bot separado para avisos de clientes. Las dos banderas deben estar activas
 # para que un worker pueda realizar una petición a Telegram; por defecto no
 # se envía nada aunque existan eventos pendientes.

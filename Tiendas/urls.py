@@ -1,10 +1,17 @@
 from django.urls import path
-from . import views
+from . import agente_api, views
 from .orden_visita import recorrido_ruta
 from .suscripciones import vencer_suscripcion
 
 urlpatterns = [
     path('recorrido/t/<int:tienda_id>/', recorrido_ruta, name='recorrido_ruta'),
+
+    ###AGENTE (solo lectura, token propio; ver Tiendas/agente_api.py)###
+    path('agente/rutas/', agente_api.rutas, name='agente_rutas'),
+    path('agente/jornada/', agente_api.jornada, name='agente_jornada'),
+    path('agente/cartera/', agente_api.cartera, name='agente_cartera'),
+    path('agente/alertas/', agente_api.alertas, name='agente_alertas'),
+    path('agente/cliente/', agente_api.cliente, name='agente_cliente'),
 
     
     ###TIENDA###
