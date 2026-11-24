@@ -2,7 +2,11 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.decorators import api_view
 
+from datetime import datetime
+from decimal import Decimal
+
 from django.db import transaction
+from django.db.models import Count, Sum
 from django.db.models.deletion import ProtectedError
 
 from .models import *
@@ -89,10 +93,50 @@ def list_gastos(request, tienda_id=None):
     else:
         tienda = Tienda.objects.filter(id=request.user.perfil.tienda.id).first()
     gastos = Gasto.objects.filter(tienda=tienda.id).select_related('tipo_gasto').order_by('-id')
+    if 'page' in request.query_params:
+        return _listado_paginado(request.query_params, gastos)
+    # Sin "page": respuesta histórica (lista completa) para clientes antiguos.
     if gastos:
         gasto_serializer = GastoDetailSerializer(gastos, many=True)
         return Response(gasto_serializer.data, status=status.HTTP_200_OK)
     return Response({'message':'No se han creado gastos'}, status=status.HTTP_200_OK)
+
+
+def _fecha_param(valor):
+    return datetime.strptime(valor, '%Y-%m-%d').date() if valor else None
+
+
+def _listado_paginado(params, gastos):
+    '''Una página de gastos + totales de todo el filtro (cantidad y monto).'''
+    try:
+        pagina = int(params.get('page', 1))
+        limite = int(params.get('limit', 10))
+        if pagina < 1 or not 1 <= limite <= 100:
+            raise ValueError
+        desde = _fecha_param(params.get('desde'))
+        hasta = _fecha_param(params.get('hasta'))
+        tipo = int(params['tipo']) if params.get('tipo') else None
+    except (TypeError, ValueError):
+        return Response({'error': 'Parámetros de consulta inválidos.'}, status=status.HTTP_400_BAD_REQUEST)
+    if desde:
+        gastos = gastos.filter(fecha__gte=desde)
+    if hasta:
+        gastos = gastos.filter(fecha__lte=hasta)
+    if tipo:
+        gastos = gastos.filter(tipo_gasto_id=tipo)
+    totales = gastos.aggregate(cantidad=Count('id'), monto=Sum('valor'))
+    total = totales['cantidad']
+    paginas = max(1, -(-total // limite))
+    pagina = min(pagina, paginas)
+    filas = gastos[(pagina - 1) * limite:pagina * limite]
+    return Response({
+        'resultados': GastoDetailSerializer(filas, many=True).data,
+        'total_registros': total,
+        'total_monto': format(totales['monto'] or Decimal('0'), '.2f'),
+        'pagina': pagina,
+        'paginas': paginas,
+        'limite': limite,
+    }, status=status.HTTP_200_OK)
     
 @api_view(['GET'])
 @requiere_acceso_tienda
