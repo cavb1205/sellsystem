@@ -143,6 +143,12 @@ class InformeTests(TestCase):
         self.assertEqual((h['datos']['dias_despues'], h['datos']['monto_original'], h['datos']['hora']), (4, 100, '22:00'))
         self.assertEqual(h['datos']['hecho_por'], 'worker-pruebas')
 
+    def test_sin_creacion_en_el_ledger_no_inventa_original(self):
+        self.movimiento(datetime(2026, 10, 3, 20, tzinfo=CHILE), self.worker, accion='CORRECCION', origen_id=55)
+        self.movimiento(datetime(2026, 10, 9, 20, tzinfo=CHILE), self.worker, accion='REVERSA', delta=-100, origen_id=55)
+        h = self.codigos(self.ruta_a())['CORRECCION_CAJA']
+        self.assertNotIn('monto_original', h['datos'])
+
     def test_correcciones_del_administrador_son_contexto(self):
         for k in range(10):
             self.movimiento(datetime(2026, 10, 1 + k % 8, 10, tzinfo=CHILE), self.admin, origen_id=100 + k)
@@ -206,7 +212,15 @@ class InformeTests(TestCase):
         self.nuevo_recaudo(original, DIA - timedelta(days=20))
         self.nueva_venta(fecha=DIA, cliente=original.cliente, origen_renovacion=original)
         h = self.codigos(self.ruta_a())['RENOVACION_CON_MORA']
-        self.assertEqual((h['severidad'], h['datos']['dias_sin_abono_al_renovar']), ('alta', 20))
+        self.assertEqual((h['severidad'], h['datos']['dias_sin_abono_al_renovar']), ('alta', 19))
+
+    def test_renovacion_mensual_usa_los_tramos_de_la_app(self):
+        original = self.nueva_venta(fecha=date(2026, 6, 1), plazo='Mensual')
+        self.nuevo_recaudo(original, DIA - timedelta(days=31))
+        self.nueva_venta(fecha=DIA, cliente=original.cliente, origen_renovacion=original, plazo='Mensual')
+        self.assertNotIn('RENOVACION_CON_MORA', self.codigos(self.ruta_a()), 'pagar una vez al mes es normal')
+        Recaudo.objects.filter(venta=original).update(fecha_recaudo=DIA - timedelta(days=50))
+        self.assertEqual(self.codigos(self.ruta_a())['RENOVACION_CON_MORA']['severidad'], 'media')
 
     # Clientes ---------------------------------------------------------------
     def test_buen_pagador_que_deja_de_pagar(self):

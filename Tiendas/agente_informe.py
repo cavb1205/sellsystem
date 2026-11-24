@@ -31,6 +31,7 @@ from Tiendas.agente_api import _fecha_ruta, _filtrar_rutas, _n, _trabajadores, e
 from Tiendas.fecha_operativa import zona_horaria_tienda
 from Tiendas.models import AlertaOperativa, CambioOrdenVisita, MovimientoCaja
 from Ventas.models import AjusteVentaAdministrativo, DeclaracionPerdidaVenta, Venta
+from Ventas.riesgo import dias_completos_sin_abono, normalizar_plazo, umbrales_dsa
 
 SEMANAS_BASE = 8
 DIAS_HISTORIA = 90
@@ -172,9 +173,12 @@ def _bitacora(tienda, fecha, admin_id):
     origenes = {(m.origen_tipo, m.origen_id) for m in movimientos if m.origen_id}
     creaciones = {}
     if origenes:
+        # Solo la CREACION: si el registro es anterior al ledger o empezó como visita
+        # convertida en abono, no hay original y no se informa uno equivocado.
         for c in MovimientoCaja.objects.filter(
-            tienda=tienda, origen_id__in={o[1] for o in origenes},
-        ).exclude(id__in=[m.id for m in movimientos]).select_related('usuario').order_by('creado_en', 'id'):
+            tienda=tienda, accion='CREACION', origen_tipo__in={o[0] for o in origenes},
+            origen_id__in={o[1] for o in origenes},
+        ).select_related('usuario').order_by('creado_en', 'id'):
             creaciones.setdefault((c.origen_tipo, c.origen_id), c)
     zona = zona_horaria_tienda(tienda)
     previos = MovimientoCaja.objects.filter(
@@ -182,7 +186,7 @@ def _bitacora(tienda, fecha, admin_id):
     ).exclude(accion='CREACION')
     if admin_id:
         previos = previos.exclude(usuario_id=admin_id)
-    promedio_semanal = round(previos.count() / SEMANAS_BASE, 1)
+    promedio_diario = round(previos.count() / (SEMANAS_BASE * 7), 2)
 
     hallazgos = []
     for m in movimientos:
@@ -206,12 +210,12 @@ def _bitacora(tienda, fecha, admin_id):
         hallazgos.append(_hallazgo('CORRECCION_CAJA', _severidad_movimiento(m, es_admin), titulo, **datos))
     hallazgos.sort(key=lambda h: -PESO[h['severidad']])
     serios = [h for h in hallazgos if h['severidad'] != 'info']
-    if len(serios) >= 3 and len(serios) > 2 * promedio_semanal:
+    if len(serios) >= 3 and len(serios) > 2 * promedio_diario:
         hallazgos.insert(0, _hallazgo(
             'MUCHAS_CORRECCIONES', 'alta', 'Muchas correcciones o eliminaciones en un solo día',
-            cantidad=len(serios), promedio_semanal_normal=promedio_semanal))
+            cantidad=len(serios), promedio_diario_normal=promedio_diario))
     return hallazgos[:LIMITE + 1], {'correcciones_del_dia': len(movimientos),
-                                    'promedio_semanal_trabajadores': promedio_semanal}
+                                    'promedio_diario_trabajadores': promedio_diario}
 
 
 # 3. Gastos fuera de patrón ------------------------------------------------------
@@ -264,7 +268,7 @@ def _dias_sin_abono_antes(venta, fecha):
     ultimo = Recaudo.objects.filter(
         tienda_id=venta.tienda_id, venta=venta, valor_recaudo__gt=0, es_renovacion=False, fecha_recaudo__lt=fecha,
     ).aggregate(f=Max('fecha_recaudo'))['f']
-    return (fecha - (ultimo or venta.fecha_venta)).days
+    return dias_completos_sin_abono(ultimo or venta.fecha_venta, hoy=fecha)
 
 
 def _creditos_nuevos(tienda, fecha, admin_id):
@@ -303,9 +307,9 @@ def _creditos_nuevos(tienda, fecha, admin_id):
                                        mediana_normal=_n(mediana), **datos))
         if v.origen_renovacion_id:
             dias = _dias_sin_abono_antes(v.origen_renovacion, fecha)
-            diario = v.origen_renovacion.plazo == 'Diario'
-            severidad = ('alta' if dias >= 15 else 'media' if dias >= 7 else None) if diario else \
-                        ('alta' if dias >= 45 else 'media' if dias >= 15 else None)
+            # Mismos tramos de la app (Ventas/riesgo.UMBRALES_DSA): 2.º tramo media, 3.º alta.
+            umbral = umbrales_dsa(normalizar_plazo(v.origen_renovacion.plazo))
+            severidad = 'alta' if dias >= umbral[2] else 'media' if dias >= umbral[1] else None
             if severidad:
                 hallazgos.append(_hallazgo('RENOVACION_CON_MORA', severidad,
                                            'Renovación de un crédito que llevaba días sin abonos',
@@ -387,7 +391,8 @@ def _atencion(tienda, fecha):
     nuevas = sorted((fila(a) for a in nuevas if a.venta_id_ref in ventas), key=lambda x: -PESO.get(x['severidad'], 0))
     urgentes = sorted((fila(a) for a in urgentes if a.venta_id_ref in ventas), key=lambda x: -(x['saldo'] or 0))
     terminaron = (Venta.objects.filter(tienda=tienda, estado_venta='Pagado', saldo_actual__lte=0,
-                                       recaudo__fecha_recaudo=fecha, recaudo__valor_recaudo__gt=0)
+                                       recaudo__tienda=tienda, recaudo__fecha_recaudo=fecha,
+                                       recaudo__valor_recaudo__gt=0, recaudo__es_renovacion=False)
                   .exclude(renovacion__isnull=False).select_related('cliente').distinct())
     cambio = _cambio_de_comportamiento(tienda, fecha)
     datos = {
