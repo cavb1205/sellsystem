@@ -287,9 +287,23 @@ def _creditos_nuevos(tienda, fecha, admin_id):
     ).values_list('cliente_id', flat=True))
     senales = defaultdict(list)
     gravedad = {}
+    sobre_cupo = {}
     for a in AlertaOperativa.objects.filter(tipo='VENTA_CON_ALERTAS', venta_id_ref__in=[v.id for v in ventas]):
+        score = (a.datos or {}).get('score_previo') or {}
         # Cada señal trae su texto (doble financiación, exceso de cupo, cliente bloqueado…).
         for senal in (a.datos or {}).get('senales') or [{'texto': a.titulo, 'severidad': a.severidad}]:
+            if senal.get('codigo') == 'EXCESO_CUPO':
+                # El cupo sale de la calificación del cliente calculada justo antes de crear el
+                # crédito (Clientes/views._calcular_score): pasarlo es una alerta en sí misma.
+                d = senal.get('datos') or {}
+                sobre_cupo[a.venta_id_ref] = {
+                    'severidad': 'critica' if senal.get('severidad') == 'critica' else 'alta',
+                    'cupo_disponible': d.get('cupo_disponible', score.get('cupo_disponible')),
+                    'exceso': d.get('exceso'), 'calificacion': score.get('score'), 'nivel': score.get('nivel'),
+                    'cupo_bloqueado': bool((score.get('justificacion') or {}).get('bloqueado')),
+                    'motivo_cupo': (score.get('justificacion') or {}).get('razon'),
+                }
+                continue
             senales[a.venta_id_ref].append(senal.get('texto') or a.titulo)
             # Un escalón menos que la señal original: es contexto de la venta, no un hallazgo nuevo.
             nivel = {'critica': 'alta', 'alta': 'media'}.get(senal.get('severidad'), 'info')
@@ -318,6 +332,11 @@ def _creditos_nuevos(tienda, fecha, admin_id):
                                            'Renovación de un crédito que llevaba días sin abonos',
                                            dias_sin_abono_al_renovar=dias, credito_anterior=_n(v.origen_renovacion.valor_venta),
                                            **datos))
+        if v.id in sobre_cupo:
+            extra = dict(sobre_cupo[v.id])
+            hallazgos.append(_hallazgo('CREDITO_SOBRE_CUPO', extra.pop('severidad'),
+                                       'Crédito por encima del cupo que da la calificación del cliente',
+                                       **extra, **datos))
         if senales.get(v.id):
             hallazgos.append(_hallazgo('CREDITO_CON_SENALES', gravedad.get(v.id, 'info'),
                                        'El sistema marcó señales al crear el crédito',
@@ -380,6 +399,44 @@ def _cambio_de_comportamiento(tienda, fecha):
              'visitas_sin_pago_ultima_semana': historia[v.id]['fallas_recientes']} for v in ventas]
 
 
+def _sin_abonar(tienda, fecha):
+    """Créditos activos con días completos sin abono real al cierre de ``fecha``.
+
+    Mismos tramos que la app (Ventas/riesgo.UMBRALES_DSA; Diario 3/7/14). ``cruzo_hoy``
+    marca a quien llegó justo ese día a un tramo, para avisar una vez por tramo y no
+    repetir la misma lista todos los días. Las visitas sin pago desde el último abono
+    distinguen un cliente que no paga de uno al que no se le registró visita.
+    """
+    reales = Q(recaudo__valor_recaudo__gt=0, recaudo__es_renovacion=False, recaudo__fecha_recaudo__lte=fecha)
+    ventas = Venta.objects.filter(tienda=tienda, estado_venta__in=ESTADOS_ACTIVOS, fecha_venta__lte=fecha) \
+        .annotate(ultimo=Max('recaudo__fecha_recaudo', filter=reales)).select_related('cliente')
+    filas = []
+    for v in ventas:
+        referencia = v.ultimo or v.fecha_venta
+        dias = dias_completos_sin_abono(referencia, hoy=fecha + timedelta(days=1))
+        umbral = umbrales_dsa(normalizar_plazo(v.plazo))
+        if dias < umbral[0]:
+            continue
+        filas.append({'cliente': _cliente(v), 'venta_id': v.id, 'plazo': v.plazo, 'saldo': _n(v.saldo_actual),
+                      'dias_sin_abonar': dias, 'sin_primer_abono': v.ultimo is None,
+                      'tramo': 3 if dias >= umbral[2] else 2 if dias >= umbral[1] else 1,
+                      'cruzo_hoy': dias in umbral, '_desde': referencia})
+    if filas:
+        visitas = defaultdict(int)
+        desde = {f['venta_id']: f['_desde'] for f in filas}
+        for venta_id, dia in Recaudo.objects.filter(
+            tienda=tienda, fecha_recaudo__gt=min(desde.values()), fecha_recaudo__lte=fecha,
+            venta_id__in=list(desde), valor_recaudo__lte=0, es_renovacion=False,
+        ).values_list('venta_id', 'fecha_recaudo'):
+            if dia > desde[venta_id]:
+                visitas[venta_id] += 1
+        for f in filas:
+            del f['_desde']
+            f['visitas_sin_pago_desde_ultimo_abono'] = visitas[f['venta_id']]
+    filas.sort(key=lambda f: (not f['cruzo_hoy'], -f['tramo'], -(f['saldo'] or 0)))
+    return filas
+
+
 def _atencion(tienda, fecha):
     inicio, fin = _ventana(tienda, fecha)
     abiertas = AlertaOperativa.objects.filter(tienda_id_ref=tienda.id, tipo__in=TIPOS_CARTERA, estado__in=ALERTA_ABIERTA)
@@ -398,13 +455,28 @@ def _atencion(tienda, fecha):
                                        recaudo__valor_recaudo__gt=0, recaudo__es_renovacion=False)
                   .exclude(renovacion__isnull=False).select_related('cliente').distinct())
     cambio = _cambio_de_comportamiento(tienda, fecha)
+    sin_abonar = _sin_abonar(tienda, fecha)
+    ya_listados = {f['venta_id'] for f in sin_abonar}
+    nuevas = [x for x in nuevas if x['venta_id'] not in ya_listados]
     datos = {
+        'sin_abonar': sin_abonar[:LIMITE + 5], 'total_sin_abonar': len(sin_abonar),
+        'sin_abonar_sin_visitas': sum(1 for f in sin_abonar if not f['visitas_sin_pago_desde_ultimo_abono']),
         'entraron_en_riesgo': nuevas[:LIMITE], 'criticos_por_saldo': urgentes[:5],
         'total_criticos': len(urgentes), 'dejaron_de_pagar_de_golpe': cambio[:LIMITE],
         'terminaron_de_pagar': [{'cliente': _cliente(v), 'venta_id': v.id, 'valor_credito': _n(v.valor_venta)}
                                 for v in terminaron[:LIMITE]],
     }
     hallazgos = []
+    # El primer tramo (3 días en diario) es frecuente, sobre todo tras el domingo: va en la
+    # lista de clientes sin cambiar el semáforo. El 2.º y 3.º tramo sí son un hallazgo.
+    cruzaron = [f for f in sin_abonar if f['cruzo_hoy'] and f['tramo'] >= 2]
+    datos['llegaron_al_primer_tramo'] = sum(1 for f in sin_abonar if f['cruzo_hoy'] and f['tramo'] == 1)
+    if cruzaron:
+        hallazgos.append(_hallazgo(
+            'SIN_ABONAR', 'alta', 'Clientes que llegaron a una semana o más sin abonar', cantidad=len(cruzaron),
+            clientes=[{k: f[k] for k in ('cliente', 'venta_id', 'dias_sin_abonar', 'saldo',
+                                         'visitas_sin_pago_desde_ultimo_abono', 'sin_primer_abono')}
+                      for f in cruzaron[:5]]))
     if len(cambio) >= 3:
         hallazgos.append(_hallazgo('PATRON_DEJARON_DE_PAGAR', 'alta',
                                    'Varios buenos pagadores dejaron de pagar a la vez: conviene confirmar con ellos',

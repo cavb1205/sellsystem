@@ -150,6 +150,7 @@ class InformeTests(TestCase):
         self.assertNotIn('monto_original', h['datos'])
 
     def test_correcciones_del_administrador_son_contexto(self):
+        self.nuevo_recaudo(self.venta, DIA)
         for k in range(10):
             self.movimiento(datetime(2026, 10, 1 + k % 8, 10, tzinfo=CHILE), self.admin, origen_id=100 + k)
         self.movimiento(datetime(2026, 10, 9, 10, tzinfo=CHILE), self.admin, accion='REVERSA', delta=-100, origen_id=100)
@@ -192,10 +193,10 @@ class InformeTests(TestCase):
             detalle='x', tienda_id_ref=self.ruta.id, venta_id_ref=v.id, datos={'senales': [
                 {'codigo': 'EXCESO_CUPO', 'severidad': 'alta', 'texto': 'Excede el cupo disponible en $500'},
                 {'codigo': 'ACTIVO_OTRA_RUTA', 'severidad': 'critica', 'texto': 'Posible doble financiación por misma identificación'}]})
-        h = self.codigos(self.ruta_a())['CREDITO_CON_SENALES']
-        self.assertEqual(h['severidad'], 'alta')
-        self.assertEqual(h['datos']['senales'], ['Excede el cupo disponible en $500',
-                                                 'Posible doble financiación por misma identificación'])
+        h = self.codigos(self.ruta_a())
+        self.assertEqual(h['CREDITO_CON_SENALES']['severidad'], 'alta')
+        self.assertEqual(h['CREDITO_CON_SENALES']['datos']['senales'], ['Posible doble financiación por misma identificación'])
+        self.assertEqual(h['CREDITO_SOBRE_CUPO']['severidad'], 'alta')
 
     def test_correccion_sin_efecto_en_caja_es_contexto(self):
         self.movimiento(datetime(2026, 10, 9, 13, tzinfo=CHILE), self.worker, accion='CORRECCION', tipo='GASTO', delta=0)
@@ -238,7 +239,52 @@ class InformeTests(TestCase):
         Recaudo.objects.filter(venta=original).update(fecha_recaudo=DIA - timedelta(days=50))
         self.assertEqual(self.codigos(self.ruta_a())['RENOVACION_CON_MORA']['severidad'], 'media')
 
+    def test_credito_sobre_el_cupo_de_la_calificacion(self):
+        v = self.nueva_venta(valor=300, fecha=DIA, creado_por=self.worker)
+        AlertaOperativa.objects.create(
+            tipo='VENTA_CON_ALERTAS', severidad='alta', clave_dedupe='c1', titulo='x', detalle='x',
+            tienda_id_ref=self.ruta.id, venta_id_ref=v.id, datos={
+                'score_previo': {'score': 55, 'nivel': 'Regular', 'cupo_disponible': 250,
+                                 'justificacion': {'razon': 'Basado en 2 crédito(s) pagado(s).', 'bloqueado': False}},
+                'senales': [{'codigo': 'EXCESO_CUPO', 'severidad': 'alta', 'texto': 'Excede el cupo disponible en $50',
+                             'datos': {'cupo_disponible': 250, 'exceso': 50}}]})
+        h = self.codigos(self.ruta_a())
+        self.assertNotIn('CREDITO_CON_SENALES', h, 'el exceso de cupo es su propia alerta')
+        d = h['CREDITO_SOBRE_CUPO']
+        self.assertEqual((d['severidad'], d['datos']['cupo_disponible'], d['datos']['exceso'], d['datos']['calificacion'],
+                          d['datos']['nivel'], d['datos']['valor'], d['datos']['registrado_por']),
+                         ('alta', 250, 50, 55, 'Regular', 300, 'worker-pruebas'))
+
     # Clientes ---------------------------------------------------------------
+    def test_clientes_sin_abonar_por_tramos(self):
+        self.nuevo_recaudo(self.venta, DIA)  # el crédito del fixture queda al día
+        siete = self.nueva_venta(fecha=date(2026, 9, 1))
+        self.nuevo_recaudo(siete, DIA - timedelta(days=7))
+        self.nuevo_recaudo(siete, DIA - timedelta(days=3), valor=0)
+        self.nuevo_recaudo(siete, DIA - timedelta(days=1), valor=0)
+        cinco = self.nueva_venta(fecha=date(2026, 9, 1))
+        self.nuevo_recaudo(cinco, DIA - timedelta(days=5))
+        mensual = self.nueva_venta(fecha=date(2026, 8, 1), plazo='Mensual')
+        self.nuevo_recaudo(mensual, DIA - timedelta(days=20))
+        ruta = self.ruta_a()
+        lista = {f['venta_id']: f for f in ruta['clientes']['sin_abonar']}
+        self.assertEqual(set(lista), {siete.id, cinco.id}, 'un mensual con 20 días está dentro de lo normal')
+        self.assertEqual((lista[siete.id]['dias_sin_abonar'], lista[siete.id]['tramo'], lista[siete.id]['cruzo_hoy'],
+                          lista[siete.id]['visitas_sin_pago_desde_ultimo_abono']), (7, 2, True, 2))
+        self.assertEqual((lista[cinco.id]['tramo'], lista[cinco.id]['cruzo_hoy'],
+                          lista[cinco.id]['visitas_sin_pago_desde_ultimo_abono']), (1, False, 0))
+        self.assertEqual(ruta['clientes']['sin_abonar'][0]['venta_id'], siete.id)
+        tres = self.nueva_venta(fecha=date(2026, 9, 1))
+        self.nuevo_recaudo(tres, DIA - timedelta(days=3))
+        otra = self.ruta_a()
+        self.assertEqual(otra['clientes']['llegaron_al_primer_tramo'], 1)
+        self.assertEqual(self.codigos(otra)['SIN_ABONAR']['datos']['cantidad'], 1, 'el de 3 días no entra al hallazgo')
+        self.assertEqual((ruta['clientes']['total_sin_abonar'], ruta['clientes']['sin_abonar_sin_visitas']), (2, 1))
+        self.assertEqual(ruta['clientes']['llegaron_al_primer_tramo'], 0)
+        h = self.codigos(ruta)['SIN_ABONAR']
+        self.assertEqual((h['severidad'], h['datos']['cantidad'], h['datos']['clientes'][0]['venta_id']), ('alta', 1, siete.id))
+
+
     def test_buen_pagador_que_deja_de_pagar(self):
         v = self.nueva_venta(fecha=date(2026, 8, 20))
         for k in range(8, 21):
@@ -255,6 +301,10 @@ class InformeTests(TestCase):
             tipo='RIESGO_CARTERA', severidad='alta', clave_dedupe='r1', titulo='x', detalle='x',
             tienda_id_ref=self.ruta.id, venta_id_ref=self.venta.id, datos={'dias_sin_abono': 7})
         AlertaOperativa.objects.filter(pk=alerta.pk).update(creada=datetime(2026, 10, 9, 21, tzinfo=CHILE))
+        clientes = self.ruta_a()['clientes']
+        self.assertEqual(clientes['entraron_en_riesgo'], [], 'ya figura en sin_abonar: no se repite')
+        self.assertEqual(clientes['sin_abonar'][0]['venta_id'], self.venta.id)
+        self.nuevo_recaudo(self.venta, DIA)
         fila = self.ruta_a()['clientes']['entraron_en_riesgo'][0]
         self.assertEqual((fila['cliente'], fila['motivo'], fila['dias_sin_abono']), ('Cliente Prueba', 'mora', 7))
 
