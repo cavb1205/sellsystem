@@ -152,7 +152,8 @@ def _jornada(tienda, fecha):
 # 2. Correcciones, reversas y ajustes en la bitácora de caja ---------------------
 
 def _severidad_movimiento(mov, es_admin):
-    if es_admin:
+    if es_admin or not mov.delta:
+        # Lo del administrador es suyo; un cambio sin efecto en caja (fecha o texto) es contexto.
         return 'info'
     if mov.tipo == 'RECAUDO':
         if mov.accion == 'REVERSA' or mov.delta < 0:
@@ -287,11 +288,13 @@ def _creditos_nuevos(tienda, fecha, admin_id):
     senales = defaultdict(list)
     gravedad = {}
     for a in AlertaOperativa.objects.filter(tipo='VENTA_CON_ALERTAS', venta_id_ref__in=[v.id for v in ventas]):
-        senales[a.venta_id_ref].append(a.titulo)
-        # Un escalón menos que la alerta original: es contexto de la venta, no un hallazgo nuevo.
-        nivel = {'critica': 'alta', 'alta': 'media'}.get(a.severidad, 'info')
-        if PESO[nivel] > PESO[gravedad.get(a.venta_id_ref, 'info')]:
-            gravedad[a.venta_id_ref] = nivel
+        # Cada señal trae su texto (doble financiación, exceso de cupo, cliente bloqueado…).
+        for senal in (a.datos or {}).get('senales') or [{'texto': a.titulo, 'severidad': a.severidad}]:
+            senales[a.venta_id_ref].append(senal.get('texto') or a.titulo)
+            # Un escalón menos que la señal original: es contexto de la venta, no un hallazgo nuevo.
+            nivel = {'critica': 'alta', 'alta': 'media'}.get(senal.get('severidad'), 'info')
+            if PESO[nivel] > PESO[gravedad.get(a.venta_id_ref, 'info')]:
+                gravedad[a.venta_id_ref] = nivel
 
     lista, hallazgos = [], []
     for v in ventas:

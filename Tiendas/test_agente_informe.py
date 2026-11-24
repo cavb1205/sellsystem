@@ -185,6 +185,22 @@ class InformeTests(TestCase):
         self.assertIn('GASTOS_SEMANA_ALTOS', self.codigos(self.ruta_a(fecha=(DIA - timedelta(days=1)).isoformat())))
         self.assertNotIn('GASTOS_SEMANA_ALTOS', self.codigos(self.ruta_a()))
 
+    def test_senales_de_venta_muestran_su_texto(self):
+        v = self.nueva_venta(fecha=DIA)
+        AlertaOperativa.objects.create(
+            tipo='VENTA_CON_ALERTAS', severidad='critica', clave_dedupe='v9', titulo=f'Venta #{v.id} con señales operativas',
+            detalle='x', tienda_id_ref=self.ruta.id, venta_id_ref=v.id, datos={'senales': [
+                {'codigo': 'EXCESO_CUPO', 'severidad': 'alta', 'texto': 'Excede el cupo disponible en $500'},
+                {'codigo': 'ACTIVO_OTRA_RUTA', 'severidad': 'critica', 'texto': 'Posible doble financiación por misma identificación'}]})
+        h = self.codigos(self.ruta_a())['CREDITO_CON_SENALES']
+        self.assertEqual(h['severidad'], 'alta')
+        self.assertEqual(h['datos']['senales'], ['Excede el cupo disponible en $500',
+                                                 'Posible doble financiación por misma identificación'])
+
+    def test_correccion_sin_efecto_en_caja_es_contexto(self):
+        self.movimiento(datetime(2026, 10, 9, 13, tzinfo=CHILE), self.worker, accion='CORRECCION', tipo='GASTO', delta=0)
+        self.assertEqual(self.codigos(self.ruta_a())['CORRECCION_CAJA']['severidad'], 'info')
+
     def test_senales_de_venta_heredan_gravedad_reducida(self):
         v = self.nueva_venta(fecha=DIA)
         AlertaOperativa.objects.create(tipo='VENTA_CON_ALERTAS', severidad='media', clave_dedupe='v1',
