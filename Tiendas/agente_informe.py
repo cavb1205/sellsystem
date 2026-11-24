@@ -31,6 +31,7 @@ from Tiendas.agente_api import _fecha_ruta, _filtrar_rutas, _n, _trabajadores, e
 from Tiendas.fecha_operativa import zona_horaria_tienda
 from Tiendas.models import AlertaOperativa, CambioOrdenVisita, MovimientoCaja
 from Ventas.models import AjusteVentaAdministrativo, DeclaracionPerdidaVenta, Venta
+from Ventas.calendario import calendario_venta
 from Ventas.riesgo import dias_completos_sin_abono, normalizar_plazo, umbrales_dsa
 
 SEMANAS_BASE = 8
@@ -159,7 +160,8 @@ def _severidad_movimiento(mov, es_admin):
         if mov.accion == 'REVERSA' or mov.delta < 0:
             return 'alta'
         return 'info'
-    if mov.tipo == 'VENTA' and mov.accion == 'REVERSA':
+    if mov.tipo == 'VENTA' and (mov.accion == 'REVERSA' or mov.delta < 0):
+        # Eliminar un crédito o subirle el monto: lo segundo no pasa por el control de cupo.
         return 'alta'
     if mov.accion == 'AJUSTE' or mov.tipo == 'AJUSTE':
         return 'alta'
@@ -205,7 +207,8 @@ def _bitacora(tienda, fecha, admin_id):
             datos['monto_original'] = _n(original.delta)
         titulo = {
             ('RECAUDO', 'REVERSA'): 'Abono eliminado', ('RECAUDO', 'CORRECCION'): 'Abono corregido',
-            ('VENTA', 'REVERSA'): 'Crédito eliminado', ('VENTA', 'CORRECCION'): 'Crédito corregido',
+            ('VENTA', 'REVERSA'): 'Crédito eliminado',
+            ('VENTA', 'CORRECCION'): 'Monto del crédito aumentado (sin control de cupo)' if m.delta < 0 else 'Crédito corregido',
             ('GASTO', 'REVERSA'): 'Gasto eliminado', ('GASTO', 'CORRECCION'): 'Gasto corregido',
         }.get((m.tipo, m.accion), f'{m.get_tipo_display()}: {m.get_accion_display().lower()}')
         hallazgos.append(_hallazgo('CORRECCION_CAJA', _severidad_movimiento(m, es_admin), titulo, **datos))
@@ -402,23 +405,39 @@ def _cambio_de_comportamiento(tienda, fecha):
 def _sin_abonar(tienda, fecha):
     """Créditos activos con días completos sin abono real al cierre de ``fecha``.
 
-    Mismos tramos que la app (Ventas/riesgo.UMBRALES_DSA; Diario 3/7/14). ``cruzo_hoy``
+    Mismos tramos que la app (Ventas/riesgo.UMBRALES_DSA; Diario 3/7/14). Diario usa días
+    sin abono; Semanal y Mensual usan el calendario de cuotas como ``riesgo_calendario``:
+    solo cuentan si hay importe vencido y se miden en días de mora. ``cruzo_hoy``
     marca a quien llegó justo ese día a un tramo, para avisar una vez por tramo y no
     repetir la misma lista todos los días. Las visitas sin pago desde el último abono
     distinguen un cliente que no paga de uno al que no se le registró visita.
     """
     reales = Q(recaudo__valor_recaudo__gt=0, recaudo__es_renovacion=False, recaudo__fecha_recaudo__lte=fecha)
+    netos = Q(recaudo__es_renovacion=False, recaudo__fecha_recaudo__lte=fecha)
+    del_dia = Q(recaudo__es_renovacion=False, recaudo__fecha_recaudo=fecha)
+    # Los _*_calendario son los atributos que calendario_venta lee si existen (evita N+1).
     ventas = Venta.objects.filter(tienda=tienda, estado_venta__in=ESTADOS_ACTIVOS, fecha_venta__lte=fecha) \
-        .annotate(ultimo=Max('recaudo__fecha_recaudo', filter=reales)).select_related('cliente')
+        .annotate(ultimo=Max('recaudo__fecha_recaudo', filter=reales),
+                  _abonos_calendario=Sum('recaudo__valor_recaudo', filter=netos),
+                  _gestiones_calendario=Count('recaudo', filter=del_dia),
+                  _fallas_calendario=Count('recaudo', filter=del_dia & Q(recaudo__visita_blanco__isnull=False))) \
+        .select_related('cliente')
     filas = []
     for v in ventas:
         referencia = v.ultimo or v.fecha_venta
-        dias = dias_completos_sin_abono(referencia, hoy=fecha + timedelta(days=1))
+        calendario = calendario_venta(v, consulta=fecha)
+        if calendario is None:
+            dias = dias_completos_sin_abono(referencia, hoy=fecha + timedelta(days=1))
+        elif Decimal(calendario['importe_vencido']) > 0:
+            dias = calendario['dias_mora']
+        else:
+            continue  # al día según su calendario (anticipo o cuota aún no vencida)
         umbral = umbrales_dsa(normalizar_plazo(v.plazo))
         if dias < umbral[0]:
             continue
         filas.append({'cliente': _cliente(v), 'venta_id': v.id, 'plazo': v.plazo, 'saldo': _n(v.saldo_actual),
                       'dias_sin_abonar': dias, 'sin_primer_abono': v.ultimo is None,
+                      'cuenta': 'dias_sin_abono' if calendario is None else 'dias_con_cuota_vencida',
                       'tramo': 3 if dias >= umbral[2] else 2 if dias >= umbral[1] else 1,
                       'cruzo_hoy': dias in umbral, '_desde': referencia})
     if filas:

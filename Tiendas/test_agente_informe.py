@@ -239,6 +239,19 @@ class InformeTests(TestCase):
         Recaudo.objects.filter(venta=original).update(fecha_recaudo=DIA - timedelta(days=50))
         self.assertEqual(self.codigos(self.ruta_a())['RENOVACION_CON_MORA']['severidad'], 'media')
 
+    def test_mensual_en_mora_se_mide_por_cuota_vencida(self):
+        self.nuevo_recaudo(self.venta, DIA)
+        moroso = self.nueva_venta(fecha=date(2026, 6, 1), plazo='Mensual')
+        fila = next(f for f in self.ruta_a()['clientes']['sin_abonar'] if f['venta_id'] == moroso.id)
+        self.assertEqual(fila['cuenta'], 'dias_con_cuota_vencida')
+        self.assertEqual(fila['tramo'], 3)
+        self.assertTrue(fila['sin_primer_abono'])
+
+    def test_aumento_de_monto_de_credito(self):
+        self.movimiento(datetime(2026, 10, 9, 18, tzinfo=CHILE), self.worker, accion='CORRECCION', tipo='VENTA', delta=-500)
+        h = self.codigos(self.ruta_a())['CORRECCION_CAJA']
+        self.assertEqual((h['severidad'], h['titulo']), ('alta', 'Monto del crédito aumentado (sin control de cupo)'))
+
     def test_credito_sobre_el_cupo_de_la_calificacion(self):
         v = self.nueva_venta(valor=300, fecha=DIA, creado_por=self.worker)
         AlertaOperativa.objects.create(
@@ -264,11 +277,11 @@ class InformeTests(TestCase):
         self.nuevo_recaudo(siete, DIA - timedelta(days=1), valor=0)
         cinco = self.nueva_venta(fecha=date(2026, 9, 1))
         self.nuevo_recaudo(cinco, DIA - timedelta(days=5))
-        mensual = self.nueva_venta(fecha=date(2026, 8, 1), plazo='Mensual')
-        self.nuevo_recaudo(mensual, DIA - timedelta(days=20))
+        al_dia = self.nueva_venta(fecha=date(2026, 6, 1), plazo='Mensual')
+        self.nuevo_recaudo(al_dia, date(2026, 6, 5), valor=1200)  # pagó por adelantado
         ruta = self.ruta_a()
         lista = {f['venta_id']: f for f in ruta['clientes']['sin_abonar']}
-        self.assertEqual(set(lista), {siete.id, cinco.id}, 'un mensual con 20 días está dentro de lo normal')
+        self.assertEqual(set(lista), {siete.id, cinco.id}, 'un mensual con anticipo está al día aunque no abone hace meses')
         self.assertEqual((lista[siete.id]['dias_sin_abonar'], lista[siete.id]['tramo'], lista[siete.id]['cruzo_hoy'],
                           lista[siete.id]['visitas_sin_pago_desde_ultimo_abono']), (7, 2, True, 2))
         self.assertEqual((lista[cinco.id]['tramo'], lista[cinco.id]['cruzo_hoy'],
