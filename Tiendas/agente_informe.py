@@ -534,7 +534,7 @@ def _sin_abonar(tienda, fecha):
                       'dias_sin_abonar': dias, 'sin_primer_abono': v.ultimo is None,
                       'cuenta': 'dias_sin_abono' if calendario is None else 'dias_con_cuota_vencida',
                       'tramo': 3 if dias >= umbral[2] else 2 if dias >= umbral[1] else 1,
-                      'hito': max(h for h in hitos if h <= dias),
+                      'hito': max(h for h in hitos if h <= dias), 'critico_app': umbral[2],
                       'candidato_castigo': dias >= DIAS_CANDIDATO_CASTIGO,
                       'cruzo_hoy': dias in hitos, '_desde': referencia})
     if filas:
@@ -687,8 +687,10 @@ def _atencion(tienda, fecha):
     # lista de clientes sin cambiar el semáforo. El 2.º y 3.º tramo sí son un hallazgo.
     campos = ('cliente', 'venta_id', 'dias_sin_abonar', 'saldo', 'visitas_sin_pago_desde_ultimo_abono',
               'sin_primer_abono', 'candidato_castigo')
-    cruzaron = [f for f in sin_abonar if f['cruzo_hoy'] and f['tramo'] >= 2 and f['hito'] < HITOS_INFORME[0]]
-    graves = [f for f in sin_abonar if f['cruzo_hoy'] and f['hito'] >= HITOS_INFORME[0]]
+    # Hasta el tramo crítico de la app (14 diario, 30 semanal, 75 mensual) es SIN_ABONAR; los
+    # hitos posteriores (30/60 del informe y 90 de la app) son POSIBLE_PERDIDA.
+    cruzaron = [f for f in sin_abonar if f['cruzo_hoy'] and f['tramo'] >= 2 and f['hito'] <= f['critico_app']]
+    graves = [f for f in sin_abonar if f['cruzo_hoy'] and f['hito'] > f['critico_app']]
     datos['llegaron_al_primer_tramo'] = sum(1 for f in sin_abonar if f['cruzo_hoy'] and f['tramo'] == 1)
     if cruzaron:
         hallazgos.append(_hallazgo(
@@ -698,7 +700,7 @@ def _atencion(tienda, fecha):
         # 30 y 60 días son criterio del informe; 90 es el candidato a castigo de la app.
         hallazgos.append(_hallazgo(
             'POSIBLE_PERDIDA', 'critica' if any(f['candidato_castigo'] for f in graves) else 'alta',
-            'Clientes que llegaron a 30, 60 o 90 días sin abonar: riesgo de perder el crédito',
+            'Clientes que pasaron el plazo crítico de la app sin abonar (30, 60 o 90 días): riesgo de perder el crédito',
             cantidad=len(graves), clientes=[{k: f[k] for k in campos} for f in graves[:5]]))
     if datos['abonan_poco']:
         hallazgos.append(_hallazgo(

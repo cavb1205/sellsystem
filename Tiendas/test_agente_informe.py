@@ -364,6 +364,26 @@ class InformeTests(TestCase):
         self.assertEqual((h['severidad'], h['datos']['registrado_por']), ('alta', 'coadmin-remoto'))
         self.assertEqual([t['nombre'] for t in self.semana()['trabajadores']], ['coadmin-remoto'])
 
+    def mensual_con_mora(self, dias):
+        from Ventas.calendario import calcular_calendario
+        k = next(k for k in range(30, 400) if calcular_calendario(
+            fecha_venta=DIA - timedelta(days=k), cuotas=20, plazo='Mensual', total=1200, abonado=0,
+            consulta=DIA, version=0)['dias_mora'] == dias)
+        return self.nueva_venta(fecha=DIA - timedelta(days=k), plazo='Mensual')
+
+    def test_mensual_respeta_los_tramos_de_la_app(self):
+        self.nuevo_recaudo(self.venta, DIA)
+        cuarenta_y_cinco = self.mensual_con_mora(45)
+        h = self.codigos(self.ruta_a())
+        self.assertNotIn('POSIBLE_PERDIDA', h, 'un mensual en 45 días es su 2.º tramo, no una posible pérdida')
+        self.assertEqual(h['SIN_ABONAR']['datos']['clientes'][0]['venta_id'], cuarenta_y_cinco.id)
+        sesenta = self.mensual_con_mora(60)
+        lista = {p['venta_id'] for p in self.semana()['posibles_perdidas']['lista']}
+        self.assertNotIn(sesenta.id, lista, 'el crítico mensual de la app es 75, no 60')
+        noventa = self.mensual_con_mora(90)
+        self.assertEqual(self.codigos(self.ruta_a())['POSIBLE_PERDIDA']['datos']['clientes'][0]['venta_id'], noventa.id)
+        self.assertIn(noventa.id, {p['venta_id'] for p in self.semana()['posibles_perdidas']['lista']})
+
     def test_posible_perdida_a_los_30_y_90_dias(self):
         self.nuevo_recaudo(self.venta, DIA)
         treinta = self.nueva_venta(fecha=date(2026, 6, 1))

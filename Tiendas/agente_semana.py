@@ -65,16 +65,18 @@ def _riesgo(tienda, fecha):
 def _posibles_perdidas(sin_abonar, vencidos):
     filas = {}
     for f in sin_abonar:
-        if f['dias_sin_abonar'] >= PERDIDA_SIN_ABONAR:
+        # Nunca por debajo del tramo crítico de la app para ese plazo (75 en mensual).
+        if f['dias_sin_abonar'] >= max(PERDIDA_SIN_ABONAR, f['critico_app']):
             filas[f['venta_id']] = {
-                'cliente': f['cliente'], 'venta_id': f['venta_id'], 'saldo': f['saldo'],
+                'cliente': f['cliente'], 'venta_id': f['venta_id'], 'saldo': f['saldo'], 'plazo': f['plazo'],
                 'dias_sin_abonar': f['dias_sin_abonar'], 'sin_primer_abono': f['sin_primer_abono'],
                 'visitas_sin_pago_desde_ultimo_abono': f['visitas_sin_pago_desde_ultimo_abono'],
                 'candidato_castigo': f['candidato_castigo'], 'dias_pasado_el_plazo': None}
     for f in vencidos:
         if f['dias_pasado_el_plazo'] >= PERDIDA_PASADO_PLAZO:
             fila = filas.setdefault(f['venta_id'], {
-                'cliente': f['cliente'], 'venta_id': f['venta_id'], 'saldo': f['saldo'], 'dias_sin_abonar': None,
+                'cliente': f['cliente'], 'venta_id': f['venta_id'], 'saldo': f['saldo'], 'plazo': f['plazo'],
+                'dias_sin_abonar': None,
                 'candidato_castigo': False})
             fila['dias_pasado_el_plazo'] = f['dias_pasado_el_plazo']
     orden = sorted(filas.values(), key=lambda f: -(f['saldo'] or 0))
