@@ -4,15 +4,69 @@ from .models import Tienda, Cierre_Caja, MovimientoCaja, Tienda_Membresia, Membr
 from Trabajadores.serializers import UserSerializer, PerfilSerializer
 from Tiendas.fecha_operativa import validar_zona_horaria, fecha_operativa
 from datetime import timedelta
+from django.utils import timezone
 from Tiendas.seguridad_root import puede_eliminar_desde_lista
 from Tiendas.configuracion_root import texto_cuenta
 from Tiendas.suscripciones import prevision_renovacion_mensual
 
 
+ERRORES_INTERES_DEFECTO = {
+    'required': 'Indica el interés por defecto de la ruta.',
+    'null': 'Indica el interés por defecto de la ruta.',
+    'invalid': 'El interés debe ser un número entero.',
+    'min_value': 'El interés debe estar entre 0 y 100.',
+    'max_value': 'El interés debe estar entre 0 y 100.',
+}
+MENSAJE_ACEPTACION_INTERES = (
+    'Debes confirmar que la tasa de interés la defines tú y que eres '
+    'responsable de que cumpla con la ley de tu país.'
+)
+
+
+def campo_interes_defecto():
+    return serializers.IntegerField(
+        min_value=0, max_value=100, error_messages=ERRORES_INTERES_DEFECTO)
+
+
+def campo_aceptacion_interes():
+    return serializers.BooleanField(
+        write_only=True,
+        error_messages={'required': MENSAJE_ACEPTACION_INTERES,
+                        'invalid': MENSAJE_ACEPTACION_INTERES},
+    )
+
+
+def _validar_aceptacion_interes(self, value):
+    if value is not True:
+        raise serializers.ValidationError(MENSAJE_ACEPTACION_INTERES)
+    return value
+
+
+class InteresRutaSerializer(serializers.Serializer):
+    """Cambio de la tasa por defecto de una ruta que ya la tiene definida."""
+    interes_defecto = campo_interes_defecto()
+    acepta_responsabilidad_interes = campo_aceptacion_interes()
+    validate_acepta_responsabilidad_interes = _validar_aceptacion_interes
+
+
 class TiendaCreateSerializer(serializers.ModelSerializer):
+    # Toda ruta nueva nace con una tasa declarada por quien la crea.
+    interes_defecto = campo_interes_defecto()
+    acepta_responsabilidad_interes = campo_aceptacion_interes()
+
     class Meta:
         model = Tienda
-        fields = ['id', 'nombre', 'administrador', 'zona_horaria']
+        fields = ['id', 'nombre', 'administrador', 'zona_horaria',
+                  'interes_defecto', 'acepta_responsabilidad_interes']
+
+    validate_acepta_responsabilidad_interes = _validar_aceptacion_interes
+
+    def create(self, validated_data):
+        validated_data.pop('acepta_responsabilidad_interes', None)
+        validated_data['interes_aceptado_por'] = (
+            self.context.get('usuario') or validated_data['administrador'])
+        validated_data['interes_aceptado_en'] = timezone.now()
+        return super().create(validated_data)
 
     def validate(self, attrs):
         nombre = attrs.get('nombre', '').strip()
@@ -39,7 +93,8 @@ class TiendaSerializer(serializers.ModelSerializer):
         # La caja solo puede cambiar mediante operaciones financieras
         # transaccionales (gasto, recaudo, venta, aporte o utilidad).
         # Evita que un PUT administrativo sobrescriba el saldo.
-        read_only_fields = ['caja_inicial', 'fecha_registro', 'administrador']
+        read_only_fields = ['caja_inicial', 'fecha_registro', 'administrador',
+                            'interes_defecto', 'interes_aceptado_por', 'interes_aceptado_en']
 
     def to_representation(self, instance):
         # Los endpoints del dashboard pueden adjuntar estos valores ya
@@ -59,6 +114,7 @@ class TiendaSerializer(serializers.ModelSerializer):
                 'estado': instance.estado,
                 'cupo_minimo_nuevo': instance.cupo_minimo_nuevo,
                 'zona_horaria': instance.zona_horaria,
+                'interes_defecto': instance.interes_defecto,
                 **metricas,
             }
         return {
@@ -73,6 +129,7 @@ class TiendaSerializer(serializers.ModelSerializer):
             'estado': instance.estado,
             'cupo_minimo_nuevo': instance.cupo_minimo_nuevo,
             'zona_horaria': instance.zona_horaria,
+            'interes_defecto': instance.interes_defecto,
             'cantidad_clientes': instance.cliente_set.count(),
             'cantidad_ventas': instance.venta_set.count(),
             'inversion': instance.inversion(),
@@ -149,7 +206,7 @@ class TiendaListaSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'nombre', 'telefono', 'prefijo_telefono', 'fecha_registro',
             'administrador', 'administrador_id', 'administrador_usuario', 'caja', 'estado',
-            'cupo_minimo_nuevo', 'zona_horaria',
+            'cupo_minimo_nuevo', 'zona_horaria', 'interes_defecto',
         ]
 
     def get_administrador(self, obj):

@@ -2,6 +2,7 @@ import secrets
 from django.db import models
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
+from django.core.validators import MaxValueValidator
 from django.db.models import Sum, Q
 from datetime import timedelta
 from django.utils import timezone
@@ -59,7 +60,16 @@ class Tienda(models.Model):
     # Zona IANA de la jornada contable de la ruta. Las rutas históricas
     # conservan Santiago hasta que un administrador seleccione otra.
     zona_horaria = models.CharField(max_length=64, default='America/Santiago')
-    
+    # Interés (% total sobre el capital de cada crédito) que el administrador
+    # define al crear la ruta. La plataforma no fija ni recomienda tasas: se
+    # guarda quién la declaró y cuándo. Las rutas anteriores quedan en nulo y
+    # conservan su comportamiento previo.
+    interes_defecto = models.PositiveSmallIntegerField(
+        null=True, blank=True, validators=[MaxValueValidator(100)])
+    interes_aceptado_por = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    interes_aceptado_en = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         constraints = [
             models.UniqueConstraint(

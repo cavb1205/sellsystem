@@ -520,6 +520,22 @@ def corregir_venta_administrativamente(request, pk, tienda_id=None):
     )
 
 
+MENSAJE_INTERES_RUTA = 'Solo un administrador puede usar un interés distinto al de la ruta.'
+
+
+def _interes_distinto_de_ruta(tienda, valor):
+    """True si la ruta tiene tasa declarada y el valor recibido no coincide.
+
+    Las rutas sin tasa por defecto (anteriores a esta regla) no se restringen.
+    """
+    if tienda.interes_defecto is None:
+        return False
+    try:
+        return Decimal(str(valor).strip()) != Decimal(tienda.interes_defecto)
+    except (InvalidOperation, ValueError):
+        return True
+
+
 @api_view(['POST'])
 @requiere_acceso_tienda
 def post_venta(request, tienda_id=None):
@@ -549,6 +565,11 @@ def post_venta(request, tienda_id=None):
                     status=status.HTTP_403_FORBIDDEN,
                 )
             plazo = 'Diario'
+            if tienda.interes_defecto is not None:
+                if new_data.get('interes') in (None, ''):
+                    new_data['interes'] = tienda.interes_defecto
+                elif _interes_distinto_de_ruta(tienda, new_data.get('interes')):
+                    return Response({'error': MENSAJE_INTERES_RUTA}, status=status.HTTP_403_FORBIDDEN)
         new_data['plazo'] = plazo
         try:
             score_previo = _calcular_score(new_data['cliente'], tienda.id)
@@ -660,6 +681,9 @@ def renovar_venta(request, pk, tienda_id=None):
         return Response({'error': 'fecha_venta, interes y cuotas son requeridos'}, status=status.HTTP_400_BAD_REQUEST)
     if cuotas < 1 or cuotas > 120 or interes < 0:
         return Response({'error': 'interes y cuotas inválidos'}, status=status.HTTP_400_BAD_REQUEST)
+    if (not usuario_es_administrador_tienda(request.user, tienda.id)
+            and _interes_distinto_de_ruta(tienda, interes)):
+        return Response({'error': MENSAJE_INTERES_RUTA}, status=status.HTTP_403_FORBIDDEN)
 
     saldo = venta_vieja.saldo_actual or Decimal('0')
     if saldo <= 0:
