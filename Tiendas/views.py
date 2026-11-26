@@ -465,13 +465,8 @@ def patch_tienda_settings(request, pk):
         )
     interes = None
     if 'interes_defecto' in request.data:
-        # Solo las rutas creadas con tasa declarada pueden cambiarla; las
-        # anteriores se mantienen sin interés por defecto.
-        if tienda.interes_defecto is None:
-            return Response(
-                {'interes_defecto': 'Esta ruta no tiene interés por defecto configurable.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        # Cualquier ruta puede declarar o cambiar su tasa, siempre con la
+        # aceptación explícita. Las anteriores siguen en nulo hasta hacerlo.
         interes = InteresRutaSerializer(data=request.data)
         if not interes.is_valid():
             return Response(interes.errors, status=status.HTTP_400_BAD_REQUEST)
