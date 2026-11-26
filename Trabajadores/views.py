@@ -404,7 +404,12 @@ def register_user(request):
     }
 
     serializer = UserCreateSerializer(data=user_data)
-    if serializer.is_valid():
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    # Usuario, ruta y perfil se crean juntos: si la ruta no es válida (por
+    # ejemplo, sin interés declarado) no queda una cuenta huérfana sin ruta.
+    with transaction.atomic():
         user = serializer.save()
         user.email = f"{username}@carterafinanciera.com"
         user.is_staff = True
@@ -414,48 +419,54 @@ def register_user(request):
         tienda_data = {
             "nombre": request.data.get('nombre_ruta', ''),
             "administrador": user.id,
+            "interes_defecto": request.data.get('interes_defecto'),
+            "acepta_responsabilidad_interes": request.data.get('acepta_responsabilidad_interes'),
         }
-        serializer_tienda = TiendaCreateSerializer(data=tienda_data)
-        if serializer_tienda.is_valid():
-            tienda = serializer_tienda.save()
-            hoy = fecha_operativa(tienda)
-            Cierre_Caja.objects.create(tienda=tienda, valor=tienda.caja_inicial, fecha_cierre=(hoy - datetime.timedelta(days=1)))
-            Tienda_Membresia.objects.create(
-                tienda=tienda,
-                membresia=Membresia.objects.get(nombre='Prueba'),
-                fecha_activacion=hoy,
-                fecha_vencimiento=(hoy + datetime.timedelta(days=7)),
-                estado='Activa'
-            )
-            Tienda_Administrador.objects.create(tienda=tienda, administrador=user)
+        serializer_tienda = TiendaCreateSerializer(data=tienda_data, context={'usuario': user})
+        if not serializer_tienda.is_valid():
+            transaction.set_rollback(True)
+            return Response(serializer_tienda.errors, status=status.HTTP_400_BAD_REQUEST)
+        tienda = serializer_tienda.save()
+        hoy = fecha_operativa(tienda)
+        Cierre_Caja.objects.create(tienda=tienda, valor=tienda.caja_inicial, fecha_cierre=(hoy - datetime.timedelta(days=1)))
+        Tienda_Membresia.objects.create(
+            tienda=tienda,
+            membresia=Membresia.objects.get(nombre='Prueba'),
+            fecha_activacion=hoy,
+            fecha_vencimiento=(hoy + datetime.timedelta(days=7)),
+            estado='Activa'
+        )
+        Tienda_Administrador.objects.create(tienda=tienda, administrador=user)
 
-            perfil_data = {
-                'trabajador': user.id,
-                'tienda': tienda.id
-            }
-            serializer_perfil = PerfilCreateSerializer(data=perfil_data)
-            if serializer_perfil.is_valid():
-                perfil = serializer_perfil.save()
-                perfil.telefono = request.data.get('telefono', '')
-                perfil.save()
+        perfil_data = {
+            'trabajador': user.id,
+            'tienda': tienda.id
+        }
+        serializer_perfil = PerfilCreateSerializer(data=perfil_data)
+        if not serializer_perfil.is_valid():
+            transaction.set_rollback(True)
+            return Response(serializer_perfil.errors, status=status.HTTP_400_BAD_REQUEST)
+        perfil = serializer_perfil.save()
+        perfil.telefono = request.data.get('telefono', '')
+        perfil.save()
 
-                # Aviso al admin: nuevo registro en la app (no rompe el flujo)
-                telegram_bot.notificar_nuevo_usuario(user, tienda, perfil.telefono)
+        # Aviso al admin: nuevo registro en la app (no rompe el flujo)
+        transaction.on_commit(
+            lambda: telegram_bot.notificar_nuevo_usuario(user, tienda, perfil.telefono))
 
-                # Auto-login: generate JWT and return same structure as Login view
-                refresh = RefreshToken.for_user(user)
-                perfil_serializer = PerfilSerializer(perfil)
-                user_serializer = UserLoginSerializer(user)
-                membresia = comprobar_estado_membresia(tienda.id)
+    # Auto-login: generate JWT and return same structure as Login view
+    refresh = RefreshToken.for_user(user)
+    perfil_serializer = PerfilSerializer(perfil)
+    user_serializer = UserLoginSerializer(user)
+    membresia = comprobar_estado_membresia(tienda.id)
 
-                return Response({
-                    'token': str(refresh.access_token),
-                    'refresh': str(refresh),
-                    'user': user_serializer.data,
-                    'perfil': perfil_serializer.data,
-                    'membresia': membresia,
-                }, status=status.HTTP_200_OK)
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    return Response({
+        'token': str(refresh.access_token),
+        'refresh': str(refresh),
+        'user': user_serializer.data,
+        'perfil': perfil_serializer.data,
+        'membresia': membresia,
+    }, status=status.HTTP_200_OK)
 
 
 

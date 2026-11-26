@@ -21,7 +21,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from Clientes.models import Cliente
 from Ventas.models import Venta
 from Tiendas.models import AlertaOperativa, Tienda, Cierre_Caja, MovimientoCaja, Tienda_Membresia, Membresia, Tienda_Administrador, SolicitudPago, CuentaDestino, PagoMembresia, _generar_codigo_solicitud
-from Tiendas.serializers import TiendaSerializer, CajaSerializer, MovimientoCajaSerializer, TiendaMembresiaSerializer, TiendaMembresiaListaSerializer, TiendaCreateSerializer, TiendaAdminSerializer, SolicitudPagoSerializer, CuentaDestinoSerializer, MembresiaSerializer
+from Tiendas.serializers import TiendaSerializer, CajaSerializer, MovimientoCajaSerializer, TiendaMembresiaSerializer, TiendaMembresiaListaSerializer, TiendaCreateSerializer, InteresRutaSerializer, TiendaAdminSerializer, SolicitudPagoSerializer, CuentaDestinoSerializer, MembresiaSerializer
 from Tiendas.alertas_operativas import rutas_del_usuario, usuario_alertas_configurado
 from Tiendas.fecha_operativa import fecha_operativa, validar_zona_horaria
 from Tiendas.cierres import validar_cierre, verificar_cierres, ESTADOS_HTTP
@@ -463,6 +463,18 @@ def patch_tienda_settings(request, pk):
             {'error': 'Solo un administrador puede cambiar la configuración de la ruta.'},
             status=status.HTTP_403_FORBIDDEN,
         )
+    interes = None
+    if 'interes_defecto' in request.data:
+        # Solo las rutas creadas con tasa declarada pueden cambiarla; las
+        # anteriores se mantienen sin interés por defecto.
+        if tienda.interes_defecto is None:
+            return Response(
+                {'interes_defecto': 'Esta ruta no tiene interés por defecto configurable.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        interes = InteresRutaSerializer(data=request.data)
+        if not interes.is_valid():
+            return Response(interes.errors, status=status.HTTP_400_BAD_REQUEST)
     allowed = ['prefijo_telefono', 'telefono', 'cupo_minimo_nuevo', 'zona_horaria']
     for field in allowed:
         if field in request.data:
@@ -475,6 +487,10 @@ def patch_tienda_settings(request, pk):
                     )
                 request.data[field] = zona
             setattr(tienda, field, request.data[field])
+    if interes is not None:
+        tienda.interes_defecto = interes.validated_data['interes_defecto']
+        tienda.interes_aceptado_por = request.user
+        tienda.interes_aceptado_en = timezone.now()
     tienda.save()
     return Response(
         {
@@ -482,6 +498,7 @@ def patch_tienda_settings(request, pk):
             'telefono': tienda.telefono,
             'cupo_minimo_nuevo': tienda.cupo_minimo_nuevo,
             'zona_horaria': tienda.zona_horaria,
+            'interes_defecto': tienda.interes_defecto,
         },
         status=status.HTTP_200_OK,
     )
@@ -499,7 +516,7 @@ def post_tienda(request):
         datos = request.data.copy()
         if not request.user.is_superuser:
             datos['administrador'] = request.user.pk
-        serialize = TiendaCreateSerializer(data=datos)
+        serialize = TiendaCreateSerializer(data=datos, context={'usuario': request.user})
         if serialize.is_valid():
             tienda = serialize.save()
             hoy = fecha_operativa(tienda)

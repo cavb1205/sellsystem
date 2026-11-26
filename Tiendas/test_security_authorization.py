@@ -285,7 +285,8 @@ class SecurityAuthorizationTests(TestCase):
         Membresia.objects.create(nombre='Prueba',precio=0)
         with patch('Tiendas.telegram_bot.notificar_nueva_ruta'):
             res=self.request(self.admin,'post','/tiendas/create/',
-                             {'nombre':'Nueva propia','administrador':self.ajeno.pk})
+                             {'nombre':'Nueva propia','administrador':self.ajeno.pk,
+                              'interes_defecto':20,'acepta_responsabilidad_interes':True})
         self.assertEqual(res.status_code,200,res.data)
         self.assertEqual(Tienda.objects.get(nombre='Nueva propia').administrador_id,self.admin.pk)
 
