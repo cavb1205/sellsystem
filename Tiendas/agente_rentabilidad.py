@@ -57,7 +57,9 @@ INTERPRETACION = (
     'operativa − gastos extraordinarios − capital perdido declarado. rentabilidad_mensual_pct = utilidad '
     'operativa de las últimas 4 semanas / capital invertido (capital pendiente en cartera + caja). '
     'flujo_caja = cobrado − prestado − gastos − retiros + aportes; los retiros no restan utilidad. '
-    'Extraordinarios, umbrales y veredicto son criterio del informe, no de la app. Los importes de cada ruta están en su '
+    'Extraordinarios, umbrales y veredicto son criterio del informe, no de la app. En un crédito renovado '
+    'el valor_venta incluye el interés capitalizado del anterior y cuenta como capital (regla de la app): '
+    'baja un poco la rentabilidad de las rutas que renuevan mucho. Los importes de cada ruta están en su '
     'propia moneda y escala: nunca se suman ni se comparan entre rutas.')
 
 
@@ -123,14 +125,14 @@ def _clasificar_gastos(tienda, hasta, interes_semanal_promedio):
     """Gastos de la serie: 'operacion', 'extraordinario' o 'ajuste_caja'."""
     desde = hasta - timedelta(weeks=SEMANAS_SERIE) + timedelta(days=1)
     historia = defaultdict(list)
-    for tipo, valor in Gasto.objects.filter(tienda=tienda, fecha__gt=hasta - timedelta(days=180), fecha__lte=hasta) \
-            .values_list('tipo_gasto_id', 'valor'):
-        historia[tipo].append(valor)
+    for gasto_id, tipo, valor in Gasto.objects.filter(
+            tienda=tienda, fecha__gt=hasta - timedelta(days=180), fecha__lte=hasta).values_list('id', 'tipo_gasto_id', 'valor'):
+        historia[tipo].append((gasto_id, valor))
     umbral = interes_semanal_promedio * EXTRAORDINARIO_PCT
     filas = []
     for g in Gasto.objects.filter(tienda=tienda, fecha__gte=desde, fecha__lte=hasta) \
             .select_related('tipo_gasto', 'trabajador__trabajador'):
-        valores = historia[g.tipo_gasto_id]
+        valores = [v for i, v in historia[g.tipo_gasto_id] if i != g.id]  # sin el propio gasto
         habitual = len(valores) >= 3 and g.valor <= 3 * median(valores)
         tipo, comentario = _normal(g.tipo_gasto.tipo_gasto), _normal(g.comentario)
         if any(a in comentario or a in tipo for a in AJUSTE_CAJA):
