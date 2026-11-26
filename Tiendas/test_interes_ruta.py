@@ -101,13 +101,22 @@ class InteresRutaTests(TestCase):
 
     # --- Rutas existentes y configuración ---------------------------------
 
-    def test_rutas_existentes_quedan_sin_tasa_y_no_pueden_activarla(self):
+    def test_rutas_existentes_quedan_sin_tasa_hasta_declararla(self):
         self.assertIsNone(self.ruta.interes_defecto)
-        res = self.request(self.admin, 'patch', f'/tiendas/{self.ruta.pk}/settings/', {
-            'interes_defecto': 10, 'acepta_responsabilidad_interes': True})
+        res = self.request(self.admin, 'patch', f'/tiendas/{self.ruta.pk}/settings/',
+                           {'interes_defecto': 20})
         self.assertEqual(res.status_code, 400, res.data)
+        self.assertIn('acepta_responsabilidad_interes', res.data)
         self.ruta.refresh_from_db()
         self.assertIsNone(self.ruta.interes_defecto)
+
+        res = self.request(self.admin, 'patch', f'/tiendas/{self.ruta.pk}/settings/', {
+            'interes_defecto': 15, 'acepta_responsabilidad_interes': True})
+        self.assertEqual(res.status_code, 200, res.data)
+        self.ruta.refresh_from_db()
+        self.assertEqual((self.ruta.interes_defecto, self.ruta.interes_aceptado_por), (15, self.admin))
+        self.assertIsNotNone(self.ruta.interes_aceptado_en)
+        self.assertIsNone(Tienda.objects.get(pk=self.otra.pk).interes_defecto)
 
     def test_cambiar_tasa_exige_aceptacion_y_la_registra(self):
         Tienda.objects.filter(pk=self.ruta.pk).update(interes_defecto=20)
