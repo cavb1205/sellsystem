@@ -486,6 +486,100 @@ class InformeTests(TestCase):
             self.assertNotIn(dato, cuerpo)
         self.assertEqual(antes, (Venta.objects.count(), Recaudo.objects.count(), MovimientoCaja.objects.count()))
 
+    # Rentabilidad ----------------------------------------------------------------
+    def rentabilidad(self, **params):
+        respuesta = self.api_agente.get('/tiendas/agente/rentabilidad/', params)
+        self.assertEqual(respuesta.status_code, 200, respuesta.content)
+        return next(r for r in respuesta.json()['rutas'] if r['nombre'] == 'Ruta A')
+
+    def gasto(self, valor, tipo='Gasolina', fecha=DIA, comentario=''):
+        tipo, _ = Tipo_Gasto.objects.get_or_create(tipo_gasto=tipo)
+        return Gasto.objects.create(fecha=fecha, tipo_gasto=tipo, valor=valor, comentario=comentario,
+                                    trabajador=self.perfil, tienda=self.ruta)
+
+    def test_rentabilidad_requiere_token(self):
+        self.assertEqual(APIClient().get('/tiendas/agente/rentabilidad/').status_code, 401)
+        self.assertEqual(self.api_agente.post('/tiendas/agente/rentabilidad/', {}).status_code, 405)
+
+    def test_interes_cobrado_cuadra_con_el_reporte_de_utilidad_de_la_app(self):
+        v = self.nueva_venta(valor=1000, fecha=DIA - timedelta(days=20))  # interés pactado 200
+        self.nuevo_recaudo(v, DIA - timedelta(days=10), valor=900)       # todo capital
+        self.nuevo_recaudo(v, DIA - timedelta(days=3), valor=200)        # 100 capital + 100 interés
+        self.nuevo_recaudo(v, DIA, valor=50)                             # interés
+        self.nuevo_recaudo(v, DIA - timedelta(days=2), valor=0)          # visita: no suma
+        ruta = self.rentabilidad()
+        desde, hasta = DIA - timedelta(days=6), DIA
+        app = self.api.get(f'/tiendas/reportes/utilidad/{desde}/{hasta}/t/{self.ruta.id}/')
+        self.assertEqual(app.status_code, 200, app.content)
+        filas = app.json() if isinstance(app.json(), list) else app.json().get('datos') or app.json().get('filas') or []
+        interes_app = sum(f['interesesCobrados'] for f in filas)
+        self.assertEqual((ruta['semana']['interes_cobrado'], ruta['semana']['capital_recuperado']), (150, 100))
+        self.assertEqual(ruta['semana']['interes_cobrado'], interes_app)
+        # Capital expuesto = valor - abonos reales, con piso 0: este crédito ya no expone capital;
+        # el del fixture (1000 con 100 abonado) expone 900.
+        self.assertEqual(ruta['capital']['en_cartera'], 900)
+
+    def test_gastos_extraordinarios_ajustes_y_retiros(self):
+        from Utilidades.models import Utilidad
+        v = self.nueva_venta(valor=10000, fecha=DIA - timedelta(days=60))
+        self.nuevo_recaudo(v, DIA - timedelta(days=50), valor=10000)    # recupera el capital
+        for k in range(8):
+            self.nuevo_recaudo(v, DIA - timedelta(weeks=k), valor=200)  # 200 de interés por semana
+        for k in range(4):
+            self.gasto(20, fecha=DIA - timedelta(weeks=k + 1))
+        self.gasto(20)
+        self.gasto(500, tipo='Sueldo Vendedor')                         # fijo: nunca extraordinario
+        self.gasto(3000, tipo='Gastos Varios', comentario='inicial carro')
+        self.gasto(400, tipo='Gastos Varios', comentario='Cuadre caja')
+        Utilidad.objects.create(fecha=DIA, valor=100, trabajador=self.perfil, tienda=self.ruta)
+        r = self.rentabilidad()
+        s = r['semana']
+        self.assertEqual((s['interes_cobrado'], s['gastos_operacion'], s['gastos_extraordinarios'],
+                          s['ajustes_caja_como_gasto'], s['utilidad_operativa'], s['utilidad_neta'], s['retiros']),
+                         (200, 520, 3000, 400, -320, -3320, 100), 'los retiros no restan utilidad')
+        self.assertEqual(s['flujo_caja'], 200 - 520 - 3000 - 400 - 100)
+        self.assertEqual([g['comentario'] for g in r['gastos_extraordinarios']], ['inicial carro'])
+        self.assertEqual([g['comentario'] for g in r['ajustes_caja_como_gasto']], ['Cuadre caja'])
+        codigos = {h['codigo'] for h in r['senales']}
+        self.assertTrue({'SEMANA_EN_PERDIDA', 'GASTOS_EXTRAORDINARIOS', 'AJUSTE_CAJA_COMO_GASTO'} <= codigos, codigos)
+        self.assertEqual(r['ultimas_4_semanas']['interes_cobrado'], 800)
+
+    def test_caja_negativa_solo_cuando_pasa_a_negativa_o_empeora(self):
+        def caja(cuando, saldo):
+            m = MovimientoCaja.objects.create(tienda=self.ruta, tienda_nombre='Ruta A', tipo='AJUSTE', accion='AJUSTE',
+                                              delta=0, saldo_anterior=0, saldo_posterior=saldo, usuario=self.admin)
+            MovimientoCaja.objects.filter(pk=m.pk).update(creado_en=cuando)
+        caja(datetime(2026, 10, 1, 12, tzinfo=CHILE), 500)
+        caja(datetime(2026, 10, 8, 12, tzinfo=CHILE), -200)
+        codigos = {h['codigo']: h for h in self.rentabilidad()['senales']}
+        self.assertEqual(codigos['CAJA_NEGATIVA']['severidad'], 'alta')
+        caja(datetime(2026, 9, 30, 12, tzinfo=CHILE), -100)
+        MovimientoCaja.objects.filter(pk__in=MovimientoCaja.objects.filter(saldo_posterior=500).values('pk')).update(
+            creado_en=datetime(2026, 9, 29, 12, tzinfo=CHILE))
+        codigos = {h['codigo'] for h in self.rentabilidad()['senales']}
+        self.assertIn('CAJA_NEGATIVA_EMPEORA', codigos)
+
+    def test_retiros_mayores_a_la_utilidad(self):
+        from Utilidades.models import Utilidad
+        v = self.nueva_venta(valor=100, fecha=DIA - timedelta(days=40))
+        self.nuevo_recaudo(v, DIA - timedelta(days=30), valor=100)
+        self.nuevo_recaudo(v, DIA - timedelta(days=2), valor=20)
+        Utilidad.objects.create(fecha=DIA - timedelta(days=1), valor=500, trabajador=self.perfil, tienda=self.ruta)
+        r = self.rentabilidad()
+        h = {x['codigo']: x for x in r['senales']}['RETIROS_SUPERAN_UTILIDAD']
+        self.assertEqual((h['datos']['retiros'], h['datos']['utilidad_operativa']), (500, 20))
+        self.assertEqual(r['semana']['utilidad_operativa'], 20, 'el retiro no resta utilidad')
+
+    def test_ruta_en_perdida(self):
+        v = self.nueva_venta(valor=100, fecha=DIA - timedelta(days=40))
+        self.nuevo_recaudo(v, DIA - timedelta(days=30), valor=100)
+        self.nuevo_recaudo(v, DIA - timedelta(days=2), valor=20)
+        for k in range(4):
+            self.gasto(50, tipo='Arriendo', fecha=DIA - timedelta(weeks=k))
+        r = self.rentabilidad()
+        self.assertEqual(r['veredicto'], 'en_perdida')
+        self.assertEqual(r['senales'][0]['codigo'], 'RUTA_EN_PERDIDA')
+
     # Privacidad, solo lectura y costo ----------------------------------------
     def test_no_expone_datos_personales_ni_escribe(self):
         v = self.nueva_venta(valor=5000, fecha=DIA)

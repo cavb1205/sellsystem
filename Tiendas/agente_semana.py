@@ -80,7 +80,8 @@ def _posibles_perdidas(sin_abonar, vencidos):
                 'candidato_castigo': False})
             fila['dias_pasado_el_plazo'] = f['dias_pasado_el_plazo']
     orden = sorted(filas.values(), key=lambda f: -(f['saldo'] or 0))
-    return {'creditos': len(orden), 'saldo': _n(_suma(orden)), 'lista': orden[:LIMITE]}
+    return {'creditos': len(orden), 'saldo': _n(_suma(orden)), 'lista': orden[:LIMITE],
+            '_ids': [f['venta_id'] for f in orden]}
 
 
 def _cobranza(tienda, hasta):
@@ -191,7 +192,7 @@ def semana_ruta(tienda, hasta, admin_id):
         'trabajadores_asignados': _trabajadores(tienda),
         'registra_administrador': _registra_administrador(tienda, hasta, admin_id),
         'riesgo': {'actual': actual, 'hace_7_dias': anterior},
-        'posibles_perdidas': _posibles_perdidas(sin_abonar, vencidos),
+        'posibles_perdidas': {k: v for k, v in _posibles_perdidas(sin_abonar, vencidos).items() if k != '_ids'},
         'cobranza': {'esta_semana': _cobranza(tienda, hasta), 'semana_anterior': _cobranza(tienda, desde - timedelta(days=1))},
         'creditos': creditos,
         'gastos': {'semana': gastos['ultimos_7_dias'], 'normal_semanal': gastos['mediana_semanal']},
