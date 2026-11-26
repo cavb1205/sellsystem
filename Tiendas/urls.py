@@ -1,5 +1,5 @@
 from django.urls import path
-from . import agente_api, agente_informe, views
+from . import agente_api, agente_informe, agente_semana, views
 from .orden_visita import recorrido_ruta
 from .suscripciones import vencer_suscripcion
 
@@ -13,6 +13,7 @@ urlpatterns = [
     path('agente/alertas/', agente_api.alertas, name='agente_alertas'),
     path('agente/cliente/', agente_api.cliente, name='agente_cliente'),
     path('agente/informe/', agente_informe.informe, name='agente_informe'),
+    path('agente/semana/', agente_semana.semana, name='agente_semana'),
 
     
     ###TIENDA###

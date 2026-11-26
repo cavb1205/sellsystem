@@ -53,8 +53,9 @@ class InformeTests(TestCase):
         cliente = cliente or Cliente.objects.create(
             tienda=self.ruta, identificacion=f'x{self.n}', nombres=f'Cliente{self.n}', apellidos='Prueba',
             telefono_principal='000', direccion='Dirección de prueba')
+        extra.setdefault('saldo_actual', valor * 1.2)
         return Venta.objects.create(tienda=self.ruta, cliente=cliente, fecha_venta=fecha, valor_venta=valor,
-                                    interes=20, cuotas=20, saldo_actual=valor * 1.2, **extra)
+                                    interes=20, cuotas=20, **extra)
 
     def nuevo_recaudo(self, venta, fecha, valor=100, gps=True):
         return Recaudo.objects.create(
@@ -196,7 +197,7 @@ class InformeTests(TestCase):
         h = self.codigos(self.ruta_a())
         self.assertEqual(h['CREDITO_CON_SENALES']['severidad'], 'alta')
         self.assertEqual(h['CREDITO_CON_SENALES']['datos']['senales'], ['Posible doble financiación por misma identificación'])
-        self.assertEqual(h['CREDITO_SOBRE_CUPO']['severidad'], 'alta')
+        self.assertEqual(len(self.ruta_a()['creditos_sobre_cupo']), 1)
 
     def test_correccion_sin_efecto_en_caja_es_contexto(self):
         self.movimiento(datetime(2026, 10, 9, 13, tzinfo=CHILE), self.worker, accion='CORRECCION', tipo='GASTO', delta=0)
@@ -253,6 +254,7 @@ class InformeTests(TestCase):
         self.assertEqual((h['severidad'], h['titulo']), ('alta', 'Monto del crédito aumentado (sin control de cupo)'))
 
     def test_credito_sobre_el_cupo_de_la_calificacion(self):
+        self.nuevo_recaudo(self.venta, DIA)  # el crédito del fixture queda al día
         v = self.nueva_venta(valor=300, fecha=DIA, creado_por=self.worker)
         AlertaOperativa.objects.create(
             tipo='VENTA_CON_ALERTAS', severidad='alta', clave_dedupe='c1', titulo='x', detalle='x',
@@ -261,12 +263,15 @@ class InformeTests(TestCase):
                                  'justificacion': {'razon': 'Basado en 2 crédito(s) pagado(s).', 'bloqueado': False}},
                 'senales': [{'codigo': 'EXCESO_CUPO', 'severidad': 'alta', 'texto': 'Excede el cupo disponible en $50',
                              'datos': {'cupo_disponible': 250, 'exceso': 50}}]})
-        h = self.codigos(self.ruta_a())
+        ruta = self.ruta_a()
+        h = self.codigos(ruta)
         self.assertNotIn('CREDITO_CON_SENALES', h, 'el exceso de cupo es su propia alerta')
-        d = h['CREDITO_SOBRE_CUPO']
-        self.assertEqual((d['severidad'], d['datos']['cupo_disponible'], d['datos']['exceso'], d['datos']['calificacion'],
-                          d['datos']['nivel'], d['datos']['valor'], d['datos']['registrado_por']),
-                         ('alta', 250, 50, 55, 'Regular', 300, 'worker-pruebas'))
+        self.assertNotIn('CREDITO_SOBRE_CUPO', h, 'es informativo: no cambia el semáforo')
+        self.assertEqual(ruta['semaforo'], 'verde')
+        d = ruta['creditos_sobre_cupo'][0]
+        self.assertEqual((d['cupo_disponible'], d['exceso'], d['calificacion'], d['nivel'], d['valor'],
+                          d['registrado_por'], d['veces_del_trabajador_ultimos_7_dias']),
+                         (250, 50, 55, 'Regular', 300, 'worker-pruebas', 1))
 
     # Clientes ---------------------------------------------------------------
     def test_clientes_sin_abonar_por_tramos(self):
@@ -320,6 +325,146 @@ class InformeTests(TestCase):
         self.nuevo_recaudo(self.venta, DIA)
         fila = self.ruta_a()['clientes']['entraron_en_riesgo'][0]
         self.assertEqual((fila['cliente'], fila['motivo'], fila['dias_sin_abono']), ('Cliente Prueba', 'mora', 7))
+
+    def test_recaudo_bajo_varios_dias_seguidos_sube_a_alta(self):
+        v = self.nueva_venta()
+        for k in range(2, 70):
+            self.nuevo_recaudo(v, DIA - timedelta(days=k), valor=1000)
+        self.nuevo_recaudo(v, DIA - timedelta(days=1), valor=100)
+        self.nuevo_recaudo(v, DIA, valor=100)
+        h = self.codigos(self.ruta_a())['RECAUDO_BAJO']
+        self.assertEqual((h['severidad'], h['datos']['dias_seguidos']), ('alta', 2))
+        ayer = self.codigos(self.ruta_a(fecha=(DIA - timedelta(days=1)).isoformat()))['RECAUDO_BAJO']
+        self.assertEqual((ayer['severidad'], ayer['datos']['dias_seguidos']), ('media', 1))
+
+    def test_abonos_registrados_dias_despues(self):
+        cuando = datetime(2026, 10, 9, 18, tzinfo=CHILE)
+        tarde = [self.nuevo_recaudo(self.venta, DIA - timedelta(days=d)) for d in (4, 3)]
+        for r in tarde:
+            self.movimiento(cuando, self.worker, origen_id=r.id)
+        del_admin = self.nuevo_recaudo(self.venta, DIA - timedelta(days=6))
+        self.movimiento(cuando, self.admin, origen_id=del_admin.id)
+        a_tiempo = self.nuevo_recaudo(self.venta, DIA - timedelta(days=1))
+        self.movimiento(cuando, self.worker, origen_id=a_tiempo.id)
+        renovacion = self.nuevo_recaudo(self.venta, DIA - timedelta(days=9))
+        Recaudo.objects.filter(pk=renovacion.pk).update(es_renovacion=True)
+        self.movimiento(cuando, self.worker, origen_id=renovacion.id)
+        h = [x for x in self.ruta_a()['hallazgos'] if x['codigo'] == 'ABONOS_REGISTRADOS_TARDE']
+        self.assertEqual(len(h), 1, 'lo del dueño y las renovaciones no cuentan')
+        self.assertEqual((h[0]['severidad'], h[0]['datos']['registrado_por'], h[0]['datos']['cantidad'],
+                          h[0]['datos']['dias_atraso_max'], h[0]['datos']['monto']),
+                         ('media', 'worker-pruebas', 2, 4, 200))
+
+    def test_coadministrador_remoto_si_se_evalua(self):
+        coadmin = base.User.objects.create_user('coadmin-remoto', is_staff=True)
+        Tienda_Administrador.objects.create(tienda=self.ruta, administrador=coadmin)
+        r = self.nuevo_recaudo(self.venta, DIA - timedelta(days=5))
+        self.movimiento(datetime(2026, 10, 9, 18, tzinfo=CHILE), coadmin, origen_id=r.id)
+        h = self.codigos(self.ruta_a())['ABONOS_REGISTRADOS_TARDE']
+        self.assertEqual((h['severidad'], h['datos']['registrado_por']), ('alta', 'coadmin-remoto'))
+        self.assertEqual([t['nombre'] for t in self.semana()['trabajadores']], ['coadmin-remoto'])
+
+    def test_posible_perdida_a_los_30_y_90_dias(self):
+        self.nuevo_recaudo(self.venta, DIA)
+        treinta = self.nueva_venta(fecha=date(2026, 6, 1))
+        self.nuevo_recaudo(treinta, DIA - timedelta(days=30))
+        h = self.codigos(self.ruta_a())
+        self.assertNotIn('SIN_ABONAR', h, 'el de 30 días es una posible pérdida, no "una semana sin abonar"')
+        self.assertEqual((h['POSIBLE_PERDIDA']['severidad'], h['POSIBLE_PERDIDA']['datos']['clientes'][0]['dias_sin_abonar']),
+                         ('alta', 30))
+        noventa = self.nueva_venta(fecha=date(2026, 6, 1))
+        self.nuevo_recaudo(noventa, DIA - timedelta(days=90))
+        h = self.codigos(self.ruta_a())['POSIBLE_PERDIDA']
+        self.assertEqual((h['severidad'], h['datos']['cantidad']), ('critica', 2))
+        self.assertTrue(h['datos']['clientes'][0]['candidato_castigo'] or h['datos']['clientes'][1]['candidato_castigo'])
+
+    def test_abonan_poco_y_adelantados(self):
+        self.nuevo_recaudo(self.venta, DIA)
+        goteo = self.nueva_venta(fecha=date(2026, 9, 1))  # cuota 60
+        for k in range(11):
+            self.nuevo_recaudo(goteo, DIA - timedelta(days=k), valor=20)
+        Venta.objects.filter(pk=goteo.pk).update(saldo_actual=1200 - 220)
+        adelantado = self.nueva_venta(fecha=date(2026, 9, 1))
+        for k in range(3):
+            self.nuevo_recaudo(adelantado, DIA - timedelta(days=k), valor=120)
+        Venta.objects.filter(pk=adelantado.pk).update(saldo_actual=1200 - 360)
+        ruta = self.ruta_a()
+        lista = ruta['clientes']['abonan_poco']
+        self.assertEqual([f['venta_id'] for f in lista], [goteo.id], 'quien paga adelantado no se marca')
+        self.assertEqual((lista[0]['cuotas_atrasadas'], lista[0]['cruzo_hoy'], lista[0]['saldo']), (7.33, True, 980))
+        self.assertEqual(self.codigos(ruta)['ABONAN_POCO']['severidad'], 'media')
+        self.assertNotIn('ABONAN_POCO', self.codigos(self.ruta_a(fecha=(DIA - timedelta(days=1)).isoformat())))
+
+    def test_vencidos_con_saldo(self):
+        self.nuevo_recaudo(self.venta, DIA)
+        ayer = self.nueva_venta(fecha=date(2026, 9, 1), fecha_vencimiento=DIA - timedelta(days=1))
+        self.nuevo_recaudo(ayer, DIA)
+        viejo = self.nueva_venta(fecha=date(2026, 6, 1), fecha_vencimiento=DIA - timedelta(days=30))
+        self.nuevo_recaudo(viejo, DIA)
+        self.nueva_venta(fecha=date(2026, 6, 1), fecha_vencimiento=DIA - timedelta(days=30), estado_venta='Perdida')
+        self.nueva_venta(fecha=date(2026, 6, 1), fecha_vencimiento=DIA - timedelta(days=30), estado_venta='Pagado',
+                         saldo_actual=0)
+        ruta = self.ruta_a()
+        self.assertEqual({f['venta_id'] for f in ruta['clientes']['vencidos_con_saldo']}, {ayer.id, viejo.id})
+        self.assertEqual(ruta['clientes']['total_vencidos'], 2, 'pérdidas sin declaración y pagados no cuentan')
+        self.assertEqual(self.codigos(ruta)['VENCIDO_CON_SALDO']['severidad'], 'alta')
+
+    def test_saldo_historico_cuenta_lo_pagado_despues(self):
+        pagado_hoy = self.nueva_venta(fecha=date(2026, 9, 1), estado_venta='Pagado', saldo_actual=0)
+        self.nuevo_recaudo(pagado_hoy, DIA - timedelta(days=8))
+        self.nuevo_recaudo(pagado_hoy, DIA + timedelta(days=1), valor=1100)
+        fila = next(f for f in self.ruta_a()['clientes']['sin_abonar'] if f['venta_id'] == pagado_hoy.id)
+        self.assertEqual((fila['saldo'], fila['dias_sin_abonar']), (1100, 8))
+
+    # Informe semanal -----------------------------------------------------------
+    def semana(self, **params):
+        respuesta = self.api_agente.get('/tiendas/agente/semana/', params)
+        self.assertEqual(respuesta.status_code, 200, respuesta.content)
+        return next(r for r in respuesta.json()['rutas'] if r['nombre'] == 'Ruta A')
+
+    def test_semana_requiere_token(self):
+        self.assertEqual(APIClient().get('/tiendas/agente/semana/').status_code, 401)
+        self.assertEqual(self.api_agente.post('/tiendas/agente/semana/', {}).status_code, 405)
+
+    def test_semana_riesgo_deduplicado_y_posibles_perdidas(self):
+        self.nuevo_recaudo(self.venta, DIA)
+        perdida = self.nueva_venta(fecha=date(2026, 5, 1), fecha_vencimiento=DIA - timedelta(days=40))
+        self.nuevo_recaudo(perdida, DIA - timedelta(days=61))  # 61 días sin abonar y vencido: una sola vez
+        ruta = self.semana()
+        riesgo = ruta['riesgo']['actual']
+        self.assertEqual((riesgo['sin_abonar_30_o_mas']['creditos'], riesgo['vencidos_con_saldo']['creditos'],
+                          riesgo['en_riesgo']['creditos'], riesgo['en_riesgo']['saldo']), (1, 1, 1, 1200))
+        self.assertEqual(riesgo['en_riesgo']['pct_cartera'], round(1200 / (1200 + 1100) * 100, 1))
+        self.assertEqual(ruta['riesgo']['hace_7_dias']['sin_abonar_30_o_mas']['creditos'], 1)
+        p = ruta['posibles_perdidas']['lista'][0]
+        self.assertEqual((p['venta_id'], p['dias_sin_abonar'], p['dias_pasado_el_plazo']), (perdida.id, 61, 40))
+        self.assertEqual((ruta['desde'], ruta['hasta']), ((DIA - timedelta(days=6)).isoformat(), DIA.isoformat()))
+
+    def test_semana_trabajadores_y_supervision(self):
+        cuando = datetime(2026, 10, 8, 18, tzinfo=CHILE)
+        r = self.nuevo_recaudo(self.venta, DIA - timedelta(days=4))
+        self.movimiento(cuando, self.worker, origen_id=r.id)
+        self.movimiento(cuando, self.worker, accion='REVERSA', delta=-100, origen_id=r.id)
+        self.movimiento(cuando, self.admin, origen_id=999)
+        moroso = self.nueva_venta(fecha=date(2026, 8, 1))
+        self.nuevo_recaudo(moroso, DIA - timedelta(days=20))
+        AlertaOperativa.objects.create(tipo='RIESGO_CARTERA', severidad='alta', clave_dedupe='s1', titulo='x',
+                                       detalle='x', tienda_id_ref=self.ruta.id, venta_id_ref=moroso.id)
+        ruta = self.semana()
+        self.assertEqual([t['nombre'] for t in ruta['trabajadores']], ['worker-pruebas'], 'el admin no se evalúa')
+        t = ruta['trabajadores'][0]
+        self.assertEqual((t['abonos'], t['abonos_eliminados_o_rebajados'], t['monto_eliminado_o_rebajado'],
+                          t['abonos_registrados_tarde']), (1, 1, 100, 1))
+        s = ruta['supervision']
+        self.assertEqual((s['alertas_sin_revisar'], s['morosos_sin_visita_en_la_semana']), (1, 1))
+        self.assertEqual(ruta['cosecha_sin_dato_de_quien_presto']['creditos'], 1, 'creado_por nulo no se atribuye')
+
+    def test_semana_no_escribe_ni_expone_datos(self):
+        antes = (Venta.objects.count(), Recaudo.objects.count(), MovimientoCaja.objects.count())
+        cuerpo = json.dumps(self.api_agente.get('/tiendas/agente/semana/').json())
+        for dato in ('Dirección de prueba', 'telefono', 'identificacion', 'Ruta Ajena'):
+            self.assertNotIn(dato, cuerpo)
+        self.assertEqual(antes, (Venta.objects.count(), Recaudo.objects.count(), MovimientoCaja.objects.count()))
 
     # Privacidad, solo lectura y costo ----------------------------------------
     def test_no_expone_datos_personales_ni_escribe(self):
