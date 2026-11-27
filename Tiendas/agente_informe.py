@@ -56,6 +56,15 @@ INTERPRETACION = (
     'correcciones hechas por él son suyas. creditos_sobre_cupo es informativo: no cambia el semáforo. '
     'dias_seguidos cuenta días trabajados consecutivos con la misma señal. Los importes de cada ruta están en su propia moneda y escala: '
     'nunca se suman ni se comparan entre rutas.')
+RESUMIDO = ('resumido=true: las listas de clientes traen solo lo de hoy y los más grandes; los totales '
+            'son completos. Para ver todos los nombres de una ruta, pide el informe con ruta=<nombre>.')
+
+# Modo resumido (?resumido=1): lo usa Jarvis para el informe de todas las rutas. Cada
+# carácter es costo de IA, así que deja solo lo que el mensaje muestra; los totales no cambian.
+RESUMEN_CAMPOS_SIN_ABONAR = ('cliente', 'venta_id', 'saldo', 'dias_sin_abonar', 'hito', 'sin_primer_abono',
+                             'candidato_castigo', 'visitas_sin_pago_desde_ultimo_abono')
+RESUMEN_LIMITE = 5
+RESUMEN_CRITICOS = 3
 
 
 def _hallazgo(codigo, severidad, titulo, **datos):
@@ -764,6 +773,19 @@ def informe_ruta(tienda, fecha, admin_id):
     }
 
 
+def _resumir(ruta):
+    """Recorta las listas de clientes que el informe de todas las rutas no muestra."""
+    c = dict(ruta['clientes'])
+    c['sin_abonar'] = [{k: f[k] for k in RESUMEN_CAMPOS_SIN_ABONAR}
+                       for f in c['sin_abonar'] if f['cruzo_hoy']][:RESUMEN_LIMITE]
+    c['criticos_por_saldo'] = [{k: f[k] for k in ('cliente', 'venta_id', 'saldo', 'dias_sin_abono')}
+                               for f in c['criticos_por_saldo'][:RESUMEN_CRITICOS]]
+    for clave in ('entraron_en_riesgo', 'dejaron_de_pagar_de_golpe', 'terminaron_de_pagar',
+                  'abonan_poco', 'vencidos_con_saldo'):
+        c[clave] = c[clave][:RESUMEN_LIMITE]
+    return {**ruta, 'clientes': c}
+
+
 @endpoint_agente
 def informe(request):
     """Informe diario por ruta: anomalías, correcciones, gastos, créditos y clientes a atender."""
@@ -777,6 +799,10 @@ def informe(request):
             return Response({'error': error}, status=status.HTTP_400_BAD_REQUEST)
         rutas.append(informe_ruta(tienda, fecha, admin_id))
     rutas.sort(key=lambda r: (-r['puntaje'], r['nombre']))
-    return Response({'interpretacion': INTERPRETACION,
+    resumido = (request.query_params.get('resumido') or '').strip().lower() in ('1', 'true', 'si', 'sí')
+    if resumido:
+        rutas = [_resumir(r) for r in rutas]
+    return Response({'interpretacion': INTERPRETACION + (' ' + RESUMIDO if resumido else ''),
+                     'resumido': resumido,
                      'resumen': {s: sum(r['semaforo'] == s for r in rutas) for s in ('rojo', 'amarillo', 'verde')},
                      'rutas': rutas})

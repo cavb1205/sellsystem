@@ -12,7 +12,7 @@ from rest_framework.test import APIClient
 from Clientes.models import Cliente
 from Gastos.models import Gasto, Tipo_Gasto
 from Recaudos.models import Recaudo, Visita_Blanco
-from Tiendas import test_suscripciones as base
+from Tiendas import agente_informe, test_suscripciones as base
 from Tiendas.models import AlertaOperativa, MovimientoCaja, Tienda, Tienda_Administrador
 from Trabajadores.models import Perfil
 from Ventas.models import Venta
@@ -301,6 +301,30 @@ class InformeTests(TestCase):
         self.assertEqual(ruta['clientes']['llegaron_al_primer_tramo'], 0)
         h = self.codigos(ruta)['SIN_ABONAR']
         self.assertEqual((h['severidad'], h['datos']['cantidad'], h['datos']['clientes'][0]['venta_id']), ('alta', 1, siete.id))
+
+    def test_modo_resumido_recorta_listas_sin_cambiar_totales(self):
+        self.nuevo_recaudo(self.venta, DIA)
+        siete = self.nueva_venta(fecha=date(2026, 9, 1))
+        self.nuevo_recaudo(siete, DIA - timedelta(days=7))
+        cinco = self.nueva_venta(fecha=date(2026, 9, 1))
+        self.nuevo_recaudo(cinco, DIA - timedelta(days=5))
+        completo = self.informe()
+        resumen = self.informe(resumido='1')
+        self.assertFalse(completo['resumido'])
+        self.assertTrue(resumen['resumido'])
+        self.assertIn('resumido=true', resumen['interpretacion'])
+        a_completo = next(r for r in completo['rutas'] if r['nombre'] == 'Ruta A')
+        a_resumen = next(r for r in resumen['rutas'] if r['nombre'] == 'Ruta A')
+        self.assertEqual({f['venta_id'] for f in a_completo['clientes']['sin_abonar']}, {siete.id, cinco.id})
+        self.assertEqual([f['venta_id'] for f in a_resumen['clientes']['sin_abonar']], [siete.id],
+                         'solo los que cruzaron un tramo hoy')
+        self.assertEqual(set(a_resumen['clientes']['sin_abonar'][0]), set(agente_informe.RESUMEN_CAMPOS_SIN_ABONAR))
+        for clave in ('total_sin_abonar', 'sin_abonar_sin_visitas', 'llegaron_al_primer_tramo', 'total_criticos',
+                      'total_abonan_poco', 'total_vencidos'):
+            self.assertEqual(a_resumen['clientes'][clave], a_completo['clientes'][clave], clave)
+        for clave in ('semaforo', 'puntaje', 'hallazgos', 'jornada', 'caja', 'gastos', 'creditos_nuevos'):
+            self.assertEqual(a_resumen[clave], a_completo[clave], clave)
+        self.assertEqual(resumen['resumen'], completo['resumen'])
 
 
     def test_buen_pagador_que_deja_de_pagar(self):
