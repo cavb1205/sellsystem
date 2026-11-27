@@ -56,13 +56,13 @@ INTERPRETACION = (
     'correcciones hechas por él son suyas. creditos_sobre_cupo es informativo: no cambia el semáforo. '
     'dias_seguidos cuenta días trabajados consecutivos con la misma señal. Los importes de cada ruta están en su propia moneda y escala: '
     'nunca se suman ni se comparan entre rutas.')
-RESUMIDO = ('resumido=true: las listas de clientes traen solo lo de hoy y los más grandes; los totales '
+RESUMIDO = ('resumido=true: las listas de clientes traen solo lo de hoy, primero los de mayor tramo y saldo; los totales '
             'son completos. Para ver todos los nombres de una ruta, pide el informe con ruta=<nombre>.')
 
 # Modo resumido (?resumido=1): lo usa Jarvis para el informe de todas las rutas. Cada
 # carácter es costo de IA, así que deja solo lo que el mensaje muestra; los totales no cambian.
-RESUMEN_CAMPOS_SIN_ABONAR = ('cliente', 'venta_id', 'saldo', 'dias_sin_abonar', 'hito', 'sin_primer_abono',
-                             'candidato_castigo', 'visitas_sin_pago_desde_ultimo_abono')
+RESUMEN_CAMPOS_SIN_ABONAR = ('cliente', 'venta_id', 'plazo', 'saldo', 'dias_sin_abonar', 'cuenta', 'hito',
+                             'sin_primer_abono', 'candidato_castigo', 'visitas_sin_pago_desde_ultimo_abono')
 RESUMEN_LIMITE = 5
 RESUMEN_CRITICOS = 3
 
